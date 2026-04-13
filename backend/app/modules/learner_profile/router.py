@@ -1,0 +1,135 @@
+"""
+@Date: 2026-04-13
+@Author: xisy
+@Discription: 学情模块路由
+"""
+
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, File, Path, Query, UploadFile, status
+from sqlalchemy.orm import Session
+
+from app.core.database import get_db_session
+from app.core.security import get_current_user
+from app.modules.auth.models import SysUser
+from app.modules.learner_profile.repository import LearnerProfileRepository
+from app.modules.learner_profile.schemas import (
+    LearnerProfileFileDetailResponse,
+    LearnerProfileFileListItemResponse,
+    LearnerProfileUploadRequest,
+    LearnerProfileVersionResponse,
+)
+from app.modules.learner_profile.service import LearnerProfileService
+from app.schemas.response import ApiResponse, PaginatedData, ResponseFactory
+
+router = APIRouter(tags=["学情"])
+
+
+def get_learner_profile_service(session: Annotated[Session, Depends(get_db_session)]) -> LearnerProfileService:
+    """构造学情服务依赖。"""
+    return LearnerProfileService(session, LearnerProfileRepository(session))
+
+
+@router.post(
+    "/projects/{project_id}/learner-profiles",
+    summary="上传学情文件",
+    description="向指定项目上传 doc 或 docx 学情文件，并按配置创建占位抽取任务。",
+    operation_id="learner_profile_create",
+    response_model=ApiResponse[LearnerProfileFileDetailResponse],
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_learner_profile(
+    project_id: int = Path(..., description="项目主键", examples=[1]),
+    file: UploadFile = File(..., description="学情 doc/docx 文件"),
+    request: LearnerProfileUploadRequest = Depends(LearnerProfileUploadRequest.as_form),
+    service: Annotated[LearnerProfileService, Depends(get_learner_profile_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """上传学情文件。"""
+    content = await file.read()
+    detail = service.upload_profile_file(
+        owner_user_id=current_user.id,
+        project_id=project_id,
+        filename=file.filename or "learner_profile.docx",
+        content=content,
+        content_type=file.content_type,
+        title=request.title,
+        grade_code=request.grade_code,
+        subject_scope=request.subject_scope,
+        textbook_version_hint_id=request.textbook_version_hint_id,
+        auto_extract=request.auto_extract,
+        set_as_current=request.set_as_current,
+    )
+    return ResponseFactory.success(detail.model_dump(mode="json"), "上传学情文件成功", status_code=status.HTTP_201_CREATED)
+
+
+@router.get(
+    "/projects/{project_id}/learner-profiles",
+    summary="获取学情文件列表",
+    description="分页获取指定项目下的学情文件及其最新抽取结果摘要。",
+    operation_id="learner_profile_list",
+    response_model=ApiResponse[PaginatedData[LearnerProfileFileListItemResponse]],
+    status_code=status.HTTP_200_OK,
+)
+def list_learner_profiles(
+    project_id: int = Path(..., description="项目主键", examples=[1]),
+    page: int = Query(default=1, ge=1, description="页码"),
+    page_size: int = Query(default=20, ge=1, le=100, description="每页大小"),
+    service: Annotated[LearnerProfileService, Depends(get_learner_profile_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """获取学情文件列表。"""
+    items, total_count = service.list_profile_files(
+        owner_user_id=current_user.id,
+        project_id=project_id,
+        page=page,
+        page_size=page_size,
+    )
+    return ResponseFactory.paginated(
+        items=[item.model_dump(mode="json") for item in items],
+        total_count=total_count,
+        page=page,
+        page_size=page_size,
+        message="获取学情文件列表成功",
+    )
+
+
+@router.get(
+    "/projects/{project_id}/learner-profiles/{profile_file_id}",
+    summary="获取学情文件详情",
+    description="获取指定项目下学情文件详情及其最新学情版本内容。",
+    operation_id="learner_profile_detail",
+    response_model=ApiResponse[LearnerProfileFileDetailResponse],
+    status_code=status.HTTP_200_OK,
+)
+def get_learner_profile_detail(
+    project_id: int = Path(..., description="项目主键", examples=[1]),
+    profile_file_id: int = Path(..., description="学情文件主键", examples=[1]),
+    service: Annotated[LearnerProfileService, Depends(get_learner_profile_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """获取学情文件详情。"""
+    detail = service.get_profile_file_detail(
+        owner_user_id=current_user.id,
+        project_id=project_id,
+        profile_file_id=profile_file_id,
+    )
+    return ResponseFactory.success(detail.model_dump(mode="json"), "获取学情文件详情成功")
+
+
+@router.get(
+    "/learner-profile-versions/{profile_version_id}",
+    summary="获取学情版本详情",
+    description="获取单个学情版本详情及其结构化画像记录。",
+    operation_id="learner_profile_version_detail",
+    response_model=ApiResponse[LearnerProfileVersionResponse],
+    status_code=status.HTTP_200_OK,
+)
+def get_learner_profile_version_detail(
+    profile_version_id: int = Path(..., description="学情版本主键", examples=[1]),
+    service: Annotated[LearnerProfileService, Depends(get_learner_profile_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """获取学情版本详情。"""
+    detail = service.get_profile_version_detail(owner_user_id=current_user.id, profile_version_id=profile_version_id)
+    return ResponseFactory.success(detail.model_dump(mode="json"), "获取学情版本详情成功")

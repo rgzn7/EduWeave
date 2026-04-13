@@ -10,6 +10,7 @@ from redis import Redis
 
 from app.core.config import Settings, get_settings
 from app.core.database import check_mysql_health
+from app.core.exceptions import AppException, BusinessErrorCode
 from app.shared.storage import ObsStorageClient
 from app.shared.utils.datetime_util import DateTimeUtil
 from app.shared.vector import MilvusVectorService
@@ -55,8 +56,8 @@ class SystemService:
                 "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
             }
 
-    def get_ready(self) -> tuple[int, dict[str, object]]:
-        """返回就绪探针数据与 HTTP 状态码。"""
+    def get_ready(self) -> dict[str, object]:
+        """返回就绪探针数据。"""
         mysql_status = check_mysql_health()
         redis_status = self.check_redis_health()
         milvus_status = self.vector_service.health_check()
@@ -69,16 +70,20 @@ class SystemService:
             "obs": obs_status,
         }
         is_ready = all(checks[key]["status"] == "ok" for key in ("mysql", "redis", "milvus"))
-        return (
-            200 if is_ready else 503,
-            {
-                "status": "ready" if is_ready else "not_ready",
-                "checks": checks,
-            },
-        )
+        payload = {
+            "status": "ready" if is_ready else "not_ready",
+            "checks": checks,
+        }
+        if not is_ready:
+            raise AppException(
+                BusinessErrorCode.DEPENDENCY_NOT_READY,
+                "系统未就绪",
+                details=checks,
+                data=payload,
+            )
+        return payload
 
 
 def get_system_service() -> SystemService:
     """构造系统服务依赖。"""
     return SystemService()
-

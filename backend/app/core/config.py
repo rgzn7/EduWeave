@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     mysql_database: str = "eduweave"
 
     redis_url: str
+    task_eager_mode: bool = False
 
     jwt_secret: str
     jwt_access_token_expire_minutes: int = 120

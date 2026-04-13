@@ -24,6 +24,8 @@ dependencies = [
   "pymilvus>=2.5.5,<3.0.0",
   "esdk-obs-python>=3.24.6,<4.0.0",
   "httpx>=0.28.1,<1.0.0",
+  "python-multipart>=0.0.20,<1.0.0",
+  "pypdf>=5.4.0,<6.0.0",
 ]
 
 [project.optional-dependencies]
@@ -38,7 +40,12 @@ packages = [
   "app.core",
   "app.modules",
   "app.modules.auth",
+  "app.modules.learner_profile",
+  "app.modules.parsing",
+  "app.modules.project",
   "app.modules.system",
+  "app.modules.task_center",
+  "app.modules.textbook",
   "app.schemas",
   "app.shared",
   "app.shared.llm",
@@ -53,4 +60,6 @@ packages = [
 pythonpath = ["."]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-
+filterwarnings = [
+  "ignore:datetime.datetime.utcfromtimestamp\\(\\) is deprecated and scheduled for removal.*:DeprecationWarning:dateutil.tz.tz",
+]

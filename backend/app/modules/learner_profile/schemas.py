@@ -1,0 +1,113 @@
+"""
+@Date: 2026-04-13
+@Author: xisy
+@Discription: 学情模块请求与响应模型
+"""
+
+from datetime import datetime
+from typing import Annotated
+
+from fastapi import Form
+from pydantic import Field
+
+from app.modules.textbook.schemas import FileObjectSummaryResponse
+from app.schemas.base import BaseSchema
+
+
+class LearnerProfileUploadRequest(BaseSchema):
+    """学情上传请求。"""
+
+    title: str | None = Field(default=None, description="文档标题", examples=["学生学情分析"])
+    grade_code: str | None = Field(default=None, description="年级编码", examples=["grade_6"])
+    subject_scope: str | None = Field(default=None, description="学科范围", examples=["english"])
+    textbook_version_hint_id: int | None = Field(default=None, description="教材提示版本主键", examples=[1])
+    auto_extract: bool = Field(default=True, description="是否立即创建抽取任务", examples=[True])
+    set_as_current: bool = Field(default=False, description="是否在成功后设为当前学情版本", examples=[True])
+
+    @classmethod
+    def as_form(
+        cls,
+        title: Annotated[str | None, Form(description="文档标题", examples=["学生学情分析"])] = None,
+        grade_code: Annotated[str | None, Form(description="年级编码", examples=["grade_6"])] = None,
+        subject_scope: Annotated[str | None, Form(description="学科范围", examples=["english"])] = None,
+        textbook_version_hint_id: Annotated[int | None, Form(description="教材提示版本主键", examples=[1])] = None,
+        auto_extract: Annotated[bool, Form(description="是否立即创建抽取任务", examples=[True])] = True,
+        set_as_current: Annotated[bool, Form(description="是否在成功后设为当前学情版本", examples=[True])] = False,
+    ) -> "LearnerProfileUploadRequest":
+        """将 multipart/form-data 字段转换为学情上传请求模型。"""
+        return cls(
+            title=title,
+            grade_code=grade_code,
+            subject_scope=subject_scope,
+            textbook_version_hint_id=textbook_version_hint_id,
+            auto_extract=auto_extract,
+            set_as_current=set_as_current,
+        )
+
+
+class LearnerProfileRecordResponse(BaseSchema):
+    """学情画像记录响应。"""
+
+    id: int = Field(description="画像记录主键", examples=[1])
+    project_id: int = Field(description="所属项目主键", examples=[1])
+    profile_version_id: int = Field(description="学情版本主键", examples=[1])
+    student_key: str = Field(description="学生标识", examples=["学生1_1"])
+    student_name: str | None = Field(default=None, description="学生姓名")
+    is_anonymous: int = Field(description="是否匿名", examples=[0])
+    region_name: str | None = Field(default=None, description="地区名称")
+    grade_code: str | None = Field(default=None, description="年级编码")
+    subject_code: str = Field(description="学科编码", examples=["math"])
+    textbook_version_hint_id: int | None = Field(default=None, description="教材提示版本主键")
+    score_value: float | None = Field(default=None, description="分数")
+    advantage_tags_json: dict | None = Field(default=None, description="优势标签")
+    weakness_tags_json: dict | None = Field(default=None, description="薄弱标签")
+    ability_tags_json: dict | None = Field(default=None, description="能力标签")
+    habit_tags_json: dict | None = Field(default=None, description="学习习惯标签")
+    behavior_traits_json: dict | None = Field(default=None, description="行为特征")
+    time_plan_json: dict | None = Field(default=None, description="时间规划")
+    summary_text: str | None = Field(default=None, description="摘要文本")
+    evidence_json: dict | None = Field(default=None, description="原文依据")
+    sort_order: int = Field(description="排序号", examples=[0])
+    created_at: datetime = Field(description="创建时间")
+    updated_at: datetime = Field(description="更新时间")
+
+
+class LearnerProfileVersionResponse(BaseSchema):
+    """学情版本响应。"""
+
+    id: int = Field(description="学情版本主键", examples=[1])
+    project_id: int = Field(description="所属项目主键", examples=[1])
+    profile_file_id: int = Field(description="学情文件主键", examples=[1])
+    parent_version_id: int | None = Field(default=None, description="父版本主键")
+    version_no: int = Field(description="版本号", examples=[1])
+    textbook_version_hint_id: int | None = Field(default=None, description="教材提示版本主键")
+    grade_code: str | None = Field(default=None, description="年级编码")
+    subject_scope: str | None = Field(default=None, description="学科范围")
+    extract_status: str = Field(description="抽取状态", examples=["success"])
+    review_status: str = Field(description="审核状态", examples=["pending"])
+    version_status: str = Field(description="版本状态", examples=["ready"])
+    summary_text: str | None = Field(default=None, description="摘要文本")
+    raw_result_json: dict | None = Field(default=None, description="抽取结果 JSON")
+    source_snapshot_json: dict | None = Field(default=None, description="输入快照")
+    created_by: int | None = Field(default=None, description="创建人")
+    records: list[LearnerProfileRecordResponse] = Field(description="画像记录列表")
+    created_at: datetime = Field(description="创建时间")
+    updated_at: datetime = Field(description="更新时间")
+
+
+class LearnerProfileFileListItemResponse(BaseSchema):
+    """学情文件列表项响应。"""
+
+    id: int = Field(description="学情文件主键", examples=[1])
+    project_id: int = Field(description="所属项目主键", examples=[1])
+    source_file_id: int = Field(description="源文件主键", examples=[1])
+    title: str = Field(description="学情文档标题", examples=["学生1学情分析"])
+    file_status: str = Field(description="文件状态", examples=["success"])
+    source_file: FileObjectSummaryResponse = Field(description="源文件摘要")
+    latest_version: LearnerProfileVersionResponse | None = Field(default=None, description="最新学情版本")
+    created_at: datetime = Field(description="创建时间")
+    updated_at: datetime = Field(description="更新时间")
+
+
+class LearnerProfileFileDetailResponse(LearnerProfileFileListItemResponse):
+    """学情文件详情响应。"""

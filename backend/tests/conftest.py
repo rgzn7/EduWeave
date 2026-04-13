@@ -25,6 +25,7 @@ os.environ.setdefault("MYSQL_USER", "root")
 os.environ.setdefault("MYSQL_PASSWORD", "boss1114")
 os.environ.setdefault("MYSQL_DATABASE", "eduweave")
 os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
+os.environ.setdefault("TASK_EAGER_MODE", "1")
 os.environ.setdefault("JWT_SECRET", "test-secret")
 os.environ.setdefault("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "120")
 os.environ.setdefault("JWT_ALGORITHM", "HS256")
@@ -52,6 +53,7 @@ from app.core.database import get_db_session
 from app.core.security import hash_password
 from app.main import app
 from app.modules.auth.models import SysUser
+from app.shared.storage import ObsStorageClient
 
 TEST_PASSWORD = "Teacher@123"
 SCHEMA_SQL_PATH = Path(__file__).resolve().parents[2] / "sql" / "20260413_eduweave_mysql_27_tables.sql"
@@ -154,7 +156,24 @@ def seeded_session_factory(mysql_session_factory):
     """初始化测试教师账号并返回会话工厂。"""
     session = mysql_session_factory()
     try:
-        session.execute(text("DELETE FROM sys_user"))
+        session.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+        for table_name in [
+            "task_step_record",
+            "task_record",
+            "parse_issue",
+            "parse_block",
+            "parse_page",
+            "parse_version",
+            "learner_profile_record",
+            "learner_profile_version",
+            "learner_profile_file",
+            "textbook_version",
+            "file_object",
+            "project",
+            "sys_user",
+        ]:
+            session.execute(text(f"DELETE FROM {table_name}"))
+        session.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
         session.commit()
         session.add_all(
             [
@@ -197,3 +216,37 @@ def client(seeded_session_factory):
         yield test_client
 
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def mock_obs_storage(monkeypatch: pytest.MonkeyPatch):
+    """使用内存对象模拟 OBS 读写。"""
+    storage: dict[str, bytes] = {}
+
+    def fake_upload_bytes(self, object_key: str, content: bytes, content_type=None, metadata=None):
+        _ = (self, content_type, metadata)
+        storage[object_key] = content
+        return {
+            "bucket_name": get_settings().obs_bucket,
+            "object_key": object_key,
+            "etag": "fake-etag",
+            "request_id": "fake-request-id",
+        }
+
+    def fake_download_bytes(self, object_key: str) -> bytes:
+        return storage[object_key]
+
+    def fake_delete_object(self, object_key: str) -> bool:
+        storage.pop(object_key, None)
+        return True
+
+    def fake_head_object(self, object_key: str) -> dict[str, int]:
+        if object_key not in storage:
+            raise RuntimeError("对象不存在")
+        return {"etag": "fake-etag", "content_length": len(storage[object_key]), "last_modified": None}
+
+    monkeypatch.setattr(ObsStorageClient, "upload_bytes", fake_upload_bytes)
+    monkeypatch.setattr(ObsStorageClient, "download_bytes", fake_download_bytes)
+    monkeypatch.setattr(ObsStorageClient, "delete_object", fake_delete_object)
+    monkeypatch.setattr(ObsStorageClient, "head_object", fake_head_object)
+    yield storage

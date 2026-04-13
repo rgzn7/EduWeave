@@ -7,11 +7,10 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
 
 from app.modules.system.schemas import HealthResponse, ReadyResponse
 from app.modules.system.service import SystemService, get_system_service
-from app.schemas.response import ApiResponse, ErrorDetail, ResponseFactory
+from app.schemas.response import ApiResponse, ResponseFactory
 
 router = APIRouter(tags=["系统"])
 
@@ -37,12 +36,5 @@ def health(service: Annotated[SystemService, Depends(get_system_service)]):
 )
 def ready(service: Annotated[SystemService, Depends(get_system_service)]):
     """应用依赖就绪检查接口。"""
-    status_code, payload = service.get_ready()
-    if status_code == 200:
-        return ResponseFactory.success(payload, "系统已就绪", status_code=status_code)
-
-    error = ErrorDetail(code="DEPENDENCY_NOT_READY", message="系统未就绪", details=payload["checks"])
-    return JSONResponse(
-        status_code=status_code,
-        content=ResponseFactory.error(status_code, "系统未就绪", [error], data=payload),
-    )
+    payload = service.get_ready()
+    return ResponseFactory.success(payload, "系统已就绪")

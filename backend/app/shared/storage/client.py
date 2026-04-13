@@ -6,7 +6,12 @@
 
 from typing import Any
 
+from obs import PutObjectHeader
+
 from app.core.config import Settings, get_settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class ObsStorageClient:
@@ -39,6 +44,64 @@ class ObsStorageClient:
         cleaned_filename = filename.lstrip("/").strip()
         return "/".join([self.settings.obs_base_prefix, *cleaned_segments, cleaned_filename])
 
+    def upload_bytes(
+        self,
+        object_key: str,
+        content: bytes,
+        content_type: str | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """上传二进制内容到 OBS。"""
+        headers = PutObjectHeader()
+        if content_type:
+            headers.contentType = content_type
+        response = self.get_client().putContent(
+            self.settings.obs_bucket,
+            object_key,
+            content=content,
+            metadata=metadata,
+            headers=headers,
+        )
+        if int(getattr(response, "status", 500)) >= 400:
+            error_message = getattr(response, "errorMessage", "OBS 上传失败")
+            logger.error("OBS 上传失败", object_key=object_key, error_message=error_message)
+            raise RuntimeError(error_message)
+        return {
+            "bucket_name": self.settings.obs_bucket,
+            "object_key": object_key,
+            "etag": getattr(response, "etag", None),
+            "request_id": getattr(response, "requestId", None),
+        }
+
+    def download_bytes(self, object_key: str) -> bytes:
+        """读取对象二进制内容。"""
+        response = self.get_client().getObject(
+            self.settings.obs_bucket,
+            object_key,
+            loadStreamInMemory=True,
+        )
+        if int(getattr(response, "status", 500)) >= 400:
+            error_message = getattr(response, "errorMessage", "OBS 下载失败")
+            raise RuntimeError(error_message)
+        return bytes(getattr(response.body, "buffer", b"") or b"")
+
+    def delete_object(self, object_key: str) -> bool:
+        """删除对象。"""
+        response = self.get_client().deleteObject(self.settings.obs_bucket, object_key)
+        return int(getattr(response, "status", 500)) < 400
+
+    def head_object(self, object_key: str) -> dict[str, Any]:
+        """查询对象元数据。"""
+        response = self.get_client().headObject(self.settings.obs_bucket, object_key)
+        if int(getattr(response, "status", 500)) >= 400:
+            error_message = getattr(response, "errorMessage", "OBS 对象不存在")
+            raise RuntimeError(error_message)
+        return {
+            "etag": getattr(response, "etag", None),
+            "content_length": getattr(response, "contentLength", None),
+            "last_modified": getattr(response, "lastModified", None),
+        }
+
     def health_check(self) -> dict[str, str]:
         """执行 OBS 基础连通性检查。"""
         try:
@@ -49,4 +112,3 @@ class ObsStorageClient:
             return {"status": "error", "detail": f"OBS 检查失败：{getattr(response, 'errorMessage', '未知错误')}"}
         except Exception as exc:  # noqa: BLE001
             return {"status": "error", "detail": f"OBS 检查异常：{exc}"}
-

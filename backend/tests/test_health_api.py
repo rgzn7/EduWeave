@@ -4,6 +4,7 @@
 @Discription: 健康检查接口测试
 """
 
+from app.core.exceptions import AppException, BusinessErrorCode
 from app.main import app
 from app.modules.system.service import get_system_service
 
@@ -20,35 +21,35 @@ class ReadySystemServiceStub:
         }
 
     def get_ready(self):
-        return (
-            200,
-            {
-                "status": "ready",
-                "checks": {
-                    "mysql": {"status": "ok", "detail": "MySQL 连接正常", "latency_ms": 1.0},
-                    "redis": {"status": "ok", "detail": "Redis 连接正常", "latency_ms": 1.0},
-                    "milvus": {"status": "ok", "detail": "Milvus 连接正常"},
-                    "obs": {"status": "not_checked", "detail": "OBS 连通性检查未纳入就绪门禁"},
-                },
+        return {
+            "status": "ready",
+            "checks": {
+                "mysql": {"status": "ok", "detail": "MySQL 连接正常", "latency_ms": 1.0},
+                "redis": {"status": "ok", "detail": "Redis 连接正常", "latency_ms": 1.0},
+                "milvus": {"status": "ok", "detail": "Milvus 连接正常"},
+                "obs": {"status": "not_checked", "detail": "OBS 连通性检查未纳入就绪门禁"},
             },
-        )
+        }
 
 
 class NotReadySystemServiceStub(ReadySystemServiceStub):
     """未就绪系统服务桩。"""
 
     def get_ready(self):
-        return (
-            503,
-            {
-                "status": "not_ready",
-                "checks": {
-                    "mysql": {"status": "ok", "detail": "MySQL 连接正常", "latency_ms": 1.0},
-                    "redis": {"status": "ok", "detail": "Redis 连接正常", "latency_ms": 1.0},
-                    "milvus": {"status": "error", "detail": "Milvus 检查失败"},
-                    "obs": {"status": "not_checked", "detail": "OBS 连通性检查未纳入就绪门禁"},
-                },
+        payload = {
+            "status": "not_ready",
+            "checks": {
+                "mysql": {"status": "ok", "detail": "MySQL 连接正常", "latency_ms": 1.0},
+                "redis": {"status": "ok", "detail": "Redis 连接正常", "latency_ms": 1.0},
+                "milvus": {"status": "error", "detail": "Milvus 检查失败"},
+                "obs": {"status": "not_checked", "detail": "OBS 连通性检查未纳入就绪门禁"},
             },
+        }
+        raise AppException(
+            BusinessErrorCode.DEPENDENCY_NOT_READY,
+            "系统未就绪",
+            details=payload["checks"],
+            data=payload,
         )
 
 
@@ -87,4 +88,3 @@ def test_ready_should_return_503_when_milvus_is_unhealthy(client) -> None:
     assert payload["success"] is False
     assert payload["data"]["status"] == "not_ready"
     assert payload["errors"][0]["code"] == "DEPENDENCY_NOT_READY"
-

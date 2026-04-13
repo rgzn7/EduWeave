@@ -28,6 +28,16 @@ class BusinessErrorCode(str, Enum):
     SYSTEM_CONFIG_INVALID = "SYSTEM_CONFIG_INVALID"
     EXTERNAL_SERVICE_ERROR = "EXTERNAL_SERVICE_ERROR"
     DEPENDENCY_NOT_READY = "DEPENDENCY_NOT_READY"
+    PROJECT_NOT_FOUND = "PROJECT_NOT_FOUND"
+    PROJECT_REFERENCE_INVALID = "PROJECT_REFERENCE_INVALID"
+    TEXTBOOK_NOT_FOUND = "TEXTBOOK_NOT_FOUND"
+    LEARNER_PROFILE_NOT_FOUND = "LEARNER_PROFILE_NOT_FOUND"
+    PARSE_VERSION_NOT_FOUND = "PARSE_VERSION_NOT_FOUND"
+    TASK_NOT_FOUND = "TASK_NOT_FOUND"
+    INVALID_FILE_TYPE = "INVALID_FILE_TYPE"
+    FILE_UPLOAD_FAILED = "FILE_UPLOAD_FAILED"
+    TASK_CONFLICT = "TASK_CONFLICT"
+    RESOURCE_FORBIDDEN = "RESOURCE_FORBIDDEN"
 
 
 ERROR_CODE_HTTP_MAPPING: dict[BusinessErrorCode, int] = {
@@ -39,6 +49,16 @@ ERROR_CODE_HTTP_MAPPING: dict[BusinessErrorCode, int] = {
     BusinessErrorCode.SYSTEM_CONFIG_INVALID: 500,
     BusinessErrorCode.EXTERNAL_SERVICE_ERROR: 503,
     BusinessErrorCode.DEPENDENCY_NOT_READY: 503,
+    BusinessErrorCode.PROJECT_NOT_FOUND: 404,
+    BusinessErrorCode.PROJECT_REFERENCE_INVALID: 422,
+    BusinessErrorCode.TEXTBOOK_NOT_FOUND: 404,
+    BusinessErrorCode.LEARNER_PROFILE_NOT_FOUND: 404,
+    BusinessErrorCode.PARSE_VERSION_NOT_FOUND: 404,
+    BusinessErrorCode.TASK_NOT_FOUND: 404,
+    BusinessErrorCode.INVALID_FILE_TYPE: 422,
+    BusinessErrorCode.FILE_UPLOAD_FAILED: 503,
+    BusinessErrorCode.TASK_CONFLICT: 409,
+    BusinessErrorCode.RESOURCE_FORBIDDEN: 403,
 }
 
 
@@ -50,11 +70,13 @@ class AppException(Exception):
         code: BusinessErrorCode,
         message: str,
         details: dict[str, Any] | None = None,
+        data: Any = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.details = details
+        self.data = data
 
     @property
     def status_code(self) -> int:
@@ -66,7 +88,7 @@ async def app_exception_handler(_: Request, exc: AppException) -> JSONResponse:
     error = ErrorDetail(code=exc.code.value, message=exc.message, details=exc.details)
     return JSONResponse(
         status_code=exc.status_code,
-        content=ResponseFactory.error(exc.status_code, exc.message, [error]),
+        content=ResponseFactory.error(exc.status_code, exc.message, [error], data=exc.data),
     )
 
 
@@ -102,4 +124,3 @@ def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(AppException, app_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)
-
