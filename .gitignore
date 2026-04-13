@@ -1,0 +1,58 @@
+# @Date: 2026-04-13
+# @Author: xisy
+# @Discription: EduWeave 项目 Git 忽略规则
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器与 IDE
+.vscode/
+.idea/
+
+# Python 缓存与构建产物
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+.eggs/
+*.egg-info/
+pip-wheel-metadata/
+
+# Python 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# 环境变量文件
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.sample
+!**/.env.template
+
+# 日志与临时文件
+*.log
+*.pid
+*.tmp
+*.temp
+
+# 本地数据库与运行态文件
+*.sqlite3
+*.db

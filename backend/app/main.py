@@ -1,0 +1,55 @@
+"""
+@Date: 2026-04-11
+@Author: xisy
+@Discription: FastAPI 应用启动入口
+"""
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.core.config import get_settings
+from app.core.exceptions import register_exception_handlers
+from app.core.logging import configure_logging, get_logger
+from app.core.middleware import AccessLogMiddleware, RequestIdMiddleware
+from app.modules.auth.router import router as auth_router
+from app.modules.system.router import router as system_router
+
+settings = get_settings()
+configure_logging(settings.log_level)
+logger = get_logger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """统一管理应用生命周期。"""
+    logger.info("应用启动完成", app_name=settings.app_name, app_env=settings.app_env)
+    yield
+    logger.info("应用关闭完成", app_name=settings.app_name, app_env=settings.app_env)
+
+
+app = FastAPI(
+    title=settings.app_name,
+    version=settings.app_version,
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+app.add_middleware(RequestIdMiddleware)
+app.add_middleware(AccessLogMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_allowed_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Request-Id"],
+)
+
+register_exception_handlers(app)
+
+app.include_router(system_router)
+app.include_router(auth_router, prefix=settings.api_v1_prefix)
+
