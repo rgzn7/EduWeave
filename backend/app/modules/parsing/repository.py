@@ -30,10 +30,21 @@ class ParsingRepository:
         statement = select(TextbookVersion).where(TextbookVersion.id == textbook_version_id)
         return self.session.scalar(statement)
 
+    def get_parse_version(self, parse_version_id: int) -> ParseVersion | None:
+        """按主键查询解析版本。"""
+        statement = select(ParseVersion).where(ParseVersion.id == parse_version_id)
+        return self.session.scalar(statement)
+
     def get_file_object(self, file_object_id: int) -> FileObject | None:
         """按主键查询文件对象。"""
         statement = select(FileObject).where(FileObject.id == file_object_id)
         return self.session.scalar(statement)
+
+    def create_file_object(self, file_object: FileObject) -> FileObject:
+        """创建文件对象。"""
+        self.session.add(file_object)
+        self.session.flush()
+        return file_object
 
     def get_next_parse_version_no(self, textbook_version_id: int) -> int:
         """获取教材版本下一个解析版本号。"""
@@ -41,11 +52,110 @@ class ParsingRepository:
         current_max = self.session.scalar(statement)
         return int(current_max or 0) + 1
 
+    def get_active_parse_version(self, textbook_version_id: int) -> ParseVersion | None:
+        """查询教材当前活动解析版本。"""
+        statement = (
+            select(ParseVersion)
+            .where(
+                ParseVersion.textbook_version_id == textbook_version_id,
+                ParseVersion.version_status == "ready",
+            )
+            .order_by(ParseVersion.version_no.desc(), ParseVersion.id.desc())
+            .limit(1)
+        )
+        return self.session.scalar(statement)
+
     def create_parse_version(self, parse_version: ParseVersion) -> ParseVersion:
         """创建解析版本。"""
         self.session.add(parse_version)
         self.session.flush()
         return parse_version
+
+    def build_parse_page_model(
+        self,
+        *,
+        parse_version_id: int,
+        page_no: int,
+        source_page_image_file_id: int | None,
+        page_status: str,
+        has_issue: int,
+        text_content: str | None,
+        markdown_content: str | None,
+        layout_json: dict | None,
+    ) -> ParsePage:
+        """构造解析页模型。"""
+        return ParsePage(
+            parse_version_id=parse_version_id,
+            page_no=page_no,
+            source_page_image_file_id=source_page_image_file_id,
+            page_status=page_status,
+            has_issue=has_issue,
+            text_content=text_content,
+            markdown_content=markdown_content,
+            layout_json=layout_json,
+        )
+
+    def build_parse_block_model(
+        self,
+        *,
+        parse_version_id: int,
+        parse_page_id: int,
+        block_no: int,
+        block_type: str,
+        heading_level: int | None,
+        bbox_json: dict | None,
+        text_content: str | None,
+        markdown_content: str | None,
+        asset_file_id: int | None,
+        origin_ref_json: dict | None,
+        is_deleted: int,
+    ) -> ParseBlock:
+        """构造解析块模型。"""
+        return ParseBlock(
+            parse_version_id=parse_version_id,
+            parse_page_id=parse_page_id,
+            block_no=block_no,
+            block_type=block_type,
+            heading_level=heading_level,
+            bbox_json=bbox_json,
+            text_content=text_content,
+            markdown_content=markdown_content,
+            asset_file_id=asset_file_id,
+            origin_ref_json=origin_ref_json,
+            is_deleted=is_deleted,
+        )
+
+    def build_parse_issue_model(
+        self,
+        *,
+        parse_version_id: int,
+        parse_page_id: int | None,
+        parse_block_id: int | None,
+        related_reparse_version_id: int | None,
+        issue_type: str,
+        severity: str,
+        issue_status: str,
+        detected_by: str,
+        description: str | None,
+        resolution_note: str | None,
+        created_by: int | None,
+        resolved_by: int | None,
+    ) -> ParseIssue:
+        """构造解析异常模型。"""
+        return ParseIssue(
+            parse_version_id=parse_version_id,
+            parse_page_id=parse_page_id,
+            parse_block_id=parse_block_id,
+            related_reparse_version_id=related_reparse_version_id,
+            issue_type=issue_type,
+            severity=severity,
+            issue_status=issue_status,
+            detected_by=detected_by,
+            description=description,
+            resolution_note=resolution_note,
+            created_by=created_by,
+            resolved_by=resolved_by,
+        )
 
     def create_parse_page(self, parse_page: ParsePage) -> ParsePage:
         """创建解析页。"""
@@ -113,6 +223,15 @@ class ParsingRepository:
         statement = select(func.count()).select_from(ParsePage).where(ParsePage.parse_version_id == parse_version_id)
         return int(self.session.scalar(statement) or 0)
 
+    def list_all_parse_pages(self, parse_version_id: int) -> list[ParsePage]:
+        """查询解析版本下全部页。"""
+        statement = (
+            select(ParsePage)
+            .where(ParsePage.parse_version_id == parse_version_id)
+            .order_by(ParsePage.page_no.asc())
+        )
+        return list(self.session.scalars(statement))
+
     def list_blocks_by_page_ids(self, page_ids: list[int]) -> list[ParseBlock]:
         """查询指定解析页的块。"""
         if not page_ids:
@@ -120,6 +239,15 @@ class ParsingRepository:
         statement = (
             select(ParseBlock)
             .where(ParseBlock.parse_page_id.in_(page_ids))
+            .order_by(ParseBlock.parse_page_id.asc(), ParseBlock.block_no.asc())
+        )
+        return list(self.session.scalars(statement))
+
+    def list_all_blocks_by_version(self, parse_version_id: int) -> list[ParseBlock]:
+        """查询解析版本下全部结构块。"""
+        statement = (
+            select(ParseBlock)
+            .where(ParseBlock.parse_version_id == parse_version_id)
             .order_by(ParseBlock.parse_page_id.asc(), ParseBlock.block_no.asc())
         )
         return list(self.session.scalars(statement))
@@ -134,6 +262,32 @@ class ParsingRepository:
             .limit(limit)
         )
         return list(self.session.scalars(statement))
+
+    def list_all_parse_issues(self, parse_version_id: int) -> list[ParseIssue]:
+        """查询解析版本下全部异常。"""
+        statement = (
+            select(ParseIssue)
+            .where(ParseIssue.parse_version_id == parse_version_id)
+            .order_by(ParseIssue.created_at.asc(), ParseIssue.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
+    def archive_other_parse_versions(self, textbook_version_id: int, exclude_parse_version_id: int) -> None:
+        """将教材下除目标版本外的活动版本归档。"""
+        statement = select(ParseVersion).where(
+            ParseVersion.textbook_version_id == textbook_version_id,
+            ParseVersion.id != exclude_parse_version_id,
+            ParseVersion.version_status == "ready",
+        )
+        for parse_version in self.session.scalars(statement):
+            parse_version.version_status = "archived"
+            self.session.add(parse_version)
+        self.session.flush()
+
+    def get_parse_page_by_version_and_page_no(self, parse_version_id: int, page_no: int) -> ParsePage | None:
+        """按版本和页码查询解析页。"""
+        statement = select(ParsePage).where(ParsePage.parse_version_id == parse_version_id, ParsePage.page_no == page_no)
+        return self.session.scalar(statement)
 
     def save(self, instance) -> None:
         """保存实体。"""

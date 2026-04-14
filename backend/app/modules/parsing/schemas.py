@@ -1,22 +1,89 @@
 """
-@Date: 2026-04-13
+@Date: 2026-04-14
 @Author: xisy
 @Discription: 解析模块请求与响应模型
 """
 
 from datetime import datetime
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
-from app.modules.task_center.schemas import TaskListItemResponse
+from app.core.constants import MINERU_STRATEGY_VLM_DEFAULT
 from app.schemas.base import BaseSchema
 
 
 class ParseTaskCreateRequest(BaseSchema):
     """解析任务创建请求。"""
 
-    parse_mode: str = Field(default="full", description="解析模式", examples=["full"])
-    strategy_code: str = Field(description="解析策略编码", min_length=1, max_length=64, examples=["p0_placeholder"])
+    strategy_code: str = Field(
+        default=MINERU_STRATEGY_VLM_DEFAULT,
+        description="解析策略编码",
+        min_length=1,
+        max_length=64,
+        examples=[MINERU_STRATEGY_VLM_DEFAULT],
+    )
+    set_as_current_on_success: bool = Field(
+        default=False,
+        description="是否在成功后设为当前可用解析版本",
+        examples=[True],
+    )
+
+
+class ParseReparseTaskCreateRequest(BaseSchema):
+    """页级重解析任务创建请求。"""
+
+    page_range_text: str = Field(description="页码范围文本", min_length=1, max_length=255, examples=["2-3,5"])
+    strategy_code: str = Field(
+        default=MINERU_STRATEGY_VLM_DEFAULT,
+        description="解析策略编码",
+        min_length=1,
+        max_length=64,
+        examples=[MINERU_STRATEGY_VLM_DEFAULT],
+    )
+    set_as_current_on_success: bool = Field(
+        default=False,
+        description="是否在成功后设为当前可用解析版本",
+        examples=[True],
+    )
+
+    @field_validator("page_range_text")
+    @classmethod
+    def validate_page_range_text(cls, value: str) -> str:
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise ValueError("page_range_text 不能为空")
+        return normalized_value
+
+
+class ParseManualRevisionBlockRequest(BaseSchema):
+    """解析块人工修正请求。"""
+
+    block_no: int = Field(description="块序号", ge=1, examples=[1])
+    block_type: str = Field(description="块类型", min_length=1, max_length=32, examples=["paragraph"])
+    heading_level: int | None = Field(default=None, description="标题级别", ge=1, le=6)
+    bbox_json: dict | None = Field(default=None, description="坐标框")
+    text_content: str | None = Field(default=None, description="文本内容")
+    markdown_content: str | None = Field(default=None, description="Markdown 内容")
+    asset_file_id: int | None = Field(default=None, description="关联资源文件主键", examples=[1])
+    origin_ref_json: dict | None = Field(default=None, description="原始来源引用")
+    is_deleted: int = Field(default=0, description="是否逻辑删除", ge=0, le=1, examples=[0])
+
+
+class ParseManualRevisionPageRequest(BaseSchema):
+    """解析页人工修正请求。"""
+
+    page_no: int = Field(description="页码", ge=1, examples=[1])
+    page_status: str = Field(default="success", description="页状态", min_length=1, max_length=32, examples=["success"])
+    text_content: str | None = Field(default=None, description="页文本内容")
+    markdown_content: str | None = Field(default=None, description="页 Markdown 内容")
+    layout_json: dict | None = Field(default=None, description="页布局 JSON")
+    blocks: list[ParseManualRevisionBlockRequest] = Field(description="块列表", min_length=1)
+
+
+class ParseManualRevisionRequest(BaseSchema):
+    """解析版本人工修正请求。"""
+
+    pages: list[ParseManualRevisionPageRequest] = Field(description="需要替换的页列表", min_length=1)
     set_as_current_on_success: bool = Field(
         default=False,
         description="是否在成功后设为当前可用解析版本",
@@ -90,13 +157,15 @@ class ParseVersionListItemResponse(BaseSchema):
     version_no: int = Field(description="版本号", examples=[1])
     parse_mode: str = Field(description="解析模式", examples=["full"])
     page_range_text: str | None = Field(default=None, description="页范围文本")
-    strategy_code: str = Field(description="解析策略编码", examples=["p0_placeholder"])
+    strategy_code: str = Field(description="解析策略编码", examples=[MINERU_STRATEGY_VLM_DEFAULT])
     mineru_model: str | None = Field(default=None, description="MinerU 模型名称")
     parse_status: str = Field(description="解析状态", examples=["success"])
     review_status: str = Field(description="审核状态", examples=["pending"])
     version_status: str = Field(description="版本状态", examples=["ready"])
     page_count: int | None = Field(default=None, description="页数")
     issue_count: int = Field(description="异常数量", examples=[1])
+    source_markdown_file_id: int | None = Field(default=None, description="解析 Markdown 文件主键")
+    source_json_file_id: int | None = Field(default=None, description="解析 JSON 文件主键")
     asset_manifest_json: dict | None = Field(default=None, description="资源清单")
     diff_json: dict | None = Field(default=None, description="差异摘要")
     error_summary: str | None = Field(default=None, description="错误摘要")
@@ -108,15 +177,3 @@ class ParseVersionListItemResponse(BaseSchema):
 
 class ParseVersionDetailResponse(ParseVersionListItemResponse):
     """解析版本详情响应。"""
-
-
-class ParsePagesResponse(BaseSchema):
-    """解析页分页结果。"""
-
-    items: list[ParsePageResponse] = Field(description="解析页列表")
-
-
-class ParseIssuesResponse(BaseSchema):
-    """解析异常分页结果。"""
-
-    items: list[ParseIssueResponse] = Field(description="解析异常列表")

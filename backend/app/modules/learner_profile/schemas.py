@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-13
+@Date: 2026-04-14
 @Author: xisy
 @Discription: 学情模块请求与响应模型
 """
@@ -19,7 +19,7 @@ class LearnerProfileUploadRequest(BaseSchema):
 
     title: str | None = Field(default=None, description="文档标题", examples=["学生学情分析"])
     grade_code: str | None = Field(default=None, description="年级编码", examples=["grade_6"])
-    subject_scope: str | None = Field(default=None, description="学科范围", examples=["english"])
+    subject_scope: str | None = Field(default=None, description="学科范围", examples=["english,math"])
     textbook_version_hint_id: int | None = Field(default=None, description="教材提示版本主键", examples=[1])
     auto_extract: bool = Field(default=True, description="是否立即创建抽取任务", examples=[True])
     set_as_current: bool = Field(default=False, description="是否在成功后设为当前学情版本", examples=[True])
@@ -29,7 +29,7 @@ class LearnerProfileUploadRequest(BaseSchema):
         cls,
         title: Annotated[str | None, Form(description="文档标题", examples=["学生学情分析"])] = None,
         grade_code: Annotated[str | None, Form(description="年级编码", examples=["grade_6"])] = None,
-        subject_scope: Annotated[str | None, Form(description="学科范围", examples=["english"])] = None,
+        subject_scope: Annotated[str | None, Form(description="学科范围", examples=["english,math"])] = None,
         textbook_version_hint_id: Annotated[int | None, Form(description="教材提示版本主键", examples=[1])] = None,
         auto_extract: Annotated[bool, Form(description="是否立即创建抽取任务", examples=[True])] = True,
         set_as_current: Annotated[bool, Form(description="是否在成功后设为当前学情版本", examples=[True])] = False,
@@ -45,13 +45,45 @@ class LearnerProfileUploadRequest(BaseSchema):
         )
 
 
+class LearnerProfileManualRevisionRecordRequest(BaseSchema):
+    """学情画像人工修正记录请求。"""
+
+    student_key: str = Field(description="学生标识", min_length=1, max_length=128, examples=["王xx_math"])
+    student_name: str | None = Field(default=None, description="学生姓名")
+    is_anonymous: int = Field(default=0, description="是否匿名", ge=0, le=1, examples=[0])
+    region_name: str | None = Field(default=None, description="地区名称")
+    grade_code: str | None = Field(default=None, description="年级编码")
+    subject_code: str = Field(description="学科编码", min_length=1, max_length=32, examples=["math"])
+    textbook_version_hint_id: int | None = Field(default=None, description="教材提示版本主键", examples=[1])
+    score_value: float | None = Field(default=None, description="分数", examples=[82.0])
+    advantage_tags_json: dict | None = Field(default=None, description="优势标签")
+    weakness_tags_json: dict | None = Field(default=None, description="薄弱标签")
+    ability_tags_json: dict | None = Field(default=None, description="能力标签")
+    habit_tags_json: dict | None = Field(default=None, description="学习习惯标签")
+    behavior_traits_json: dict | None = Field(default=None, description="行为特征标签")
+    time_plan_json: dict | None = Field(default=None, description="时间规划标签")
+    summary_text: str | None = Field(default=None, description="摘要文本")
+    evidence_json: dict | None = Field(default=None, description="证据 JSON")
+    sort_order: int = Field(default=0, description="排序号", ge=0, examples=[0])
+
+
+class LearnerProfileManualRevisionRequest(BaseSchema):
+    """学情版本人工修正请求。"""
+
+    summary_text: str | None = Field(default=None, description="版本摘要")
+    grade_code: str | None = Field(default=None, description="年级编码")
+    subject_scope: str | None = Field(default=None, description="学科范围")
+    records: list[LearnerProfileManualRevisionRecordRequest] = Field(description="完整画像记录列表", min_length=1)
+    set_as_current: bool = Field(default=False, description="是否设为项目当前学情版本", examples=[True])
+
+
 class LearnerProfileRecordResponse(BaseSchema):
     """学情画像记录响应。"""
 
     id: int = Field(description="画像记录主键", examples=[1])
     project_id: int = Field(description="所属项目主键", examples=[1])
     profile_version_id: int = Field(description="学情版本主键", examples=[1])
-    student_key: str = Field(description="学生标识", examples=["学生1_1"])
+    student_key: str = Field(description="学生标识", examples=["王xx_math"])
     student_name: str | None = Field(default=None, description="学生姓名")
     is_anonymous: int = Field(description="是否匿名", examples=[0])
     region_name: str | None = Field(default=None, description="地区名称")
@@ -72,8 +104,8 @@ class LearnerProfileRecordResponse(BaseSchema):
     updated_at: datetime = Field(description="更新时间")
 
 
-class LearnerProfileVersionResponse(BaseSchema):
-    """学情版本响应。"""
+class LearnerProfileVersionListItemResponse(BaseSchema):
+    """学情版本列表项响应。"""
 
     id: int = Field(description="学情版本主键", examples=[1])
     project_id: int = Field(description="所属项目主键", examples=[1])
@@ -90,9 +122,14 @@ class LearnerProfileVersionResponse(BaseSchema):
     raw_result_json: dict | None = Field(default=None, description="抽取结果 JSON")
     source_snapshot_json: dict | None = Field(default=None, description="输入快照")
     created_by: int | None = Field(default=None, description="创建人")
-    records: list[LearnerProfileRecordResponse] = Field(description="画像记录列表")
     created_at: datetime = Field(description="创建时间")
     updated_at: datetime = Field(description="更新时间")
+
+
+class LearnerProfileVersionResponse(LearnerProfileVersionListItemResponse):
+    """学情版本响应。"""
+
+    records: list[LearnerProfileRecordResponse] = Field(description="画像记录列表")
 
 
 class LearnerProfileFileListItemResponse(BaseSchema):

@@ -15,7 +15,9 @@ from app.modules.auth.models import SysUser
 from app.modules.parsing.repository import ParsingRepository
 from app.modules.parsing.schemas import (
     ParseIssueResponse,
+    ParseManualRevisionRequest,
     ParsePageResponse,
+    ParseReparseTaskCreateRequest,
     ParseTaskCreateRequest,
     ParseVersionDetailResponse,
     ParseVersionListItemResponse,
@@ -35,7 +37,7 @@ def get_parsing_service(session: Annotated[Session, Depends(get_db_session)]) ->
 @router.post(
     "/textbook-versions/{textbook_version_id}/parse-tasks",
     summary="创建教材解析任务",
-    description="为指定教材版本创建全量解析任务，并按配置同步或异步执行占位解析。",
+    description="为指定教材版本创建全量解析任务，并由 Worker 对接 MinerU 执行真实解析。",
     operation_id="parsing_create_task",
     response_model=ApiResponse[TaskListItemResponse],
     status_code=status.HTTP_201_CREATED,
@@ -53,6 +55,29 @@ def create_parse_task(
         request=request,
     )
     return ResponseFactory.success(task.model_dump(mode="json"), "创建教材解析任务成功", status_code=status.HTTP_201_CREATED)
+
+
+@router.post(
+    "/parse-versions/{parse_version_id}/reparse-tasks",
+    summary="创建页级重解析任务",
+    description="针对指定解析版本的页码范围创建重解析任务，并生成新的解析版本。",
+    operation_id="parsing_create_reparse_task",
+    response_model=ApiResponse[TaskListItemResponse],
+    status_code=status.HTTP_201_CREATED,
+)
+def create_reparse_task(
+    request: ParseReparseTaskCreateRequest,
+    parse_version_id: int = Path(..., description="解析版本主键", examples=[1]),
+    service: Annotated[ParsingService, Depends(get_parsing_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """创建页级重解析任务。"""
+    task = service.create_reparse_task(
+        owner_user_id=current_user.id,
+        parse_version_id=parse_version_id,
+        request=request,
+    )
+    return ResponseFactory.success(task.model_dump(mode="json"), "创建页级重解析任务成功", status_code=status.HTTP_201_CREATED)
 
 
 @router.get(
@@ -164,3 +189,26 @@ def list_parse_issues(
         page_size=page_size,
         message="获取解析异常列表成功",
     )
+
+
+@router.post(
+    "/parse-versions/{parse_version_id}/manual-revisions",
+    summary="保存解析人工修正版本",
+    description="提交指定页的人工修正结果，后端生成新的解析版本并可按需切换为当前有效版本。",
+    operation_id="parsing_create_manual_revision",
+    response_model=ApiResponse[ParseVersionDetailResponse],
+    status_code=status.HTTP_201_CREATED,
+)
+def create_manual_revision(
+    request: ParseManualRevisionRequest,
+    parse_version_id: int = Path(..., description="解析版本主键", examples=[1]),
+    service: Annotated[ParsingService, Depends(get_parsing_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """保存解析人工修正版本。"""
+    detail = service.create_manual_revision(
+        owner_user_id=current_user.id,
+        parse_version_id=parse_version_id,
+        request=request,
+    )
+    return ResponseFactory.success(detail.model_dump(mode="json"), "保存解析人工修正版本成功", status_code=status.HTTP_201_CREATED)

@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-13
+@Date: 2026-04-14
 @Author: xisy
 @Discription: 学情模块业务服务
 """
@@ -14,6 +14,7 @@ from app.core.constants import (
     LEARNER_PROFILE_SOURCE_BIZ_TYPE,
     PROFILE_EXTRACT_TASK_TYPE,
     PROFILE_QUEUE_NAME,
+    REVIEW_STATUS_CONFIRMED,
     TASK_STATUS_PENDING,
 )
 from app.core.exceptions import AppException, BusinessErrorCode
@@ -22,15 +23,19 @@ from app.modules.learner_profile.repository import LearnerProfileRepository
 from app.modules.learner_profile.schemas import (
     LearnerProfileFileDetailResponse,
     LearnerProfileFileListItemResponse,
+    LearnerProfileManualRevisionRequest,
     LearnerProfileRecordResponse,
+    LearnerProfileVersionListItemResponse,
     LearnerProfileVersionResponse,
 )
-from app.modules.p0_models import FileObject, LearnerProfileFile
+from app.modules.p0_models import FileObject, LearnerProfileFile, LearnerProfileRecord, LearnerProfileVersion
 from app.modules.task_center.repository import TaskCenterRepository
+from app.modules.task_center.schemas import TaskListItemResponse
+from app.modules.task_center.service import TaskCenterService
 from app.modules.textbook.schemas import FileObjectSummaryResponse
 from app.shared.queue import dispatch_task
 from app.shared.storage import ObsStorageClient
-from app.shared.utils.datetime_util import DateTimeUtil
+from app.shared.utils import DateTimeUtil
 
 
 class LearnerProfileService:
@@ -62,7 +67,7 @@ class LearnerProfileService:
         auto_extract: bool,
         set_as_current: bool,
     ) -> LearnerProfileFileDetailResponse:
-        """上传学情文件。"""
+        """上传学情文件并按需创建抽取任务。"""
         project = self.repository.get_project_by_id_for_owner(project_id, owner_user_id)
         if project is None:
             raise AppException(BusinessErrorCode.PROJECT_NOT_FOUND, "项目不存在")
@@ -78,11 +83,7 @@ class LearnerProfileService:
                 raise AppException(BusinessErrorCode.PROJECT_REFERENCE_INVALID, "教材提示版本不属于当前项目")
 
         file_hash = hashlib.sha256(content).hexdigest()
-        object_key = self.storage_client.build_object_key(
-            str(project.id),
-            "learner_profiles",
-            filename=filename,
-        )
+        object_key = self.storage_client.build_object_key(str(project.id), "learner_profiles", filename=filename)
         try:
             self.storage_client.upload_bytes(object_key, content, content_type=content_type)
         except Exception as exc:  # noqa: BLE001
@@ -113,7 +114,10 @@ class LearnerProfileService:
             self.repository.create_file_object(file_object)
             profile_file.source_file_id = file_object.id
             self.repository.create_profile_file(profile_file)
+            project.last_activity_at = DateTimeUtil.now_utc()
+            self.repository.save(project)
 
+            task = None
             if auto_extract:
                 task = self.task_repository.create_task(
                     project_id=project.id,
@@ -134,25 +138,30 @@ class LearnerProfileService:
                     },
                     request_id=get_request_id() or None,
                 )
-                self.task_repository.create_task_step(
-                    task_record_id=task.id,
-                    step_code="extract_profile",
-                    step_name="抽取学情占位结果",
-                    step_order=1,
-                    step_status=TASK_STATUS_PENDING,
-                )
+                step_names = [
+                    ("prepare_source", "准备源文件"),
+                    ("submit_mineru", "提交 MinerU 任务"),
+                    ("poll_mineru_result", "轮询 MinerU 结果"),
+                    ("build_profile_version", "构建学情版本"),
+                ]
+                for step_order, (step_code, step_name) in enumerate(step_names, start=1):
+                    self.task_repository.create_task_step(
+                        task_record_id=task.id,
+                        step_code=step_code,
+                        step_name=step_name,
+                        step_order=step_order,
+                        step_status=TASK_STATUS_PENDING,
+                    )
 
-            project.last_activity_at = DateTimeUtil.now_utc()
-            self.repository.save(project)
             self.session.commit()
         except Exception:  # noqa: BLE001
             self.session.rollback()
             self.storage_client.delete_object(object_key)
             raise
 
-        if auto_extract:
+        if auto_extract and task is not None:
             dispatch_result = dispatch_task(
-                "app.modules.learner_profile.tasks.run_placeholder_extract_task",
+                "app.modules.learner_profile.tasks.run_extract_task",
                 {
                     "task_record_id": task.id,
                     "project_id": project.id,
@@ -191,6 +200,27 @@ class LearnerProfileService:
         items = [self.build_profile_file_response(item) for item in files]
         return items, total_count
 
+    def list_profile_versions(
+        self,
+        *,
+        owner_user_id: int,
+        project_id: int,
+        profile_file_id: int,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[LearnerProfileVersionListItemResponse], int]:
+        """分页查询学情版本列表。"""
+        project = self.repository.get_project_by_id_for_owner(project_id, owner_user_id)
+        if project is None:
+            raise AppException(BusinessErrorCode.PROJECT_NOT_FOUND, "项目不存在")
+        profile_file = self.repository.get_profile_file(project.id, profile_file_id)
+        if profile_file is None:
+            raise AppException(BusinessErrorCode.LEARNER_PROFILE_NOT_FOUND, "学情文件不存在")
+        offset = (page - 1) * page_size
+        versions = self.repository.list_profile_versions(profile_file.id, offset, page_size)
+        total_count = self.repository.count_profile_versions(profile_file.id)
+        return [self.build_profile_version_list_item(item) for item in versions], total_count
+
     def get_profile_file_detail(
         self,
         *,
@@ -214,6 +244,85 @@ class LearnerProfileService:
             raise AppException(BusinessErrorCode.LEARNER_PROFILE_NOT_FOUND, "学情版本不存在")
         return self.build_profile_version_response(profile_version)
 
+    def create_manual_revision(
+        self,
+        *,
+        owner_user_id: int,
+        profile_version_id: int,
+        request: LearnerProfileManualRevisionRequest,
+    ) -> LearnerProfileVersionResponse:
+        """创建学情人工修正版本。"""
+        parent_version = self.repository.get_profile_version_for_owner(profile_version_id, owner_user_id)
+        if parent_version is None:
+            raise AppException(BusinessErrorCode.LEARNER_PROFILE_NOT_FOUND, "学情版本不存在")
+        project = self.repository.get_project(parent_version.project_id)
+        if project is None:
+            raise AppException(BusinessErrorCode.PROJECT_NOT_FOUND, "项目不存在")
+
+        project_textbook_versions = self.repository.list_textbook_versions(project.id)
+        valid_textbook_ids = {item.id for item in project_textbook_versions}
+        for record in request.records:
+            if record.textbook_version_hint_id is not None and record.textbook_version_hint_id not in valid_textbook_ids:
+                raise AppException(BusinessErrorCode.PROJECT_REFERENCE_INVALID, "教材提示版本不属于当前项目")
+
+        version_no = self.repository.get_next_version_no(parent_version.profile_file_id)
+        profile_version = LearnerProfileVersion(
+            project_id=parent_version.project_id,
+            profile_file_id=parent_version.profile_file_id,
+            parent_version_id=parent_version.id,
+            version_no=version_no,
+            textbook_version_hint_id=parent_version.textbook_version_hint_id,
+            grade_code=request.grade_code or parent_version.grade_code,
+            subject_scope=request.subject_scope or parent_version.subject_scope,
+            extract_status="success",
+            review_status=REVIEW_STATUS_CONFIRMED,
+            version_status="ready",
+            summary_text=request.summary_text or parent_version.summary_text,
+            raw_result_json={
+                **(parent_version.raw_result_json or {}),
+                "revision_type": "manual",
+                "record_count": len(request.records),
+            },
+            source_snapshot_json={
+                **(parent_version.source_snapshot_json or {}),
+                "manual_revision": True,
+            },
+            created_by=owner_user_id,
+        )
+        self.repository.create_profile_version(profile_version)
+        for record_request in sorted(request.records, key=lambda item: item.sort_order):
+            self.repository.create_profile_record(
+                LearnerProfileRecord(
+                    project_id=parent_version.project_id,
+                    profile_version_id=profile_version.id,
+                    student_key=record_request.student_key,
+                    student_name=record_request.student_name,
+                    is_anonymous=record_request.is_anonymous,
+                    region_name=record_request.region_name,
+                    grade_code=record_request.grade_code,
+                    subject_code=record_request.subject_code,
+                    textbook_version_hint_id=record_request.textbook_version_hint_id,
+                    score_value=record_request.score_value,
+                    advantage_tags_json=record_request.advantage_tags_json,
+                    weakness_tags_json=record_request.weakness_tags_json,
+                    ability_tags_json=record_request.ability_tags_json,
+                    habit_tags_json=record_request.habit_tags_json,
+                    behavior_traits_json=record_request.behavior_traits_json,
+                    time_plan_json=record_request.time_plan_json,
+                    summary_text=record_request.summary_text,
+                    evidence_json=record_request.evidence_json,
+                    sort_order=record_request.sort_order,
+                )
+            )
+
+        if request.set_as_current or project.current_learner_profile_version_id is None:
+            project.current_learner_profile_version_id = profile_version.id
+        project.last_activity_at = DateTimeUtil.now_utc()
+        self.repository.save(project)
+        self.session.commit()
+        self.session.refresh(profile_version)
+        return self.build_profile_version_response(profile_version)
+
     def build_profile_file_response(self, profile_file: LearnerProfileFile) -> LearnerProfileFileDetailResponse:
         """构造学情文件响应。"""
         file_object = self.repository.get_file_object(profile_file.source_file_id)
@@ -232,10 +341,9 @@ class LearnerProfileService:
             updated_at=profile_file.updated_at,
         )
 
-    def build_profile_version_response(self, profile_version) -> LearnerProfileVersionResponse:
-        """构造学情版本响应。"""
-        records = self.repository.list_profile_records(profile_version.id)
-        return LearnerProfileVersionResponse(
+    def build_profile_version_list_item(self, profile_version: LearnerProfileVersion) -> LearnerProfileVersionListItemResponse:
+        """构造学情版本列表项响应。"""
+        return LearnerProfileVersionListItemResponse(
             id=profile_version.id,
             project_id=profile_version.project_id,
             profile_file_id=profile_version.profile_file_id,
@@ -251,7 +359,14 @@ class LearnerProfileService:
             raw_result_json=profile_version.raw_result_json,
             source_snapshot_json=profile_version.source_snapshot_json,
             created_by=profile_version.created_by,
-            records=[LearnerProfileRecordResponse.model_validate(record, from_attributes=True) for record in records],
             created_at=profile_version.created_at,
             updated_at=profile_version.updated_at,
+        )
+
+    def build_profile_version_response(self, profile_version) -> LearnerProfileVersionResponse:
+        """构造学情版本响应。"""
+        records = self.repository.list_profile_records(profile_version.id)
+        return LearnerProfileVersionResponse(
+            **self.build_profile_version_list_item(profile_version).model_dump(),
+            records=[LearnerProfileRecordResponse.model_validate(record, from_attributes=True) for record in records],
         )

@@ -14,6 +14,7 @@ from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import AccessLogMiddleware, RequestIdMiddleware
 from app.modules.auth.router import router as auth_router
+from app.modules.file_asset.router import router as file_asset_router
 from app.modules.learner_profile.router import router as learner_profile_router
 from app.modules.parsing.router import router as parsing_router
 from app.modules.project.router import router as project_router
@@ -57,6 +58,7 @@ register_exception_handlers(app)
 
 app.include_router(system_router)
 app.include_router(auth_router, prefix=settings.api_v1_prefix)
+app.include_router(file_asset_router, prefix=settings.api_v1_prefix)
 app.include_router(project_router, prefix=settings.api_v1_prefix)
 app.include_router(textbook_router, prefix=settings.api_v1_prefix)
 app.include_router(learner_profile_router, prefix=settings.api_v1_prefix)

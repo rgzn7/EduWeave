@@ -27,6 +27,7 @@ dependencies = [
   "httpx>=0.28.1,<1.0.0",
   "python-multipart>=0.0.20,<1.0.0",
   "pypdf>=5.4.0,<6.0.0",
+  "PyMuPDF>=1.24.0,<2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +42,7 @@ packages = [
   "app.core",
   "app.modules",
   "app.modules.auth",
+  "app.modules.file_asset",
   "app.modules.learner_profile",
   "app.modules.parsing",
   "app.modules.project",

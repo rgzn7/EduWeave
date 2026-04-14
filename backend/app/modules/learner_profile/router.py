@@ -16,10 +16,13 @@ from app.modules.learner_profile.repository import LearnerProfileRepository
 from app.modules.learner_profile.schemas import (
     LearnerProfileFileDetailResponse,
     LearnerProfileFileListItemResponse,
+    LearnerProfileManualRevisionRequest,
     LearnerProfileUploadRequest,
+    LearnerProfileVersionListItemResponse,
     LearnerProfileVersionResponse,
 )
 from app.modules.learner_profile.service import LearnerProfileService
+from app.modules.task_center.schemas import TaskListItemResponse
 from app.schemas.response import ApiResponse, PaginatedData, ResponseFactory
 
 router = APIRouter(tags=["学情"])
@@ -33,7 +36,7 @@ def get_learner_profile_service(session: Annotated[Session, Depends(get_db_sessi
 @router.post(
     "/projects/{project_id}/learner-profiles",
     summary="上传学情文件",
-    description="向指定项目上传 doc 或 docx 学情文件，并按配置创建占位抽取任务。",
+    description="向指定项目上传 doc 或 docx 学情文件，并按配置创建真实学情抽取任务。",
     operation_id="learner_profile_create",
     response_model=ApiResponse[LearnerProfileFileDetailResponse],
     status_code=status.HTTP_201_CREATED,
@@ -118,6 +121,39 @@ def get_learner_profile_detail(
 
 
 @router.get(
+    "/projects/{project_id}/learner-profiles/{profile_file_id}/versions",
+    summary="获取学情版本列表",
+    description="分页获取指定学情文件下的学情版本列表。",
+    operation_id="learner_profile_version_list",
+    response_model=ApiResponse[PaginatedData[LearnerProfileVersionListItemResponse]],
+    status_code=status.HTTP_200_OK,
+)
+def list_learner_profile_versions(
+    project_id: int = Path(..., description="项目主键", examples=[1]),
+    profile_file_id: int = Path(..., description="学情文件主键", examples=[1]),
+    page: int = Query(default=1, ge=1, description="页码"),
+    page_size: int = Query(default=20, ge=1, le=100, description="每页大小"),
+    service: Annotated[LearnerProfileService, Depends(get_learner_profile_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """获取学情版本列表。"""
+    items, total_count = service.list_profile_versions(
+        owner_user_id=current_user.id,
+        project_id=project_id,
+        profile_file_id=profile_file_id,
+        page=page,
+        page_size=page_size,
+    )
+    return ResponseFactory.paginated(
+        items=[item.model_dump(mode="json") for item in items],
+        total_count=total_count,
+        page=page,
+        page_size=page_size,
+        message="获取学情版本列表成功",
+    )
+
+
+@router.get(
     "/learner-profile-versions/{profile_version_id}",
     summary="获取学情版本详情",
     description="获取单个学情版本详情及其结构化画像记录。",
@@ -133,3 +169,26 @@ def get_learner_profile_version_detail(
     """获取学情版本详情。"""
     detail = service.get_profile_version_detail(owner_user_id=current_user.id, profile_version_id=profile_version_id)
     return ResponseFactory.success(detail.model_dump(mode="json"), "获取学情版本详情成功")
+
+
+@router.post(
+    "/learner-profile-versions/{profile_version_id}/manual-revisions",
+    summary="保存学情人工修正版本",
+    description="提交完整的学情画像记录并生成新的学情版本，可按需切换为项目当前学情版本。",
+    operation_id="learner_profile_manual_revision_create",
+    response_model=ApiResponse[LearnerProfileVersionResponse],
+    status_code=status.HTTP_201_CREATED,
+)
+def create_learner_profile_manual_revision(
+    request: LearnerProfileManualRevisionRequest,
+    profile_version_id: int = Path(..., description="学情版本主键", examples=[1]),
+    service: Annotated[LearnerProfileService, Depends(get_learner_profile_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """保存学情人工修正版本。"""
+    detail = service.create_manual_revision(
+        owner_user_id=current_user.id,
+        profile_version_id=profile_version_id,
+        request=request,
+    )
+    return ResponseFactory.success(detail.model_dump(mode="json"), "保存学情人工修正版本成功", status_code=status.HTTP_201_CREATED)

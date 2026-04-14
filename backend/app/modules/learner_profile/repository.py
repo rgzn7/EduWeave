@@ -41,6 +41,15 @@ class LearnerProfileRepository:
         )
         return self.session.scalar(statement)
 
+    def list_textbook_versions(self, project_id: int) -> list[TextbookVersion]:
+        """查询项目下全部教材版本。"""
+        statement = (
+            select(TextbookVersion)
+            .where(TextbookVersion.project_id == project_id)
+            .order_by(TextbookVersion.created_at.desc(), TextbookVersion.id.desc())
+        )
+        return list(self.session.scalars(statement))
+
     def create_file_object(self, file_object: FileObject) -> FileObject:
         """创建文件对象。"""
         self.session.add(file_object)
@@ -110,6 +119,29 @@ class LearnerProfileRepository:
             .order_by(LearnerProfileVersion.version_no.desc(), LearnerProfileVersion.id.desc())
             .limit(1)
         )
+        return self.session.scalar(statement)
+
+    def list_profile_versions(self, profile_file_id: int, offset: int, limit: int) -> list[LearnerProfileVersion]:
+        """分页查询学情版本列表。"""
+        statement = (
+            select(LearnerProfileVersion)
+            .where(LearnerProfileVersion.profile_file_id == profile_file_id)
+            .order_by(LearnerProfileVersion.version_no.desc(), LearnerProfileVersion.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return list(self.session.scalars(statement))
+
+    def count_profile_versions(self, profile_file_id: int) -> int:
+        """统计学情版本数量。"""
+        statement = select(func.count()).select_from(LearnerProfileVersion).where(
+            LearnerProfileVersion.profile_file_id == profile_file_id
+        )
+        return int(self.session.scalar(statement) or 0)
+
+    def get_profile_version(self, profile_version_id: int) -> LearnerProfileVersion | None:
+        """按主键查询学情版本。"""
+        statement = select(LearnerProfileVersion).where(LearnerProfileVersion.id == profile_version_id)
         return self.session.scalar(statement)
 
     def get_profile_version_for_owner(self, profile_version_id: int, owner_user_id: int) -> LearnerProfileVersion | None:

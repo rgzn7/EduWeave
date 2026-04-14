@@ -90,6 +90,33 @@ class ObsStorageClient:
         response = self.get_client().deleteObject(self.settings.obs_bucket, object_key)
         return int(getattr(response, "status", 500)) < 400
 
+    def create_download_signed_url(self, object_key: str, expires_in_seconds: int | None = None) -> str:
+        """生成对象下载签名地址。"""
+        expires = expires_in_seconds or self.settings.obs_signed_url_expire_seconds
+        response = self.get_client().createSignedUrl(
+            method="GET",
+            bucketName=self.settings.obs_bucket,
+            objectKey=object_key,
+            expires=expires,
+        )
+        status = getattr(response, "status", 200)
+        if int(status) >= 400:
+            error_message = getattr(response, "errorMessage", "OBS 签名下载地址生成失败")
+            raise RuntimeError(error_message)
+
+        for attr_name in ("signedUrl", "signed_url", "url"):
+            value = getattr(response, attr_name, None)
+            if value:
+                return value
+
+        if isinstance(response, dict):
+            for key in ("signedUrl", "signed_url", "url"):
+                value = response.get(key)
+                if value:
+                    return value
+
+        raise RuntimeError("OBS 签名下载地址生成失败")
+
     def head_object(self, object_key: str) -> dict[str, Any]:
         """查询对象元数据。"""
         response = self.get_client().headObject(self.settings.obs_bucket, object_key)

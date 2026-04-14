@@ -6,6 +6,7 @@
 
 import os
 from collections.abc import Generator
+from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 from urllib.parse import quote_plus
@@ -45,6 +46,7 @@ os.environ.setdefault("MILVUS_METRIC_TYPE", "COSINE")
 import pytest
 import pymysql
 from fastapi.testclient import TestClient
+from pypdf import PdfReader
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -53,6 +55,7 @@ from app.core.database import get_db_session
 from app.core.security import hash_password
 from app.main import app
 from app.modules.auth.models import SysUser
+from app.shared.mineru import NormalizedBlock, NormalizedDocument, NormalizedPage, MineruDocumentService
 from app.shared.storage import ObsStorageClient
 
 TEST_PASSWORD = "Teacher@123"
@@ -245,8 +248,135 @@ def mock_obs_storage(monkeypatch: pytest.MonkeyPatch):
             raise RuntimeError("对象不存在")
         return {"etag": "fake-etag", "content_length": len(storage[object_key]), "last_modified": None}
 
+    def fake_create_download_signed_url(self, object_key: str, expires_in_seconds=None):  # noqa: ANN001
+        _ = (self, expires_in_seconds)
+        if object_key not in storage:
+            raise RuntimeError("对象不存在")
+        return f"https://obs.test.example.com/{object_key}?signed=fake"
+
     monkeypatch.setattr(ObsStorageClient, "upload_bytes", fake_upload_bytes)
     monkeypatch.setattr(ObsStorageClient, "download_bytes", fake_download_bytes)
     monkeypatch.setattr(ObsStorageClient, "delete_object", fake_delete_object)
     monkeypatch.setattr(ObsStorageClient, "head_object", fake_head_object)
+    monkeypatch.setattr(ObsStorageClient, "create_download_signed_url", fake_create_download_signed_url)
     yield storage
+
+
+@pytest.fixture(autouse=True)
+def mock_mineru_service(monkeypatch: pytest.MonkeyPatch):
+    """用内存桩替换 MinerU 实际调用。"""
+
+    def fake_parse_document(self, *, file_name: str, content: bytes, strategy_code: str, data_id: str, language=None):  # noqa: ANN001
+        _ = (self, strategy_code, language)
+        if file_name.lower().endswith((".doc", ".docx")):
+            markdown_text = (
+                "王xx — 学情分析\n"
+                "一、基本信息\n"
+                "姓名\n王xx\n"
+                "所属地区\n上海\n"
+                "年级\n三年级\n"
+                "学习科目\n语文、数学\n"
+                "二、使用教材\n"
+                "科目\n教材版本\n"
+                "语文\n人民教育出版社-语文-三年级下册\n"
+                "数学\n北京出版社-数学-三年级下册\n"
+                "三、科目成绩\n"
+                "语文：89分（月考，三年级上学期期中考试）\n"
+                "数学：82分（期末质检，三年级上学期期末考试）\n"
+                "四、学生基本情况描述\n"
+                "该学生认知理解能力较强，阅读理解题目中寻找关键信息的准确率较高，作文思路清晰。"
+                "数学方面，基础计算能力尚可，但乘法口诀记忆尚不牢固，遇到需要逆向思维的题目时容易卡壳。"
+                "课堂注意力基本能保持30分钟左右，课后作业完成及时，但存在粗心大意的毛病。\n"
+                "五、培训时间规划\n"
+                "计划每周安排2次数学课（每次2课时），重点训练乘法运算能力和应用题分析能力；"
+                "每周1次语文课（每次2课时），侧重阅读理解能力和看图写话表达能力。预计在接下来的12次课程后，"
+                "乘法运算熟练度和逆向思维解题能力明显提升，阅读理解得分率改善。"
+            )
+            raw_blocks = [
+                {"page_idx": 0, "type": "heading", "text": "学情分析"},
+                {"page_idx": 0, "type": "paragraph", "text": markdown_text},
+            ]
+            page = NormalizedPage(
+                page_no=1,
+                text_content=markdown_text,
+                markdown_content=markdown_text,
+                layout_json={"raw_items": raw_blocks},
+                blocks=[
+                    NormalizedBlock(
+                        page_no=1,
+                        block_no=1,
+                        block_type="paragraph",
+                        text_content=markdown_text,
+                        markdown_content=markdown_text,
+                    )
+                ],
+            )
+            return NormalizedDocument(
+                batch_id=f"batch-{data_id}",
+                file_name=file_name,
+                data_id=data_id,
+                model_version="vlm",
+                markdown_text=markdown_text,
+                content_list_json=raw_blocks,
+                pages=[page],
+                full_zip_bytes=b"fake-profile-zip",
+                asset_files={"images/profile_preview.png": b"profile-preview"},
+                raw_metadata={"mocked": True},
+            )
+
+        reader = PdfReader(BytesIO(content))
+        page_count = len(reader.pages)
+        pages: list[NormalizedPage] = []
+        raw_blocks: list[dict] = []
+        for page_index in range(page_count):
+            page_no = page_index + 1
+            heading_text = f"第{page_no}页标题"
+            paragraph_text = f"{file_name} 第{page_no}页解析内容"
+            page_blocks = [
+                NormalizedBlock(
+                    page_no=page_no,
+                    block_no=1,
+                    block_type="heading",
+                    text_content=heading_text,
+                    markdown_content=f"# {heading_text}",
+                    heading_level=1,
+                ),
+                NormalizedBlock(
+                    page_no=page_no,
+                    block_no=2,
+                    block_type="paragraph",
+                    text_content=paragraph_text,
+                    markdown_content=paragraph_text,
+                    asset_relative_path=f"images/page_{page_no}.png",
+                    origin_ref_json={"page_idx": page_index, "img_path": f"images/page_{page_no}.png"},
+                ),
+            ]
+            pages.append(
+                NormalizedPage(
+                    page_no=page_no,
+                    text_content=f"{heading_text}\n{paragraph_text}",
+                    markdown_content=f"# {heading_text}\n\n{paragraph_text}",
+                    layout_json={"raw_items": [{"page_idx": page_index}]},
+                    blocks=page_blocks,
+                )
+            )
+            raw_blocks.extend(
+                [
+                    {"page_idx": page_index, "type": "heading", "text": heading_text},
+                    {"page_idx": page_index, "type": "paragraph", "text": paragraph_text, "img_path": f"images/page_{page_no}.png"},
+                ]
+            )
+        return NormalizedDocument(
+            batch_id=f"batch-{data_id}",
+            file_name=file_name,
+            data_id=data_id,
+            model_version="vlm",
+            markdown_text="\n\n".join(page.markdown_content or "" for page in pages),
+            content_list_json=raw_blocks,
+            pages=pages,
+            full_zip_bytes=b"fake-parse-zip",
+            asset_files={f"images/page_{index + 1}.png": f"page-{index + 1}".encode("utf-8") for index in range(page_count)},
+            raw_metadata={"mocked": True},
+        )
+
+    monkeypatch.setattr(MineruDocumentService, "parse_document", fake_parse_document)

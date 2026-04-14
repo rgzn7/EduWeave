@@ -42,6 +42,16 @@ class Settings(BaseSettings):
     obs_sk: str
     obs_bucket: str
     obs_base_prefix: str = "projects"
+    obs_signed_url_expire_seconds: int = 3600
+
+    mineru_api_base_url: str = "https://mineru.net"
+    mineru_api_token: str | None = None
+    mineru_model_version: str = "vlm"
+    mineru_poll_interval_seconds: int = 3
+    mineru_poll_timeout_seconds: int = 600
+    mineru_default_language: str = "ch"
+    mineru_enable_formula: bool = True
+    mineru_enable_table: bool = True
 
     milvus_uri: str
     milvus_token: str | None = None
@@ -119,6 +129,42 @@ class Settings(BaseSettings):
         if not normalized_value:
             return None
         return normalized_value
+
+    @field_validator("obs_signed_url_expire_seconds")
+    @classmethod
+    def validate_obs_signed_url_expire_seconds(cls, value: int) -> int:
+        """校验签名下载地址有效期。"""
+        if value <= 0:
+            raise ValueError("OBS_SIGNED_URL_EXPIRE_SECONDS 必须大于 0")
+        return value
+
+    @field_validator("mineru_api_base_url")
+    @classmethod
+    def normalize_mineru_api_base_url(cls, value: str) -> str:
+        """归一化 MinerU API 基础地址。"""
+        normalized_value = value.strip().rstrip("/")
+        if not normalized_value:
+            raise ValueError("MINERU_API_BASE_URL 不能为空")
+        return normalized_value
+
+    @field_validator("mineru_api_token", mode="before")
+    @classmethod
+    def normalize_mineru_api_token(cls, value: str | None) -> str | None:
+        """将空 MinerU Token 归一为 None。"""
+        if value is None:
+            return None
+        normalized_value = value.strip()
+        if not normalized_value:
+            return None
+        return normalized_value
+
+    @field_validator("mineru_poll_interval_seconds", "mineru_poll_timeout_seconds")
+    @classmethod
+    def validate_mineru_poll_values(cls, value: int) -> int:
+        """校验 MinerU 轮询配置。"""
+        if value <= 0:
+            raise ValueError("MinerU 轮询配置必须大于 0")
+        return value
 
     @property
     def sqlalchemy_database_uri(self) -> str:
