@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     llm_api_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str | None = None
     llm_model: str | None = None
+    llm_reasoning_effort: str | None = None
     llm_timeout_seconds: int = 60
 
     embedding_api_base_url: str = "https://api.openai.com/v1"
@@ -177,7 +178,7 @@ class Settings(BaseSettings):
             return None
         return normalized_value
 
-    @field_validator("llm_api_key", "embedding_api_key", "llm_model", "embedding_model", mode="before")
+    @field_validator("llm_api_key", "embedding_api_key", "llm_model", "llm_reasoning_effort", "embedding_model", mode="before")
     @classmethod
     def normalize_optional_openai_compatible_value(cls, value: str | None) -> str | None:
         """将空的 OpenAI 兼容配置归一为 None。"""

@@ -65,3 +65,19 @@ def test_blank_milvus_collection_prefix_should_be_normalized_to_none(monkeypatch
     settings = Settings()
 
     assert settings.milvus_collection_prefix is None
+
+
+def test_llm_reasoning_effort_should_be_optional_switch(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LLM 推理强度配置应为空关闭、有值开启。"""
+    apply_required_env(monkeypatch)
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "   ")
+
+    settings = Settings()
+
+    assert settings.llm_reasoning_effort is None
+
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "medium")
+    settings = Settings()
+
+    assert settings.llm_reasoning_effort == "medium"

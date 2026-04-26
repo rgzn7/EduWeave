@@ -40,6 +40,8 @@ class OpenAICompatibleLlmService:
             "response_format": {"type": "json_object"},
             "messages": [message.model_dump() for message in messages],
         }
+        if self.settings.llm_reasoning_effort:
+            payload["reasoning_effort"] = self.settings.llm_reasoning_effort
         result = self.client.create_chat_completion(payload)
         content = self._extract_message_content(result)
         parsed_json = self._extract_json_payload(content)
