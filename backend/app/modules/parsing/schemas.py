@@ -60,13 +60,21 @@ class ParseManualRevisionBlockRequest(BaseSchema):
 
     block_no: int = Field(description="块序号", ge=1, examples=[1])
     block_type: str = Field(description="块类型", min_length=1, max_length=32, examples=["paragraph"])
-    heading_level: int | None = Field(default=None, description="标题级别", ge=1, le=6)
-    bbox_json: dict | None = Field(default=None, description="坐标框")
-    text_content: str | None = Field(default=None, description="文本内容")
-    markdown_content: str | None = Field(default=None, description="Markdown 内容")
+    heading_level: int | None = Field(default=None, description="标题级别", ge=1, le=6, examples=[2])
+    bbox_json: dict | None = Field(
+        default=None,
+        description="坐标框",
+        examples=[{"x0": 12.5, "y0": 18.0, "x1": 180.0, "y1": 56.0}],
+    )
+    text_content: str | None = Field(default=None, description="文本内容", examples=["人工修正后的块文本"])
+    markdown_content: str | None = Field(default=None, description="Markdown 内容", examples=["人工修正后的块文本"])
     asset_file_id: int | None = Field(default=None, description="关联资源文件主键", examples=[1])
-    origin_ref_json: dict | None = Field(default=None, description="原始来源引用")
-    is_deleted: int = Field(default=0, description="是否逻辑删除", ge=0, le=1, examples=[0])
+    origin_ref_json: dict | None = Field(
+        default=None,
+        description="原始来源引用",
+        examples=[{"source": "manual", "operator": "teacher_demo"}],
+    )
+    is_deleted: bool = Field(default=False, description="是否逻辑删除", examples=[False])
 
 
 class ParseManualRevisionPageRequest(BaseSchema):
@@ -74,16 +82,59 @@ class ParseManualRevisionPageRequest(BaseSchema):
 
     page_no: int = Field(description="页码", ge=1, examples=[1])
     page_status: str = Field(default="success", description="页状态", min_length=1, max_length=32, examples=["success"])
-    text_content: str | None = Field(default=None, description="页文本内容")
-    markdown_content: str | None = Field(default=None, description="页 Markdown 内容")
-    layout_json: dict | None = Field(default=None, description="页布局 JSON")
-    blocks: list[ParseManualRevisionBlockRequest] = Field(description="块列表", min_length=1)
+    text_content: str | None = Field(default=None, description="页文本内容", examples=["人工修正后的页文本"])
+    markdown_content: str | None = Field(default=None, description="页 Markdown 内容", examples=["人工修正后的页文本"])
+    layout_json: dict | None = Field(
+        default=None,
+        description="页布局 JSON",
+        examples=[[{"type": "paragraph", "bbox": [12.5, 18.0, 180.0, 56.0]}]],
+    )
+    blocks: list[ParseManualRevisionBlockRequest] = Field(
+        description="块列表",
+        min_length=1,
+        examples=[
+            [
+                {
+                    "block_no": 1,
+                    "block_type": "paragraph",
+                    "text_content": "人工修正后的块文本",
+                    "markdown_content": "人工修正后的块文本",
+                    "origin_ref_json": {"source": "manual"},
+                    "is_deleted": False,
+                }
+            ]
+        ],
+    )
 
 
 class ParseManualRevisionRequest(BaseSchema):
     """解析版本人工修正请求。"""
 
-    pages: list[ParseManualRevisionPageRequest] = Field(description="需要替换的页列表", min_length=1)
+    pages: list[ParseManualRevisionPageRequest] = Field(
+        description="需要替换的页列表",
+        min_length=1,
+        examples=[
+            [
+                {
+                    "page_no": 1,
+                    "page_status": "success",
+                    "text_content": "人工修正后的页文本",
+                    "markdown_content": "人工修正后的页文本",
+                    "layout_json": [{"type": "paragraph", "bbox": [12.5, 18.0, 180.0, 56.0]}],
+                    "blocks": [
+                        {
+                            "block_no": 1,
+                            "block_type": "paragraph",
+                            "text_content": "人工修正后的块文本",
+                            "markdown_content": "人工修正后的块文本",
+                            "origin_ref_json": {"source": "manual"},
+                            "is_deleted": False,
+                        }
+                    ],
+                }
+            ]
+        ],
+    )
     set_as_current_on_success: bool = Field(
         default=False,
         description="是否在成功后设为当前可用解析版本",
@@ -105,7 +156,7 @@ class ParseBlockResponse(BaseSchema):
     markdown_content: str | None = Field(default=None, description="Markdown 内容")
     asset_file_id: int | None = Field(default=None, description="资源文件主键")
     origin_ref_json: dict | None = Field(default=None, description="来源引用")
-    is_deleted: int = Field(description="是否删除", examples=[0])
+    is_deleted: bool = Field(description="是否删除", examples=[False])
     created_at: datetime = Field(description="创建时间")
     updated_at: datetime = Field(description="更新时间")
 
@@ -118,7 +169,7 @@ class ParsePageResponse(BaseSchema):
     page_no: int = Field(description="页码", examples=[1])
     source_page_image_file_id: int | None = Field(default=None, description="页图文件主键")
     page_status: str = Field(description="页状态", examples=["success"])
-    has_issue: int = Field(description="是否存在异常", examples=[0])
+    has_issue: bool = Field(description="是否存在异常", examples=[False])
     text_content: str | None = Field(default=None, description="页文本内容")
     markdown_content: str | None = Field(default=None, description="页 Markdown 内容")
     layout_json: dict | None = Field(default=None, description="布局数据")

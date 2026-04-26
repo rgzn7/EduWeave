@@ -88,6 +88,58 @@ def test_parsing_task_should_create_parse_result_and_preview(client) -> None:
     assert issues_response.json()["data"]["pagination"]["total_count"] == 0
 
 
+def test_parse_version_confirm_should_succeed_and_be_idempotent(client) -> None:
+    """解析版本确认接口应支持成功确认和重复确认。"""
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    textbook_version_id = upload_textbook(client, headers, project_id)
+
+    create_response = client.post(
+        f"/api/v1/textbook-versions/{textbook_version_id}/parse-tasks",
+        headers=headers,
+        json={"strategy_code": MINERU_STRATEGY_VLM_DEFAULT},
+    )
+    parse_version_id = create_response.json()["data"]["result_json"]["parse_version_id"]
+
+    first_confirm = client.post(f"/api/v1/parse-versions/{parse_version_id}/confirm", headers=headers)
+    second_confirm = client.post(f"/api/v1/parse-versions/{parse_version_id}/confirm", headers=headers)
+
+    assert first_confirm.status_code == 200
+    assert second_confirm.status_code == 200
+    assert first_confirm.json()["data"]["review_status"] == "confirmed"
+    assert second_confirm.json()["data"]["review_status"] == "confirmed"
+
+
+def test_parse_version_confirm_should_reject_non_success_version(client, seeded_session_factory) -> None:
+    """非解析成功状态不允许确认。"""
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    textbook_version_id = upload_textbook(client, headers, project_id)
+
+    create_response = client.post(
+        f"/api/v1/textbook-versions/{textbook_version_id}/parse-tasks",
+        headers=headers,
+        json={"strategy_code": MINERU_STRATEGY_VLM_DEFAULT},
+    )
+    parse_version_id = create_response.json()["data"]["result_json"]["parse_version_id"]
+
+    session = seeded_session_factory()
+    try:
+        from app.modules.p0_models import ParseVersion
+
+        parse_version = session.get(ParseVersion, parse_version_id)
+        parse_version.parse_status = "processing"
+        parse_version.review_status = "pending"
+        session.add(parse_version)
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.post(f"/api/v1/parse-versions/{parse_version_id}/confirm", headers=headers)
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["code"] == "PARSE_VERSION_NOT_CONFIRMED"
+
+
 def test_parsing_task_should_reject_running_duplicate(client, seeded_session_factory) -> None:
     """存在运行中任务时应拒绝重复创建解析任务。"""
     headers = build_auth_headers(client)
@@ -206,7 +258,7 @@ def test_manual_revision_should_create_new_parse_version(client) -> None:
                             "text_content": "人工修正后的块文本",
                             "markdown_content": "人工修正后的块文本",
                             "origin_ref_json": {"source": "manual"},
-                            "is_deleted": 0,
+                            "is_deleted": False,
                         }
                     ],
                 }
@@ -221,3 +273,4 @@ def test_manual_revision_should_create_new_parse_version(client) -> None:
     assert payload["diff_json"]["revision_type"] == "manual"
     detail_pages_response = client.get(f"/api/v1/parse-versions/{payload['id']}/pages", headers=headers)
     assert detail_pages_response.json()["data"]["items"][0]["text_content"] == "人工修正后的页文本"
+    assert detail_pages_response.json()["data"]["items"][0]["blocks"][0]["is_deleted"] is False

@@ -276,6 +276,25 @@ class ParsingService:
             raise AppException(BusinessErrorCode.PARSE_VERSION_NOT_FOUND, "解析版本不存在")
         return ParseVersionDetailResponse(**self.build_parse_version_response(parse_version).model_dump())
 
+    def confirm_parse_version(self, *, owner_user_id: int, parse_version_id: int) -> ParseVersionDetailResponse:
+        """确认解析版本可用于后续知识抽取。"""
+        parse_version = self.repository.get_parse_version_for_owner(parse_version_id, owner_user_id)
+        if parse_version is None:
+            raise AppException(BusinessErrorCode.PARSE_VERSION_NOT_FOUND, "解析版本不存在")
+        if parse_version.review_status == REVIEW_STATUS_CONFIRMED:
+            return ParseVersionDetailResponse(**self.build_parse_version_response(parse_version).model_dump())
+        if parse_version.parse_status != "success":
+            raise AppException(
+                BusinessErrorCode.PARSE_VERSION_NOT_CONFIRMED,
+                "仅解析成功的版本才可确认",
+                {"parse_status": parse_version.parse_status, "review_status": parse_version.review_status},
+            )
+        parse_version.review_status = REVIEW_STATUS_CONFIRMED
+        self.repository.save(parse_version)
+        self.session.commit()
+        self.session.refresh(parse_version)
+        return ParseVersionDetailResponse(**self.build_parse_version_response(parse_version).model_dump())
+
     def list_parse_pages(
         self,
         *,
@@ -434,7 +453,7 @@ class ParsingService:
                 bbox_json=block.bbox_json,
                 asset_file_id=block.asset_file_id,
                 origin_ref_json=block.origin_ref_json,
-                is_deleted=block.is_deleted,
+                is_deleted=1 if block.is_deleted else 0,
             )
             for block in sorted(request_page.blocks, key=lambda item: item.block_no)
         ]

@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-11
+@Date: 2026-04-14
 @Author: xisy
 @Discription: 请求链路中间件与上下文管理
 """
@@ -40,17 +40,25 @@ def get_user_id() -> str:
     return _user_id_var.get()
 
 
+def reset_user_id(token: Token) -> None:
+    """重置 user_id 上下文。"""
+    _user_id_var.reset(token)
+
+
 class RequestIdMiddleware(BaseHTTPMiddleware):
     """生成并透传 request_id。"""
 
     async def dispatch(self, request: Request, call_next):
         request_id = request.headers.get("X-Request-Id") or str(uuid.uuid4())
         request.state.request_id = request_id
-        token = set_request_id(request_id)
+        request.state.user_id = ""
+        request_token = set_request_id(request_id)
+        user_token = set_user_id("")
         try:
             response = await call_next(request)
         finally:
-            reset_request_id(token)
+            reset_user_id(user_token)
+            reset_request_id(request_token)
         response.headers["X-Request-Id"] = request_id
         return response
 
@@ -71,6 +79,7 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             path=request.url.path,
             status_code=response.status_code,
             duration_ms=duration_ms,
+            request_id=getattr(request.state, "request_id", ""),
+            user_id=getattr(request.state, "user_id", ""),
         )
         return response
-

@@ -129,6 +129,24 @@ def get_parse_version_detail(
     return ResponseFactory.success(detail.model_dump(mode="json"), "获取解析版本详情成功")
 
 
+@router.post(
+    "/parse-versions/{parse_version_id}/confirm",
+    summary="确认解析版本",
+    description="将解析成功的版本显式标记为已确认，使其可作为后续知识抽取的合法输入基线。",
+    operation_id="parsing_confirm_version",
+    response_model=ApiResponse[ParseVersionDetailResponse],
+    status_code=status.HTTP_200_OK,
+)
+def confirm_parse_version(
+    parse_version_id: int = Path(..., description="解析版本主键", examples=[1]),
+    service: Annotated[ParsingService, Depends(get_parsing_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """确认解析版本。"""
+    detail = service.confirm_parse_version(owner_user_id=current_user.id, parse_version_id=parse_version_id)
+    return ResponseFactory.success(detail.model_dump(mode="json"), "确认解析版本成功")
+
+
 @router.get(
     "/parse-versions/{parse_version_id}/pages",
     summary="获取解析页列表",

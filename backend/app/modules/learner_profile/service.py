@@ -297,7 +297,7 @@ class LearnerProfileService:
                     profile_version_id=profile_version.id,
                     student_key=record_request.student_key,
                     student_name=record_request.student_name,
-                    is_anonymous=record_request.is_anonymous,
+                    is_anonymous=1 if record_request.is_anonymous else 0,
                     region_name=record_request.region_name,
                     grade_code=record_request.grade_code,
                     subject_code=record_request.subject_code,

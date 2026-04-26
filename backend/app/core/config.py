@@ -53,6 +53,16 @@ class Settings(BaseSettings):
     mineru_enable_formula: bool = True
     mineru_enable_table: bool = True
 
+    llm_api_base_url: str = "https://api.openai.com/v1"
+    llm_api_key: str | None = None
+    llm_model: str | None = None
+    llm_timeout_seconds: int = 60
+
+    embedding_api_base_url: str = "https://api.openai.com/v1"
+    embedding_api_key: str | None = None
+    embedding_model: str | None = None
+    embedding_timeout_seconds: int = 60
+
     milvus_uri: str
     milvus_token: str | None = None
     milvus_db_name: str = "default"
@@ -147,10 +157,30 @@ class Settings(BaseSettings):
             raise ValueError("MINERU_API_BASE_URL 不能为空")
         return normalized_value
 
+    @field_validator("llm_api_base_url", "embedding_api_base_url")
+    @classmethod
+    def normalize_openai_compatible_base_url(cls, value: str) -> str:
+        """归一化 OpenAI 兼容接口基础地址。"""
+        normalized_value = value.strip().rstrip("/")
+        if not normalized_value:
+            raise ValueError("OpenAI 兼容基础地址不能为空")
+        return normalized_value
+
     @field_validator("mineru_api_token", mode="before")
     @classmethod
     def normalize_mineru_api_token(cls, value: str | None) -> str | None:
         """将空 MinerU Token 归一为 None。"""
+        if value is None:
+            return None
+        normalized_value = value.strip()
+        if not normalized_value:
+            return None
+        return normalized_value
+
+    @field_validator("llm_api_key", "embedding_api_key", "llm_model", "embedding_model", mode="before")
+    @classmethod
+    def normalize_optional_openai_compatible_value(cls, value: str | None) -> str | None:
+        """将空的 OpenAI 兼容配置归一为 None。"""
         if value is None:
             return None
         normalized_value = value.strip()
@@ -164,6 +194,14 @@ class Settings(BaseSettings):
         """校验 MinerU 轮询配置。"""
         if value <= 0:
             raise ValueError("MinerU 轮询配置必须大于 0")
+        return value
+
+    @field_validator("llm_timeout_seconds", "embedding_timeout_seconds")
+    @classmethod
+    def validate_openai_compatible_timeout(cls, value: int) -> int:
+        """校验 OpenAI 兼容接口超时时间。"""
+        if value <= 0:
+            raise ValueError("LLM/Embedding 超时时间必须大于 0")
         return value
 
     @property

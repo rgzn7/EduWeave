@@ -97,7 +97,7 @@ def test_learner_profile_versions_and_manual_revision_should_succeed(client) -> 
                 {
                     "student_key": "wangxx_english",
                     "student_name": "王xx",
-                    "is_anonymous": 1,
+                    "is_anonymous": True,
                     "region_name": "上海",
                     "grade_code": "grade_3",
                     "subject_code": "english",
@@ -121,3 +121,4 @@ def test_learner_profile_versions_and_manual_revision_should_succeed(client) -> 
     assert payload["parent_version_id"] == profile_version_id
     assert payload["review_status"] == "confirmed"
     assert payload["summary_text"] == "人工修正后的学情摘要"
+    assert payload["records"][0]["is_anonymous"] is True

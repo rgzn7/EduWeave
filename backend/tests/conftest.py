@@ -35,6 +35,14 @@ os.environ.setdefault("OBS_AK", "test-ak")
 os.environ.setdefault("OBS_SK", "test-sk")
 os.environ.setdefault("OBS_BUCKET", "test-bucket")
 os.environ.setdefault("OBS_BASE_PREFIX", "projects")
+os.environ.setdefault("LLM_API_BASE_URL", "https://llm.test.example.com/v1")
+os.environ.setdefault("LLM_API_KEY", "test-llm-key")
+os.environ.setdefault("LLM_MODEL", "test-llm-model")
+os.environ.setdefault("LLM_TIMEOUT_SECONDS", "60")
+os.environ.setdefault("EMBEDDING_API_BASE_URL", "https://embedding.test.example.com/v1")
+os.environ.setdefault("EMBEDDING_API_KEY", "test-embedding-key")
+os.environ.setdefault("EMBEDDING_MODEL", "test-embedding-model")
+os.environ.setdefault("EMBEDDING_TIMEOUT_SECONDS", "60")
 os.environ.setdefault("MILVUS_URI", "http://127.0.0.1:19530")
 os.environ.setdefault("MILVUS_TOKEN", "")
 os.environ.setdefault("MILVUS_DB_NAME", "default")
@@ -161,8 +169,22 @@ def seeded_session_factory(mysql_session_factory):
     try:
         session.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
         for table_name in [
+            "audit_log",
+            "generation_trace",
             "task_step_record",
             "task_record",
+            "coverage_report",
+            "question_item",
+            "paper_result",
+            "courseware_result",
+            "generation_batch",
+            "assessment_blueprint",
+            "lesson_plan",
+            "curriculum_plan",
+            "knowledge_evidence",
+            "knowledge_point",
+            "chapter_node",
+            "knowledge_version",
             "parse_issue",
             "parse_block",
             "parse_page",

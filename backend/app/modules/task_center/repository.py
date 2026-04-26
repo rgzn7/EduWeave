@@ -169,6 +169,15 @@ class TaskCenterRepository:
         )
         return list(self.session.scalars(statement))
 
+    def list_tasks_by_generation_batch(self, generation_batch_id: int) -> list[TaskRecord]:
+        """查询生成批次关联任务。"""
+        statement = (
+            select(TaskRecord)
+            .where(TaskRecord.generation_batch_id == generation_batch_id)
+            .order_by(TaskRecord.created_at.asc(), TaskRecord.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
     def count_project_tasks(self, project_id: int) -> int:
         """统计项目任务总数。"""
         statement = select(func.count()).select_from(TaskRecord).where(TaskRecord.project_id == project_id)

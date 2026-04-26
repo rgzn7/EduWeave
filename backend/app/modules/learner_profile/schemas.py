@@ -49,31 +49,60 @@ class LearnerProfileManualRevisionRecordRequest(BaseSchema):
     """学情画像人工修正记录请求。"""
 
     student_key: str = Field(description="学生标识", min_length=1, max_length=128, examples=["王xx_math"])
-    student_name: str | None = Field(default=None, description="学生姓名")
-    is_anonymous: int = Field(default=0, description="是否匿名", ge=0, le=1, examples=[0])
-    region_name: str | None = Field(default=None, description="地区名称")
-    grade_code: str | None = Field(default=None, description="年级编码")
+    student_name: str | None = Field(default=None, description="学生姓名", examples=["王xx"])
+    is_anonymous: bool = Field(default=False, description="是否匿名", examples=[False])
+    region_name: str | None = Field(default=None, description="地区名称", examples=["上海"])
+    grade_code: str | None = Field(default=None, description="年级编码", examples=["grade_3"])
     subject_code: str = Field(description="学科编码", min_length=1, max_length=32, examples=["math"])
     textbook_version_hint_id: int | None = Field(default=None, description="教材提示版本主键", examples=[1])
     score_value: float | None = Field(default=None, description="分数", examples=[82.0])
-    advantage_tags_json: dict | None = Field(default=None, description="优势标签")
-    weakness_tags_json: dict | None = Field(default=None, description="薄弱标签")
-    ability_tags_json: dict | None = Field(default=None, description="能力标签")
-    habit_tags_json: dict | None = Field(default=None, description="学习习惯标签")
-    behavior_traits_json: dict | None = Field(default=None, description="行为特征标签")
-    time_plan_json: dict | None = Field(default=None, description="时间规划标签")
-    summary_text: str | None = Field(default=None, description="摘要文本")
-    evidence_json: dict | None = Field(default=None, description="证据 JSON")
+    advantage_tags_json: dict | None = Field(default=None, description="优势标签", examples=[{"items": ["表达能力较强"]}])
+    weakness_tags_json: dict | None = Field(default=None, description="薄弱标签", examples=[{"items": ["口语表达待提升"]}])
+    ability_tags_json: dict | None = Field(default=None, description="能力标签", examples=[{"items": ["表达能力"]}])
+    habit_tags_json: dict | None = Field(default=None, description="学习习惯标签", examples=[{"items": ["作业完成及时"]}])
+    behavior_traits_json: dict | None = Field(default=None, description="行为特征标签", examples=[{"items": ["性格开朗"]}])
+    time_plan_json: dict | None = Field(
+        default=None,
+        description="时间规划标签",
+        examples=[{"items": [{"subject_name": "英语", "weekly_hours": 3}]}],
+    )
+    summary_text: str | None = Field(default=None, description="摘要文本", examples=["英语人工修正摘要"])
+    evidence_json: dict | None = Field(default=None, description="证据 JSON", examples=[{"source": "manual"}])
     sort_order: int = Field(default=0, description="排序号", ge=0, examples=[0])
 
 
 class LearnerProfileManualRevisionRequest(BaseSchema):
     """学情版本人工修正请求。"""
 
-    summary_text: str | None = Field(default=None, description="版本摘要")
-    grade_code: str | None = Field(default=None, description="年级编码")
-    subject_scope: str | None = Field(default=None, description="学科范围")
-    records: list[LearnerProfileManualRevisionRecordRequest] = Field(description="完整画像记录列表", min_length=1)
+    summary_text: str | None = Field(default=None, description="版本摘要", examples=["人工修正后的学情摘要"])
+    grade_code: str | None = Field(default=None, description="年级编码", examples=["grade_3"])
+    subject_scope: str | None = Field(default=None, description="学科范围", examples=["english,math"])
+    records: list[LearnerProfileManualRevisionRecordRequest] = Field(
+        description="完整画像记录列表",
+        min_length=1,
+        examples=[
+            [
+                {
+                    "student_key": "wangxx_english",
+                    "student_name": "王xx",
+                    "is_anonymous": True,
+                    "region_name": "上海",
+                    "grade_code": "grade_3",
+                    "subject_code": "english",
+                    "score_value": 88,
+                    "advantage_tags_json": {"items": ["表达能力较强"]},
+                    "weakness_tags_json": {"items": ["口语表达待提升"]},
+                    "ability_tags_json": {"items": ["表达能力"]},
+                    "habit_tags_json": {"items": ["作业完成及时"]},
+                    "behavior_traits_json": {"items": ["性格开朗"]},
+                    "time_plan_json": {"items": [{"subject_name": "英语", "weekly_hours": 3}]},
+                    "summary_text": "英语人工修正摘要",
+                    "evidence_json": {"source": "manual"},
+                    "sort_order": 0,
+                }
+            ]
+        ],
+    )
     set_as_current: bool = Field(default=False, description="是否设为项目当前学情版本", examples=[True])
 
 
@@ -85,7 +114,7 @@ class LearnerProfileRecordResponse(BaseSchema):
     profile_version_id: int = Field(description="学情版本主键", examples=[1])
     student_key: str = Field(description="学生标识", examples=["王xx_math"])
     student_name: str | None = Field(default=None, description="学生姓名")
-    is_anonymous: int = Field(description="是否匿名", examples=[0])
+    is_anonymous: bool = Field(description="是否匿名", examples=[False])
     region_name: str | None = Field(default=None, description="地区名称")
     grade_code: str | None = Field(default=None, description="年级编码")
     subject_code: str = Field(description="学科编码", examples=["math"])

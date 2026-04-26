@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-11
+@Date: 2026-04-14
 @Author: xisy
 @Discription: 认证、安全与当前用户依赖
 """
@@ -8,7 +8,7 @@ from datetime import timedelta
 from typing import Any, Annotated
 
 import jwt
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import ExpiredSignatureError, InvalidTokenError
 from sqlalchemy.orm import Session
@@ -87,13 +87,17 @@ def decode_access_token(token: str) -> dict[str, Any]:
 def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(security_scheme)],
     session: Annotated[Session, Depends(get_db_session)],
+    request: Request,
 ) -> SysUser:
     """获取当前登录教师账号。"""
     if credentials is None:
         raise AppException(BusinessErrorCode.UNAUTHORIZED, "未提供访问令牌")
 
     payload = decode_access_token(credentials.credentials)
-    user_id = int(payload["sub"])
+    try:
+        user_id = int(payload["sub"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AppException(BusinessErrorCode.INVALID_TOKEN, "无效的访问令牌") from exc
     repository = AuthRepository(session)
     user = repository.get_by_id(user_id)
     if user is None:
@@ -101,5 +105,6 @@ def get_current_user(
     if user.status != "active":
         raise AppException(BusinessErrorCode.ACCOUNT_DISABLED, "当前账号已被禁用")
 
+    request.state.user_id = str(user.id)
     set_user_id(user.id)
     return user
