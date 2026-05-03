@@ -12,6 +12,7 @@ from app.core.database import SessionLocal
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.courseware.repository import CoursewareRepository
 from app.modules.courseware.service import CoursewareService
+from app.modules.coverage.service import dispatch_coverage_task_if_needed
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.utils import DateTimeUtil
 
@@ -104,7 +105,7 @@ def run_generate_courseware_task(payload: dict) -> dict[str, int | str | None]:
                 step_map["finalize_generation_batch"],
                 TASK_STATUS_SUCCESS,
                 100,
-                detail_json={"batch_status": TASK_STATUS_SUCCESS},
+                detail_json={"batch_status": TASK_STATUS_PROCESSING},
                 started_at=DateTimeUtil.now_utc(),
                 finished_at=DateTimeUtil.now_utc(),
             )
@@ -172,11 +173,27 @@ def run_generate_courseware_task(payload: dict) -> dict[str, int | str | None]:
             task_repository.save(step)
         task_repository.save(task)
         session.commit()
+        coverage_task = None
+        if normalized_status == "succeeded":
+            coverage_task = dispatch_coverage_task_if_needed(
+                session=session,
+                generation_batch_id=generation_batch.id,
+                operator_user_id=payload.get("operator_user_id"),
+                request_id=task.request_id if task is not None else None,
+            )
+            if coverage_task is not None and task is not None:
+                task.result_json = {
+                    **(task.result_json or {}),
+                    "coverage_task_id": coverage_task.id,
+                }
+                task_repository.save(task)
+                session.commit()
         return {
             "generation_batch_id": generation_batch.id,
             "courseware_result_id": courseware_result.id,
             "export_file_id": courseware_result.export_file_id,
             "raccoon_status": state.status,
+            "coverage_task_id": coverage_task.id if coverage_task is not None else None,
         }
     except Exception as exc:  # noqa: BLE001
         session.rollback()

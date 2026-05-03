@@ -83,7 +83,9 @@ class PipelineService:
                 course_count=request.course_count,
                 session_duration_minutes=request.session_duration_minutes,
                 assessment_strategy_json=request.assessment_strategy_json or DEFAULT_ASSESSMENT_STRATEGY,
-                pipeline_options_json={"enabled_steps": ["curriculum", "lesson_plan", "assessment", "courseware"]},
+                pipeline_options_json={
+                    "enabled_steps": ["curriculum", "lesson_plan", "assessment", "courseware", "coverage"]
+                },
                 created_by=owner_user_id,
             )
         )

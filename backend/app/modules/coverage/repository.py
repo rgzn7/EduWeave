@@ -1,0 +1,172 @@
+"""
+@Date: 2026-05-03
+@Author: xisy
+@Discription: 覆盖率分析模块数据访问层
+"""
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.core.constants import COVERAGE_ANALYZE_TASK_TYPE, COVERAGE_MODULE_CODE
+from app.modules.p0_models import (
+    AssessmentBlueprint,
+    CoursewareResult,
+    CoverageReport,
+    CurriculumPlan,
+    GenerationBatch,
+    GenerationTrace,
+    KnowledgePoint,
+    LessonPlan,
+    PaperResult,
+    Project,
+    QuestionItem,
+    TaskRecord,
+)
+
+
+class CoverageRepository:
+    """覆盖率分析模块仓储。"""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get_generation_batch(self, generation_batch_id: int) -> GenerationBatch | None:
+        """按主键查询生成批次。"""
+        statement = select(GenerationBatch).where(GenerationBatch.id == generation_batch_id)
+        return self.session.scalar(statement)
+
+    def get_generation_batch_for_owner(self, generation_batch_id: int, owner_user_id: int) -> GenerationBatch | None:
+        """查询当前教师可见的生成批次。"""
+        statement = (
+            select(GenerationBatch)
+            .join(Project, Project.id == GenerationBatch.project_id)
+            .where(GenerationBatch.id == generation_batch_id, Project.owner_user_id == owner_user_id)
+        )
+        return self.session.scalar(statement)
+
+    def list_knowledge_points(self, knowledge_version_id: int) -> list[KnowledgePoint]:
+        """查询知识版本下的知识点。"""
+        statement = (
+            select(KnowledgePoint)
+            .where(KnowledgePoint.knowledge_version_id == knowledge_version_id)
+            .order_by(KnowledgePoint.sort_order.asc(), KnowledgePoint.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
+    def get_curriculum_plan(self, curriculum_plan_id: int | None) -> CurriculumPlan | None:
+        """查询课程大纲。"""
+        if curriculum_plan_id is None:
+            return None
+        return self.session.scalar(select(CurriculumPlan).where(CurriculumPlan.id == curriculum_plan_id))
+
+    def get_lesson_plan(self, lesson_plan_id: int | None) -> LessonPlan | None:
+        """查询教案。"""
+        if lesson_plan_id is None:
+            return None
+        return self.session.scalar(select(LessonPlan).where(LessonPlan.id == lesson_plan_id))
+
+    def get_assessment_blueprint(self, assessment_blueprint_id: int | None) -> AssessmentBlueprint | None:
+        """查询测评蓝图。"""
+        if assessment_blueprint_id is None:
+            return None
+        return self.session.scalar(select(AssessmentBlueprint).where(AssessmentBlueprint.id == assessment_blueprint_id))
+
+    def get_paper_result_by_batch(self, generation_batch_id: int) -> PaperResult | None:
+        """查询批次下首个试卷结果。"""
+        statement = (
+            select(PaperResult)
+            .where(PaperResult.generation_batch_id == generation_batch_id)
+            .order_by(PaperResult.id.asc())
+        )
+        return self.session.scalar(statement)
+
+    def list_question_items_by_batch(self, generation_batch_id: int) -> list[QuestionItem]:
+        """查询批次下题目明细。"""
+        statement = (
+            select(QuestionItem)
+            .where(QuestionItem.generation_batch_id == generation_batch_id)
+            .order_by(QuestionItem.question_no.asc(), QuestionItem.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
+    def get_courseware_result_by_batch(self, generation_batch_id: int) -> CoursewareResult | None:
+        """查询批次课件结果。"""
+        statement = select(CoursewareResult).where(CoursewareResult.generation_batch_id == generation_batch_id)
+        return self.session.scalar(statement)
+
+    def get_coverage_report_by_batch(self, generation_batch_id: int) -> CoverageReport | None:
+        """查询批次覆盖率报告。"""
+        statement = select(CoverageReport).where(CoverageReport.generation_batch_id == generation_batch_id)
+        return self.session.scalar(statement)
+
+    def get_coverage_report_for_owner(self, coverage_report_id: int, owner_user_id: int) -> CoverageReport | None:
+        """查询当前教师可见的覆盖率报告。"""
+        statement = (
+            select(CoverageReport)
+            .join(GenerationBatch, GenerationBatch.id == CoverageReport.generation_batch_id)
+            .join(Project, Project.id == GenerationBatch.project_id)
+            .where(CoverageReport.id == coverage_report_id, Project.owner_user_id == owner_user_id)
+        )
+        return self.session.scalar(statement)
+
+    def list_coverage_reports_for_owner(
+        self,
+        owner_user_id: int,
+        *,
+        generation_batch_id: int,
+        offset: int,
+        limit: int,
+    ) -> list[CoverageReport]:
+        """分页查询当前教师可见的覆盖率报告。"""
+        statement = (
+            select(CoverageReport)
+            .join(GenerationBatch, GenerationBatch.id == CoverageReport.generation_batch_id)
+            .join(Project, Project.id == GenerationBatch.project_id)
+            .where(Project.owner_user_id == owner_user_id, CoverageReport.generation_batch_id == generation_batch_id)
+            .order_by(CoverageReport.created_at.desc(), CoverageReport.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return list(self.session.scalars(statement))
+
+    def count_coverage_reports_for_owner(self, owner_user_id: int, *, generation_batch_id: int) -> int:
+        """统计当前教师可见覆盖率报告数量。"""
+        statement = (
+            select(func.count())
+            .select_from(CoverageReport)
+            .join(GenerationBatch, GenerationBatch.id == CoverageReport.generation_batch_id)
+            .join(Project, Project.id == GenerationBatch.project_id)
+            .where(Project.owner_user_id == owner_user_id, CoverageReport.generation_batch_id == generation_batch_id)
+        )
+        return int(self.session.scalar(statement) or 0)
+
+    def get_existing_coverage_task(self, generation_batch_id: int) -> TaskRecord | None:
+        """查询批次下已存在的覆盖率任务。"""
+        statement = (
+            select(TaskRecord)
+            .where(
+                TaskRecord.generation_batch_id == generation_batch_id,
+                TaskRecord.module_code == COVERAGE_MODULE_CODE,
+                TaskRecord.task_type == COVERAGE_ANALYZE_TASK_TYPE,
+                TaskRecord.task_status.in_(["pending", "processing", "success"]),
+            )
+            .order_by(TaskRecord.id.desc())
+        )
+        return self.session.scalar(statement)
+
+    def create_coverage_report(self, coverage_report: CoverageReport) -> CoverageReport:
+        """创建覆盖率报告。"""
+        self.session.add(coverage_report)
+        self.session.flush()
+        return coverage_report
+
+    def create_generation_trace(self, generation_trace: GenerationTrace) -> GenerationTrace:
+        """创建生成追溯记录。"""
+        self.session.add(generation_trace)
+        self.session.flush()
+        return generation_trace
+
+    def save(self, instance) -> None:
+        """保存实体。"""
+        self.session.add(instance)
+        self.session.flush()

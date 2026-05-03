@@ -22,6 +22,7 @@ from app.core.constants import (
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.courseware.repository import CoursewareRepository
 from app.modules.courseware.schemas import CoursewareResultDetailResponse, CoursewareResultListItemResponse
+from app.modules.coverage.service import dispatch_coverage_task_if_needed
 from app.modules.p0_models import CoursewareResult, FileObject
 from app.shared.ppt import RaccoonPptJobState, RaccoonPptService
 from app.shared.storage import ObsStorageClient
@@ -97,8 +98,15 @@ class CoursewareService:
         courseware_result = self.repository.get_courseware_result_for_owner(courseware_result_id, owner_user_id)
         if courseware_result is None:
             raise AppException(BusinessErrorCode.COURSEWARE_RESULT_NOT_FOUND, "课件结果不存在")
-        self.refresh_remote_state(courseware_result)
+        state = self.refresh_remote_state(courseware_result)
         self.session.commit()
+        if state.status.lower() == "succeeded":
+            dispatch_coverage_task_if_needed(
+                session=self.session,
+                generation_batch_id=courseware_result.generation_batch_id,
+                operator_user_id=owner_user_id,
+                request_id=None,
+            )
         self.session.refresh(courseware_result)
         return CoursewareResultDetailResponse(**self.build_courseware_response(courseware_result).model_dump())
 
@@ -117,6 +125,13 @@ class CoursewareService:
         state = self.ppt_service.reply_and_short_poll(job_id=job_id, answer=answer)
         self.apply_remote_state(courseware_result, state)
         self.session.commit()
+        if state.status.lower() == "succeeded":
+            dispatch_coverage_task_if_needed(
+                session=self.session,
+                generation_batch_id=courseware_result.generation_batch_id,
+                operator_user_id=owner_user_id,
+                request_id=None,
+            )
         self.session.refresh(courseware_result)
         return CoursewareResultDetailResponse(**self.build_courseware_response(courseware_result).model_dump())
 
@@ -177,8 +192,8 @@ class CoursewareService:
                 self.archive_pptx(courseware_result, state)
             courseware_result.result_status = TASK_STATUS_SUCCESS
             if generation_batch is not None:
-                generation_batch.batch_status = TASK_STATUS_SUCCESS
-                generation_batch.finished_at = DateTimeUtil.now_utc()
+                if generation_batch.batch_status != TASK_STATUS_SUCCESS:
+                    generation_batch.batch_status = TASK_STATUS_PROCESSING
                 self.repository.save(generation_batch)
             if task is not None:
                 task.task_status = TASK_STATUS_SUCCESS
@@ -461,7 +476,7 @@ class CoursewareService:
                 "finalize_generation_batch",
                 TASK_STATUS_SUCCESS,
                 100,
-                detail_json={"batch_status": TASK_STATUS_SUCCESS},
+                detail_json={"batch_status": TASK_STATUS_PROCESSING},
                 started_at=now,
                 finished_at=now,
             )

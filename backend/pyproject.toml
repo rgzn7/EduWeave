@@ -44,6 +44,7 @@ packages = [
   "app.modules.assessment",
   "app.modules.auth",
   "app.modules.courseware",
+  "app.modules.coverage",
   "app.modules.curriculum",
   "app.modules.file_asset",
   "app.modules.knowledge",
