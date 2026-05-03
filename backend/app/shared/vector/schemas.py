@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-13
+@Date: 2026-04-30
 @Author: xisy
 @Discription: Milvus 向量存储模型
 """
@@ -15,10 +15,14 @@ class VectorRecord(BaseModel):
     id: str = Field(description="主键标识")
     project_id: int = Field(description="项目主键")
     embedding_model: str = Field(description="Embedding 模型标识")
+    semantic_chunk_id: int | None = Field(default=None, description="语义块主键")
     textbook_version_id: int | None = Field(default=None, description="教材版本主键")
     parse_version_id: int | None = Field(default=None, description="解析版本主键")
     knowledge_version_id: int | None = Field(default=None, description="知识版本主键")
     chapter_node_id: int | None = Field(default=None, description="章节节点主键")
+    page_start: int | None = Field(default=None, description="起始页")
+    page_end: int | None = Field(default=None, description="结束页")
+    chunk_type: str | None = Field(default=None, description="语义块类型")
     page_no: int | None = Field(default=None, description="页码")
     block_type: str | None = Field(default=None, description="解析块类型")
     importance_level: int | None = Field(default=None, description="重要度")
@@ -35,9 +39,9 @@ class VectorRecord(BaseModel):
             raise ValueError("字符串字段不能为空")
         return normalized_value
 
-    @field_validator("block_type")
+    @field_validator("chunk_type", "block_type")
     @classmethod
-    def validate_optional_block_type(cls, value: str | None) -> str | None:
+    def validate_optional_type(cls, value: str | None) -> str | None:
         if value is None:
             return None
         normalized_value = value.strip()
@@ -61,10 +65,14 @@ class VectorSearchHit(BaseModel):
     collection_name: str | None = None
     project_id: int | None = None
     embedding_model: str | None = None
+    semantic_chunk_id: int | None = None
     textbook_version_id: int | None = None
     parse_version_id: int | None = None
     knowledge_version_id: int | None = None
     chapter_node_id: int | None = None
+    page_start: int | None = None
+    page_end: int | None = None
+    chunk_type: str | None = None
     page_no: int | None = None
     block_type: str | None = None
     importance_level: int | None = None

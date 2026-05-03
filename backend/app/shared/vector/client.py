@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-13
+@Date: 2026-04-30
 @Author: xisy
 @Discription: Milvus 底层客户端封装
 """
@@ -14,7 +14,7 @@ class MilvusVectorClient:
     """Milvus 统一客户端。"""
 
     REQUIRED_COLLECTIONS = (
-        "textbook_chunk_vector",
+        "semantic_chunk_vector",
         "knowledge_point_vector",
     )
     RESERVED_COLLECTIONS = (
@@ -22,14 +22,17 @@ class MilvusVectorClient:
         "template_fragment_vector",
     )
     COLLECTION_SCHEMA_DEFINITIONS: dict[str, tuple[dict[str, Any], ...]] = {
-        "textbook_chunk_vector": (
+        "semantic_chunk_vector": (
             {"field_name": "id", "datatype": "VARCHAR", "is_primary": True, "max_length": 128},
+            {"field_name": "semantic_chunk_id", "datatype": "INT64"},
             {"field_name": "project_id", "datatype": "INT64"},
             {"field_name": "textbook_version_id", "datatype": "INT64"},
             {"field_name": "parse_version_id", "datatype": "INT64"},
+            {"field_name": "knowledge_version_id", "datatype": "INT64"},
             {"field_name": "chapter_node_id", "datatype": "INT64", "nullable": True},
-            {"field_name": "page_no", "datatype": "INT64", "nullable": True},
-            {"field_name": "block_type", "datatype": "VARCHAR", "max_length": 32, "nullable": True},
+            {"field_name": "page_start", "datatype": "INT64", "nullable": True},
+            {"field_name": "page_end", "datatype": "INT64", "nullable": True},
+            {"field_name": "chunk_type", "datatype": "VARCHAR", "max_length": 32, "nullable": True},
             {"field_name": "embedding_model", "datatype": "VARCHAR", "max_length": 128},
             {"field_name": "content", "datatype": "VARCHAR", "max_length": 8192, "nullable": True},
             {"field_name": "metadata", "datatype": "JSON", "nullable": True},

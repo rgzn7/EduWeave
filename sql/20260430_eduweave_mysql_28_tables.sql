@@ -1,6 +1,6 @@
--- @Date: 2026-04-13
+-- @Date: 2026-04-30
 -- @Author: xisy
--- @Discription: EduWeave MySQL 27张表初始化脚本
+-- @Discription: EduWeave MySQL 28张表初始化脚本
 
 SET NAMES utf8mb4;
 CREATE DATABASE IF NOT EXISTS `eduweave`
@@ -24,6 +24,7 @@ DROP TABLE IF EXISTS `lesson_plan`;
 DROP TABLE IF EXISTS `curriculum_plan`;
 DROP TABLE IF EXISTS `knowledge_evidence`;
 DROP TABLE IF EXISTS `knowledge_point`;
+DROP TABLE IF EXISTS `semantic_chunk`;
 DROP TABLE IF EXISTS `chapter_node`;
 DROP TABLE IF EXISTS `knowledge_version`;
 DROP TABLE IF EXISTS `parse_issue`;
@@ -343,6 +344,8 @@ CREATE TABLE `chapter_node` (
   `summary_text` TEXT NULL COMMENT '摘要',
   `page_start` INT NULL COMMENT '起始页',
   `page_end` INT NULL COMMENT '结束页',
+  `line_start` INT NULL COMMENT 'Markdown起始行号',
+  `line_end` INT NULL COMMENT 'Markdown结束行号',
   `sort_order` INT NOT NULL DEFAULT 0 COMMENT '排序',
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
@@ -352,6 +355,39 @@ CREATE TABLE `chapter_node` (
   CONSTRAINT `fk_chapter_node_version` FOREIGN KEY (`knowledge_version_id`) REFERENCES `knowledge_version` (`id`),
   CONSTRAINT `fk_chapter_node_parent` FOREIGN KEY (`parent_id`) REFERENCES `chapter_node` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='章节节点表';
+
+CREATE TABLE `semantic_chunk` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `project_id` BIGINT UNSIGNED NOT NULL COMMENT '所属项目',
+  `parse_version_id` BIGINT UNSIGNED NOT NULL COMMENT '解析版本',
+  `knowledge_version_id` BIGINT UNSIGNED NULL COMMENT '知识版本',
+  `chapter_node_id` BIGINT UNSIGNED NULL COMMENT '章节节点',
+  `chunk_no` INT NOT NULL COMMENT '语义块序号',
+  `chunk_title` VARCHAR(255) NULL COMMENT '语义块标题',
+  `chunk_type` VARCHAR(32) NOT NULL DEFAULT 'semantic' COMMENT '语义块类型',
+  `page_start` INT NULL COMMENT '起始页',
+  `page_end` INT NULL COMMENT '结束页',
+  `line_start` INT NULL COMMENT 'Markdown起始行号',
+  `line_end` INT NULL COMMENT 'Markdown结束行号',
+  `source_block_refs_json` JSON NULL COMMENT '来源解析块引用，保留页码、块号、坐标和资源文件',
+  `source_text_hash` VARCHAR(128) NULL COMMENT '来源文本哈希',
+  `chunk_text` MEDIUMTEXT NOT NULL COMMENT '语义块正文',
+  `summary_text` TEXT NULL COMMENT '摘要',
+  `metadata_json` JSON NULL COMMENT '附加元数据',
+  `created_by` BIGINT UNSIGNED NULL COMMENT '创建人',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_semantic_chunk_knowledge_no` (`knowledge_version_id`, `chunk_no`),
+  KEY `idx_semantic_chunk_project` (`project_id`, `created_at`),
+  KEY `idx_semantic_chunk_knowledge` (`knowledge_version_id`, `chapter_node_id`),
+  KEY `idx_semantic_chunk_page_range` (`parse_version_id`, `page_start`, `page_end`),
+  CONSTRAINT `fk_semantic_chunk_project` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`),
+  CONSTRAINT `fk_semantic_chunk_parse_version` FOREIGN KEY (`parse_version_id`) REFERENCES `parse_version` (`id`),
+  CONSTRAINT `fk_semantic_chunk_knowledge_version` FOREIGN KEY (`knowledge_version_id`) REFERENCES `knowledge_version` (`id`),
+  CONSTRAINT `fk_semantic_chunk_chapter` FOREIGN KEY (`chapter_node_id`) REFERENCES `chapter_node` (`id`),
+  CONSTRAINT `fk_semantic_chunk_created_by` FOREIGN KEY (`created_by`) REFERENCES `sys_user` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='教材语义块表';
 
 CREATE TABLE `knowledge_point` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
@@ -378,6 +414,7 @@ CREATE TABLE `knowledge_point` (
 CREATE TABLE `knowledge_evidence` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
   `knowledge_point_id` BIGINT UNSIGNED NOT NULL COMMENT '知识点',
+  `semantic_chunk_id` BIGINT UNSIGNED NULL COMMENT '语义块',
   `parse_version_id` BIGINT UNSIGNED NOT NULL COMMENT '解析版本',
   `parse_page_id` BIGINT UNSIGNED NULL COMMENT '解析页',
   `parse_block_id` BIGINT UNSIGNED NULL COMMENT '解析块',
@@ -390,8 +427,10 @@ CREATE TABLE `knowledge_evidence` (
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
   PRIMARY KEY (`id`),
   KEY `idx_knowledge_evidence_point` (`knowledge_point_id`),
+  KEY `idx_knowledge_evidence_semantic_chunk` (`semantic_chunk_id`),
   KEY `idx_knowledge_evidence_block` (`parse_block_id`),
   CONSTRAINT `fk_knowledge_evidence_point` FOREIGN KEY (`knowledge_point_id`) REFERENCES `knowledge_point` (`id`),
+  CONSTRAINT `fk_knowledge_evidence_semantic_chunk` FOREIGN KEY (`semantic_chunk_id`) REFERENCES `semantic_chunk` (`id`),
   CONSTRAINT `fk_knowledge_evidence_parse_version` FOREIGN KEY (`parse_version_id`) REFERENCES `parse_version` (`id`),
   CONSTRAINT `fk_knowledge_evidence_page` FOREIGN KEY (`parse_page_id`) REFERENCES `parse_page` (`id`),
   CONSTRAINT `fk_knowledge_evidence_block` FOREIGN KEY (`parse_block_id`) REFERENCES `parse_block` (`id`),

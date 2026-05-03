@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-11
+@Date: 2026-05-03
 @Author: xisy
 @Discription: 应用配置定义
 """
@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     embedding_api_key: str | None = None
     embedding_model: str | None = None
     embedding_timeout_seconds: int = 60
+
+    raccoon_api_host: str = "https://xiaohuanxiong.com"
+    raccoon_api_token: str | None = None
+    raccoon_request_timeout_seconds: int = 60
+    raccoon_poll_interval_seconds: int = 5
+    raccoon_short_poll_timeout_seconds: int = 120
 
     milvus_uri: str
     milvus_token: str | None = None
@@ -167,6 +173,15 @@ class Settings(BaseSettings):
             raise ValueError("OpenAI 兼容基础地址不能为空")
         return normalized_value
 
+    @field_validator("raccoon_api_host")
+    @classmethod
+    def normalize_raccoon_api_host(cls, value: str) -> str:
+        """归一化 Raccoon PPT API 基础地址。"""
+        normalized_value = value.strip().rstrip("/")
+        if not normalized_value:
+            raise ValueError("RACCOON_API_HOST 不能为空")
+        return normalized_value
+
     @field_validator("mineru_api_token", mode="before")
     @classmethod
     def normalize_mineru_api_token(cls, value: str | None) -> str | None:
@@ -178,10 +193,18 @@ class Settings(BaseSettings):
             return None
         return normalized_value
 
-    @field_validator("llm_api_key", "embedding_api_key", "llm_model", "llm_reasoning_effort", "embedding_model", mode="before")
+    @field_validator(
+        "llm_api_key",
+        "embedding_api_key",
+        "llm_model",
+        "llm_reasoning_effort",
+        "embedding_model",
+        "raccoon_api_token",
+        mode="before",
+    )
     @classmethod
     def normalize_optional_openai_compatible_value(cls, value: str | None) -> str | None:
-        """将空的 OpenAI 兼容配置归一为 None。"""
+        """将空的外部服务配置归一为 None。"""
         if value is None:
             return None
         normalized_value = value.strip()
@@ -197,12 +220,20 @@ class Settings(BaseSettings):
             raise ValueError("MinerU 轮询配置必须大于 0")
         return value
 
-    @field_validator("llm_timeout_seconds", "embedding_timeout_seconds")
+    @field_validator("llm_timeout_seconds", "embedding_timeout_seconds", "raccoon_request_timeout_seconds")
     @classmethod
     def validate_openai_compatible_timeout(cls, value: int) -> int:
-        """校验 OpenAI 兼容接口超时时间。"""
+        """校验外部接口超时时间。"""
         if value <= 0:
-            raise ValueError("LLM/Embedding 超时时间必须大于 0")
+            raise ValueError("外部接口超时时间必须大于 0")
+        return value
+
+    @field_validator("raccoon_poll_interval_seconds", "raccoon_short_poll_timeout_seconds")
+    @classmethod
+    def validate_raccoon_poll_values(cls, value: int) -> int:
+        """校验 Raccoon PPT 轮询配置。"""
+        if value <= 0:
+            raise ValueError("Raccoon PPT 轮询配置必须大于 0")
         return value
 
     @property

@@ -1,7 +1,7 @@
 """
-@Date: 2026-04-26
+@Date: 2026-05-03
 @Author: xisy
-@Discription: 生成编排与课程大纲接口测试
+@Discription: 生成编排与课程大纲、教案、测评、课件接口测试
 """
 
 import json
@@ -12,14 +12,18 @@ from pypdf import PdfWriter
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException, BusinessErrorCode
+from app.modules.assessment.schemas import AssessmentGenerationResult
 from app.modules.curriculum.schemas import CurriculumGenerationResult
 from app.modules.knowledge.schemas import (
-    KnowledgeExtractionChapterDraft,
+    KnowledgeChapterBoundaryItem,
+    KnowledgeChapterBoundaryResult,
+    KnowledgeChapterPointExtractionResult,
     KnowledgeExtractionEvidenceDraft,
     KnowledgeExtractionPointDraft,
-    KnowledgeExtractionResult,
 )
+from app.modules.lesson_plan.schemas import LessonPlanGenerationResult
 from app.shared.llm import OpenAICompatibleEmbeddingService, OpenAICompatibleLlmService
+from app.shared.ppt import RaccoonPptJobState, RaccoonPptService
 from app.shared.vector import MilvusVectorService
 
 
@@ -105,40 +109,27 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
 
     def fake_generate_structured_output(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
         _ = (self, temperature)
-        if response_model is KnowledgeExtractionResult:
-            return KnowledgeExtractionResult(
+        if response_model is KnowledgeChapterBoundaryResult:
+            return KnowledgeChapterBoundaryResult(
+                items=[
+                    KnowledgeChapterBoundaryItem(
+                        title="第2页标题",
+                        start_line=6,
+                        line_text="# 第2页标题",
+                        confidence=0.96,
+                    )
+                ]
+            )
+
+        if response_model is KnowledgeChapterPointExtractionResult:
+            return KnowledgeChapterPointExtractionResult(
                 summary_json={
                     "teaching_objectives": ["掌握乘法口诀", "理解乘法应用"],
                     "key_points": ["乘法口诀"],
                     "difficult_points": ["应用题分析"],
                 },
-                chapters=[
-                    KnowledgeExtractionChapterDraft(
-                        node_path="1",
-                        node_no=1,
-                        node_level=1,
-                        node_type="unit",
-                        title="第一单元 表内乘法",
-                        summary_text="乘法基础知识",
-                        page_start=1,
-                        page_end=2,
-                        sort_order=0,
-                    ),
-                    KnowledgeExtractionChapterDraft(
-                        node_path="1.1",
-                        node_no=1,
-                        node_level=2,
-                        node_type="section",
-                        title="乘法口诀",
-                        summary_text="重点掌握口诀记忆与应用",
-                        page_start=1,
-                        page_end=2,
-                        sort_order=1,
-                    ),
-                ],
                 knowledge_points=[
                     KnowledgeExtractionPointDraft(
-                        chapter_path="1.1",
                         point_code="kp_multiplication_table",
                         point_name="乘法口诀",
                         point_type="knowledge",
@@ -150,10 +141,10 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
                         sort_order=0,
                         evidences=[
                             KnowledgeExtractionEvidenceDraft(
-                                page_no=1,
+                                page_no=2,
                                 block_no=2,
                                 evidence_type="parse_block",
-                                excerpt_text="textbook.pdf 第1页解析内容",
+                                excerpt_text="textbook.pdf 第2页解析内容",
                                 score_value=0.95,
                             )
                         ],
@@ -162,30 +153,127 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
             )
 
         user_payload = json.loads(messages[1].content)
-        course_count = int(user_payload["generation_batch"]["course_count"])
-        point_id = int(user_payload["knowledge_version"]["knowledge_points"][0]["id"])
-        return CurriculumGenerationResult(
-            plan_title="三年级数学乘法提升课程",
-            summary_text="围绕乘法口诀和应用题进行阶段提升。",
-            course_overview={"target": "提升乘法理解与应用能力"},
-            stage_goals=["熟练背诵口诀", "能够解决基础应用题"],
-            lesson_sessions=[
+        if response_model is CurriculumGenerationResult:
+            course_count = int(user_payload["generation_batch"]["course_count"])
+            point_id = int(user_payload["knowledge_version"]["knowledge_points"][0]["id"])
+            return CurriculumGenerationResult(
+                plan_title="三年级数学乘法提升课程",
+                summary_text="围绕乘法口诀和应用题进行阶段提升。",
+                course_overview={"target": "提升乘法理解与应用能力"},
+                stage_goals=["熟练背诵口诀", "能够解决基础应用题"],
+                lesson_sessions=[
+                    {
+                        "session_no": session_no,
+                        "title": f"第{session_no}讲 乘法口诀训练",
+                        "duration_minutes": 90,
+                        "objectives": ["掌握乘法口诀"],
+                        "key_points": ["乘法口诀"],
+                        "activities": ["口算热身", "例题讲解"],
+                        "homework": ["完成口诀练习"],
+                        "knowledge_point_refs": [point_id],
+                    }
+                    for session_no in range(1, course_count + 1)
+                ],
+                key_points=["乘法口诀"],
+                difficult_points=["应用题分析"],
+                learner_adjustments=["增加口算练习频次"],
+                coverage_knowledge_points=[point_id],
+            )
+
+        if response_model is AssessmentGenerationResult:
+            point_id = int(user_payload["knowledge_points"][0]["id"])
+            strategy = user_payload["assessment_strategy"]
+            question_count = int(strategy["question_count"])
+            question_types = list(strategy["question_types"])
+            questions = []
+            question_type_distribution: dict[str, int] = {}
+            difficulty_distribution: dict[str, int] = {}
+            for question_no in range(1, question_count + 1):
+                question_type = question_types[(question_no - 1) % len(question_types)]
+                difficulty_level = 2 + (question_no % 3)
+                question_type_distribution[question_type] = question_type_distribution.get(question_type, 0) + 1
+                difficulty_key = str(difficulty_level)
+                difficulty_distribution[difficulty_key] = difficulty_distribution.get(difficulty_key, 0) + 1
+                questions.append(
+                    {
+                        "question_no": question_no,
+                        "knowledge_point_id": point_id,
+                        "question_type": question_type,
+                        "difficulty_level": difficulty_level,
+                        "score_value": 10,
+                        "stem_text": f"第{question_no}题：围绕乘法口诀完成练习。",
+                        "options_json": {"A": "2", "B": "4", "C": "6", "D": "8"} if question_type == "single_choice" else None,
+                        "answer_text": "参考答案",
+                        "analysis_text": "考查乘法口诀的理解与应用。",
+                        "source_trace_json": {"knowledge_point_ids": [point_id]},
+                    }
+                )
+            return AssessmentGenerationResult(
+                blueprint_name="三年级数学乘法单元测试蓝图",
+                paper_title="三年级数学乘法单元测试",
+                strategy_summary={"scene_type": strategy["scene_type"], "question_count": question_count},
+                knowledge_weights=[
+                    {
+                        "knowledge_point_id": point_id,
+                        "weight_percent": 100,
+                        "suggested_question_count": question_count,
+                        "question_types": question_types,
+                        "difficulty_range": strategy["difficulty_range"],
+                    }
+                ],
+                question_type_distribution=question_type_distribution,
+                difficulty_distribution=difficulty_distribution,
+                questions=questions,
+            )
+
+        point_id = int(user_payload["knowledge_points"][0]["id"])
+        return LessonPlanGenerationResult(
+            lesson_title="三年级数学乘法提升教案",
+            summary_text="围绕乘法口诀组织导入、讲解、练习与课后巩固。",
+            course_overview={"lesson_type": "提升课", "duration_minutes": 90},
+            material_list=["教材解析片段", "口算练习纸"],
+            core_knowledge=["乘法口诀", "应用题分析"],
+            teaching_flow=[
                 {
-                    "session_no": session_no,
-                    "title": f"第{session_no}讲 乘法口诀训练",
-                    "duration_minutes": 90,
+                    "step_no": 1,
+                    "stage_name": "导入",
+                    "duration_minutes": 10,
+                    "teacher_actions": ["用口算热身引入乘法口诀"],
+                    "student_activities": ["完成快速口算"],
+                    "knowledge_point_refs": [point_id],
+                },
+                {
+                    "step_no": 2,
+                    "stage_name": "讲解与练习",
+                    "duration_minutes": 60,
+                    "teacher_actions": ["讲解口诀规律并组织例题练习"],
+                    "student_activities": ["完成例题并复述解题过程"],
+                    "knowledge_point_refs": [point_id],
+                },
+            ],
+            session_plans=[
+                {
+                    "session_no": 1,
+                    "title": "第1讲 乘法口诀训练",
                     "objectives": ["掌握乘法口诀"],
-                    "key_points": ["乘法口诀"],
-                    "activities": ["口算热身", "例题讲解"],
+                    "teaching_focus": ["口诀记忆", "基础应用"],
+                    "teaching_steps": [
+                        {
+                            "step_no": 1,
+                            "stage_name": "讲解",
+                            "duration_minutes": 30,
+                            "teacher_actions": ["拆解口诀规律"],
+                            "student_activities": ["跟读并完成练习"],
+                            "knowledge_point_refs": [point_id],
+                        }
+                    ],
                     "homework": ["完成口诀练习"],
                     "knowledge_point_refs": [point_id],
                 }
-                for session_no in range(1, course_count + 1)
             ],
-            key_points=["乘法口诀"],
-            difficult_points=["应用题分析"],
+            after_class_plan={"homework": ["口诀复习"], "review_focus": "应用题审题"},
             learner_adjustments=["增加口算练习频次"],
-            coverage_knowledge_points=[point_id],
+            knowledge_point_refs=[point_id],
         )
 
     def fake_embed_texts(self, texts: list[str]):  # noqa: ANN001
@@ -196,14 +284,29 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
         vector_store[collection_name] = list(records)
         return {"upsert_count": len(records)}
 
+    def fake_create_job_and_short_poll(self, *, prompt: str, role: str, scene: str, audience: str):  # noqa: ANN001
+        _ = (self, prompt, role, scene, audience)
+        return RaccoonPptJobState(
+            job_id="ppt-job-1",
+            status="succeeded",
+            download_url="https://raccoon.test.example.com/courseware.pptx",
+            raw_payload={"data": {"job_id": "ppt-job-1", "status": "succeeded"}},
+        )
+
+    def fake_download_pptx(self, download_url: str):  # noqa: ANN001
+        _ = (self, download_url)
+        return b"fake-pptx-content"
+
     monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", fake_generate_structured_output)
     monkeypatch.setattr(OpenAICompatibleEmbeddingService, "embed_texts", fake_embed_texts)
     monkeypatch.setattr(MilvusVectorService, "upsert_vectors", fake_upsert_vectors)
+    monkeypatch.setattr(RaccoonPptService, "create_job_and_short_poll", fake_create_job_and_short_poll)
+    monkeypatch.setattr(RaccoonPptService, "download_pptx", fake_download_pptx)
     yield vector_store
 
 
-def test_generation_batch_should_create_curriculum_plan(client, generation_test_stubs) -> None:
-    """创建生成批次后应自动生成课程大纲。"""
+def test_generation_batch_should_create_curriculum_lesson_plan_and_assessment(client, generation_test_stubs) -> None:
+    """创建生成批次后应自动生成课程大纲、教案、测评和课件。"""
     _ = generation_test_stubs
     headers = build_auth_headers(client)
     project_id = create_project(client, headers)
@@ -228,9 +331,26 @@ def test_generation_batch_should_create_curriculum_plan(client, generation_test_
     batch_payload = response.json()["data"]
     assert batch_payload["batch_status"] == "success"
     assert batch_payload["curriculum_plan_id"] is not None
+    assert batch_payload["lesson_plan_id"] is not None
+    assert batch_payload["assessment_blueprint_id"] is not None
+    assert batch_payload["pipeline_options_json"]["enabled_steps"] == ["curriculum", "lesson_plan", "assessment", "courseware"]
+    assert batch_payload["assessment_strategy_json"]["scene_type"] == "unit_test"
     assert batch_payload["tasks"][0]["task_type"] == "curriculum_generate"
     assert batch_payload["tasks"][0]["task_status"] == "success"
     assert batch_payload["tasks"][0]["result_json"]["curriculum_plan_id"] == batch_payload["curriculum_plan_id"]
+    assert batch_payload["tasks"][1]["task_type"] == "lesson_plan_generate"
+    assert batch_payload["tasks"][1]["task_status"] == "success"
+    assert batch_payload["tasks"][1]["result_json"]["lesson_plan_id"] == batch_payload["lesson_plan_id"]
+    assert batch_payload["tasks"][1]["result_json"]["assessment_task_id"] == batch_payload["tasks"][2]["id"]
+    assert batch_payload["tasks"][2]["task_type"] == "assessment_generate"
+    assert batch_payload["tasks"][2]["task_status"] == "success"
+    assert batch_payload["tasks"][2]["result_json"]["assessment_blueprint_id"] == batch_payload["assessment_blueprint_id"]
+    assert batch_payload["tasks"][2]["result_json"]["question_count"] == 10
+    assert batch_payload["tasks"][2]["result_json"]["courseware_task_id"] == batch_payload["tasks"][3]["id"]
+    assert batch_payload["tasks"][3]["task_type"] == "courseware_generate"
+    assert batch_payload["tasks"][3]["task_status"] == "success"
+    assert batch_payload["tasks"][3]["result_json"]["courseware_result_id"] is not None
+    assert batch_payload["tasks"][3]["result_json"]["export_file_id"] is not None
 
     task_detail_response = client.get(f"/api/v1/tasks/{batch_payload['tasks'][0]['id']}", headers=headers)
     assert task_detail_response.status_code == 200
@@ -260,6 +380,70 @@ def test_generation_batch_should_create_curriculum_plan(client, generation_test_
     batch_detail_response = client.get(f"/api/v1/generation-batches/{batch_payload['id']}", headers=headers)
     assert batch_detail_response.status_code == 200
     assert batch_detail_response.json()["data"]["curriculum_plan_id"] == batch_payload["curriculum_plan_id"]
+    assert batch_detail_response.json()["data"]["lesson_plan_id"] == batch_payload["lesson_plan_id"]
+    assert [task["task_type"] for task in batch_detail_response.json()["data"]["tasks"]] == [
+        "curriculum_generate",
+        "lesson_plan_generate",
+        "assessment_generate",
+        "courseware_generate",
+    ]
+
+    lesson_detail_response = client.get(f"/api/v1/lesson-plans/{batch_payload['lesson_plan_id']}", headers=headers)
+    assert lesson_detail_response.status_code == 200
+    lesson_payload = lesson_detail_response.json()["data"]
+    assert lesson_payload["lesson_title"] == "三年级数学乘法提升教案"
+    assert lesson_payload["content_json"]["teaching_flow"][0]["stage_name"] == "导入"
+    assert lesson_payload["content_json"]["session_plans"][0]["title"] == "第1讲 乘法口诀训练"
+
+    lesson_list_response = client.get(
+        f"/api/v1/lesson-plans?curriculum_plan_id={batch_payload['curriculum_plan_id']}",
+        headers=headers,
+    )
+    assert lesson_list_response.status_code == 200
+    assert lesson_list_response.json()["data"]["pagination"]["total_count"] == 1
+
+    missing_lesson_response = client.get("/api/v1/lesson-plans/999999", headers=headers)
+    assert missing_lesson_response.status_code == 404
+    assert missing_lesson_response.json()["errors"][0]["code"] == "LESSON_PLAN_NOT_FOUND"
+
+    blueprint_detail_response = client.get(
+        f"/api/v1/assessment-blueprints/{batch_payload['assessment_blueprint_id']}",
+        headers=headers,
+    )
+    assert blueprint_detail_response.status_code == 200
+    blueprint_payload = blueprint_detail_response.json()["data"]
+    assert blueprint_payload["blueprint_name"] == "三年级数学乘法单元测试蓝图"
+    assert blueprint_payload["scenario_type"] == "unit_test"
+
+    paper_list_response = client.get(
+        f"/api/v1/paper-results?generation_batch_id={batch_payload['id']}&scene_type=unit_test",
+        headers=headers,
+    )
+    assert paper_list_response.status_code == 200
+    paper_payload = paper_list_response.json()["data"]["items"][0]
+    assert paper_payload["question_count"] == 10
+
+    paper_detail_response = client.get(f"/api/v1/paper-results/{paper_payload['id']}", headers=headers)
+    assert paper_detail_response.status_code == 200
+    assert len(paper_detail_response.json()["data"]["questions"]) == 10
+
+    courseware_list_response = client.get(
+        f"/api/v1/courseware-results?generation_batch_id={batch_payload['id']}",
+        headers=headers,
+    )
+    assert courseware_list_response.status_code == 200
+    courseware_payload = courseware_list_response.json()["data"]["items"][0]
+    assert courseware_payload["result_status"] == "success"
+    assert courseware_payload["preview_json"]["raccoon_status"] == "succeeded"
+    assert courseware_payload["export_file_id"] is not None
+
+    courseware_detail_response = client.get(f"/api/v1/courseware-results/{courseware_payload['id']}", headers=headers)
+    assert courseware_detail_response.status_code == 200
+    assert courseware_detail_response.json()["data"]["structure_json"]["generator"] == "raccoon_ppt"
+
+    file_url_response = client.get(f"/api/v1/files/{courseware_payload['export_file_id']}/download-url", headers=headers)
+    assert file_url_response.status_code == 200
+    assert file_url_response.json()["data"]["signed_url"].startswith("https://obs.test.example.com/")
 
 
 def test_generation_batch_should_reject_foreign_baseline(client, generation_test_stubs) -> None:
@@ -285,6 +469,159 @@ def test_generation_batch_should_reject_foreign_baseline(client, generation_test
 
     assert response.status_code == 422
     assert response.json()["errors"][0]["code"] == "GENERATION_BASELINE_INVALID"
+
+
+def test_courseware_refresh_should_finalize_pending_raccoon_job(
+    client,
+    generation_test_stubs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """课件短轮询未完成时应保持处理中，并可通过刷新收口批次。"""
+    _ = generation_test_stubs
+
+    def running_create_job(self, *, prompt: str, role: str, scene: str, audience: str):  # noqa: ANN001
+        _ = (self, prompt, role, scene, audience)
+        return RaccoonPptJobState(
+            job_id="ppt-job-pending",
+            status="running",
+            raw_payload={"data": {"job_id": "ppt-job-pending", "status": "running"}},
+        )
+
+    monkeypatch.setattr(RaccoonPptService, "create_job_and_short_poll", running_create_job)
+
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    knowledge_version_id = create_knowledge_version(client, headers, project_id)
+    learner_profile_version_id = create_learner_profile_version(client, headers, project_id)
+
+    response = client.post(
+        "/api/v1/generation-batches",
+        headers=headers,
+        json={
+            "project_id": project_id,
+            "knowledge_version_id": knowledge_version_id,
+            "learner_profile_version_id": learner_profile_version_id,
+            "course_count": 2,
+            "session_duration_minutes": 90,
+        },
+    )
+
+    assert response.status_code == 201
+    batch_payload = response.json()["data"]
+    assert batch_payload["batch_status"] == "processing"
+    assert batch_payload["tasks"][3]["task_type"] == "courseware_generate"
+    assert batch_payload["tasks"][3]["task_status"] == "processing"
+
+    courseware_list_response = client.get(
+        f"/api/v1/courseware-results?generation_batch_id={batch_payload['id']}",
+        headers=headers,
+    )
+    courseware_payload = courseware_list_response.json()["data"]["items"][0]
+    assert courseware_payload["result_status"] == "processing"
+    assert courseware_payload["export_file_id"] is None
+
+    def succeeded_short_poll(self, job_id: str, initial_state=None):  # noqa: ANN001
+        _ = (self, initial_state)
+        return RaccoonPptJobState(
+            job_id=job_id,
+            status="succeeded",
+            download_url="https://raccoon.test.example.com/courseware.pptx",
+            raw_payload={"data": {"job_id": job_id, "status": "succeeded"}},
+        )
+
+    monkeypatch.setattr(RaccoonPptService, "short_poll_job", succeeded_short_poll)
+
+    refresh_response = client.post(f"/api/v1/courseware-results/{courseware_payload['id']}/refresh", headers=headers)
+    assert refresh_response.status_code == 200
+    refreshed_payload = refresh_response.json()["data"]
+    assert refreshed_payload["result_status"] == "success"
+    assert refreshed_payload["export_file_id"] is not None
+
+    batch_detail_response = client.get(f"/api/v1/generation-batches/{batch_payload['id']}", headers=headers)
+    assert batch_detail_response.json()["data"]["batch_status"] == "success"
+    task_detail_response = client.get(f"/api/v1/tasks/{batch_payload['tasks'][3]['id']}", headers=headers)
+    task_steps = {step["step_code"]: step for step in task_detail_response.json()["data"]["steps"]}
+    assert task_steps["poll_raccoon_ppt_job"]["step_status"] == "success"
+    assert task_steps["archive_courseware_result"]["step_status"] == "success"
+    assert task_steps["finalize_generation_batch"]["step_status"] == "success"
+
+
+def test_courseware_reply_should_continue_after_required_user_input(
+    client,
+    generation_test_stubs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Raccoon 要求补充输入时应保存问题，并可通过 reply 继续生成。"""
+    _ = generation_test_stubs
+
+    def waiting_create_job(self, *, prompt: str, role: str, scene: str, audience: str):  # noqa: ANN001
+        _ = (self, prompt, role, scene, audience)
+        return RaccoonPptJobState(
+            job_id="ppt-job-waiting",
+            status="waiting_user_input",
+            required_user_input="请补充课件页数偏好。",
+            raw_payload={"data": {"job_id": "ppt-job-waiting", "status": "waiting_user_input"}},
+        )
+
+    monkeypatch.setattr(RaccoonPptService, "create_job_and_short_poll", waiting_create_job)
+
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    knowledge_version_id = create_knowledge_version(client, headers, project_id)
+    learner_profile_version_id = create_learner_profile_version(client, headers, project_id)
+
+    response = client.post(
+        "/api/v1/generation-batches",
+        headers=headers,
+        json={
+            "project_id": project_id,
+            "knowledge_version_id": knowledge_version_id,
+            "learner_profile_version_id": learner_profile_version_id,
+            "course_count": 2,
+            "session_duration_minutes": 90,
+        },
+    )
+
+    assert response.status_code == 201
+    batch_payload = response.json()["data"]
+    assert batch_payload["batch_status"] == "processing"
+
+    courseware_list_response = client.get(
+        f"/api/v1/courseware-results?generation_batch_id={batch_payload['id']}",
+        headers=headers,
+    )
+    courseware_payload = courseware_list_response.json()["data"]["items"][0]
+    assert courseware_payload["result_status"] == "processing"
+    assert courseware_payload["preview_json"]["required_user_input"] == "请补充课件页数偏好。"
+
+    def succeeded_reply_and_short_poll(self, *, job_id: str, answer: str):  # noqa: ANN001
+        _ = (self, answer)
+        return RaccoonPptJobState(
+            job_id=job_id,
+            status="succeeded",
+            download_url="https://raccoon.test.example.com/courseware.pptx",
+            raw_payload={"data": {"job_id": job_id, "status": "succeeded"}},
+        )
+
+    monkeypatch.setattr(RaccoonPptService, "reply_and_short_poll", succeeded_reply_and_short_poll)
+
+    reply_response = client.post(
+        f"/api/v1/courseware-results/{courseware_payload['id']}/reply",
+        headers=headers,
+        json={"answer": "请生成 18 页左右，互动练习页不少于 3 页。"},
+    )
+    assert reply_response.status_code == 200
+    replied_payload = reply_response.json()["data"]
+    assert replied_payload["result_status"] == "success"
+    assert replied_payload["export_file_id"] is not None
+
+    batch_detail_response = client.get(f"/api/v1/generation-batches/{batch_payload['id']}", headers=headers)
+    assert batch_detail_response.json()["data"]["batch_status"] == "success"
+    task_detail_response = client.get(f"/api/v1/tasks/{batch_payload['tasks'][3]['id']}", headers=headers)
+    task_steps = {step["step_code"]: step for step in task_detail_response.json()["data"]["steps"]}
+    assert task_steps["poll_raccoon_ppt_job"]["step_status"] == "success"
+    assert task_steps["archive_courseware_result"]["step_status"] == "success"
+    assert task_steps["finalize_generation_batch"]["step_status"] == "success"
 
 
 def test_generation_batch_should_mark_failure_when_llm_invalid(
@@ -331,3 +668,73 @@ def test_generation_batch_should_mark_failure_when_llm_invalid(
     task_payload = detail_response.json()["data"]["tasks"][0]
     assert task_payload["task_status"] == "failure"
     assert task_payload["last_error_code"] == "LLM_RESULT_INVALID"
+
+
+def test_generation_batch_should_mark_failure_when_lesson_plan_has_invalid_knowledge_ref(
+    client,
+    generation_test_stubs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """教案引用不存在的知识点时应写入失败批次与失败任务。"""
+    _ = generation_test_stubs
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    knowledge_version_id = create_knowledge_version(client, headers, project_id)
+    learner_profile_version_id = create_learner_profile_version(client, headers, project_id)
+
+    original_generate = OpenAICompatibleLlmService.generate_structured_output
+
+    def mixed_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
+        if response_model is LessonPlanGenerationResult:
+            return LessonPlanGenerationResult(
+                lesson_title="非法知识点教案",
+                summary_text="包含不存在的知识点引用。",
+                course_overview={"lesson_type": "提升课"},
+                material_list=["教材解析片段"],
+                core_knowledge=["乘法口诀"],
+                teaching_flow=[
+                    {
+                        "step_no": 1,
+                        "stage_name": "导入",
+                        "duration_minutes": 10,
+                        "teacher_actions": ["导入"],
+                        "student_activities": ["练习"],
+                        "knowledge_point_refs": [999999],
+                    }
+                ],
+                session_plans=[],
+                after_class_plan={},
+                learner_adjustments=[],
+                knowledge_point_refs=[999999],
+            )
+        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature)
+
+    monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", mixed_generate)
+    response = client.post(
+        "/api/v1/generation-batches",
+        headers=headers,
+        json={
+            "project_id": project_id,
+            "knowledge_version_id": knowledge_version_id,
+            "learner_profile_version_id": learner_profile_version_id,
+            "course_count": 2,
+            "session_duration_minutes": 90,
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["errors"][0]["code"] == "LLM_RESULT_INVALID"
+
+    list_response = client.get(f"/api/v1/generation-batches?project_id={project_id}", headers=headers)
+    assert list_response.status_code == 200
+    failed_batch = list_response.json()["data"]["items"][0]
+    assert failed_batch["batch_status"] == "failure"
+    assert failed_batch["curriculum_plan_id"] is not None
+    assert failed_batch["lesson_plan_id"] is None
+
+    detail_response = client.get(f"/api/v1/generation-batches/{failed_batch['id']}", headers=headers)
+    tasks = detail_response.json()["data"]["tasks"]
+    assert [task["task_type"] for task in tasks] == ["curriculum_generate", "lesson_plan_generate"]
+    assert tasks[0]["task_status"] == "success"
+    assert tasks[1]["task_status"] == "failure"
+    assert tasks[1]["last_error_code"] == "LLM_RESULT_INVALID"

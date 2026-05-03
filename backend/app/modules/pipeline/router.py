@@ -32,7 +32,7 @@ def get_pipeline_service(session: Annotated[Session, Depends(get_db_session)]) -
 @router.post(
     "/generation-batches",
     summary="创建生成批次",
-    description="冻结知识版本与学情版本基线，创建生成批次并自动发起课程大纲生成任务。",
+    description="冻结知识版本与学情版本基线，创建生成批次并自动发起课程大纲与教案生成任务。",
     operation_id="pipeline_generation_batch_create",
     response_model=ApiResponse[GenerationBatchDetailResponse],
     status_code=status.HTTP_201_CREATED,

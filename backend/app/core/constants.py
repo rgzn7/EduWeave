@@ -1,11 +1,12 @@
 """
-@Date: 2026-04-13
+@Date: 2026-05-03
 @Author: xisy
 @Discription: 输入链路公共常量定义
 """
 
 TEXTBOOK_SOURCE_BIZ_TYPE = "textbook_source"
 LEARNER_PROFILE_SOURCE_BIZ_TYPE = "learner_profile_source"
+COURSEWARE_EXPORT_BIZ_TYPE = "courseware_export"
 
 PROJECT_MODULE_CODE = "project"
 TEXTBOOK_MODULE_CODE = "textbook"
@@ -16,6 +17,9 @@ TASK_CENTER_MODULE_CODE = "task_center"
 FILE_ASSET_MODULE_CODE = "file_asset"
 PIPELINE_MODULE_CODE = "pipeline"
 CURRICULUM_MODULE_CODE = "curriculum"
+LESSON_PLAN_MODULE_CODE = "lesson_plan"
+ASSESSMENT_MODULE_CODE = "assessment"
+COURSEWARE_MODULE_CODE = "courseware"
 
 TASK_STATUS_PENDING = "pending"
 TASK_STATUS_PROCESSING = "processing"
@@ -29,6 +33,9 @@ TEXTBOOK_PARSE_TASK_TYPE = "textbook_parse"
 TEXTBOOK_REPARSE_TASK_TYPE = "textbook_reparse"
 KNOWLEDGE_EXTRACT_TASK_TYPE = "knowledge_extract"
 CURRICULUM_GENERATE_TASK_TYPE = "curriculum_generate"
+LESSON_PLAN_GENERATE_TASK_TYPE = "lesson_plan_generate"
+ASSESSMENT_GENERATE_TASK_TYPE = "assessment_generate"
+COURSEWARE_GENERATE_TASK_TYPE = "courseware_generate"
 
 PROFILE_QUEUE_NAME = "profile_queue"
 PARSING_QUEUE_NAME = "parsing_queue"

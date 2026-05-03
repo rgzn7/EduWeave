@@ -27,6 +27,19 @@ class GenerationBatchCreateRequest(BaseSchema):
     )
     course_count: int = Field(description="总课次", ge=1, le=120, examples=[12])
     session_duration_minutes: int = Field(description="单次课时分钟数", ge=15, le=360, examples=[90])
+    assessment_strategy_json: dict[str, Any] | None = Field(
+        default=None,
+        description="测评策略快照，不传则使用单元测试默认策略",
+        examples=[
+            {
+                "scenario_type": "unit_test",
+                "scene_type": "unit_test",
+                "question_count": 10,
+                "question_types": ["single_choice", "fill_blank", "short_answer"],
+                "difficulty_range": [1, 5],
+            }
+        ],
+    )
 
 
 class GenerationBatchListItemResponse(BaseSchema):

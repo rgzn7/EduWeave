@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-13
+@Date: 2026-04-30
 @Author: xisy
 @Discription: Milvus 向量服务测试
 """
@@ -130,7 +130,7 @@ def test_ensure_collections_should_be_idempotent() -> None:
     second_created = vector_client.ensure_collections()
 
     assert first_created == [
-        vector_client.build_collection_name("textbook_chunk_vector"),
+        vector_client.build_collection_name("semantic_chunk_vector"),
         vector_client.build_collection_name("knowledge_point_vector"),
     ]
     assert second_created == []
@@ -144,7 +144,7 @@ def test_ensure_collections_should_fail_when_existing_schema_drifted() -> None:
     vector_client.get_client = lambda: fake_client
 
     fake_client.seed_collection(
-        vector_client.build_collection_name("textbook_chunk_vector"),
+        vector_client.build_collection_name("semantic_chunk_vector"),
         [
             {"name": "id", "type": "VARCHAR", "is_primary": True, "params": {"max_length": 128}},
             {"name": "project_id", "type": "INT64"},

@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-14
+@Date: 2026-04-30
 @Author: xisy
 @Discription: 知识结构化模块业务服务
 """
@@ -19,8 +19,9 @@ from app.modules.knowledge.domain import (
     PersistedKnowledgeSnapshot,
     build_knowledge_point_embedding_text,
     build_knowledge_point_vector_records,
-    build_textbook_chunk_embedding_text,
-    build_textbook_chunk_vector_records,
+    build_semantic_chunk_drafts_from_parse_content,
+    build_semantic_chunk_embedding_text,
+    build_semantic_chunk_vector_records,
     parent_node_path,
     persist_knowledge_snapshot,
     sort_node_path,
@@ -383,11 +384,17 @@ class KnowledgeService:
                 created_by=owner_user_id,
             )
         )
+        semantic_chunk_drafts = build_semantic_chunk_drafts_from_parse_content(
+            parse_pages=parse_pages,
+            parse_blocks=parse_blocks,
+            chapter_drafts=list(chapter_drafts.values()),
+        )
         snapshot = persist_knowledge_snapshot(
             self.repository,
             knowledge_version=new_knowledge_version,
             chapter_drafts=list(chapter_drafts.values()),
             point_drafts=list(point_drafts.values()),
+            semantic_chunk_drafts=semantic_chunk_drafts,
         )
         new_knowledge_version.summary_json = _normalize_summary_payload(
             new_knowledge_version.summary_json,
@@ -554,6 +561,8 @@ def _clone_chapter_drafts(chapters: list) -> dict[int, ChapterDraft]:
             summary_text=chapter.summary_text,
             page_start=chapter.page_start,
             page_end=chapter.page_end,
+            line_start=chapter.line_start,
+            line_end=chapter.line_end,
             sort_order=chapter.sort_order,
         )
         for chapter in chapters
@@ -569,6 +578,7 @@ def _clone_point_drafts(points: list, evidences: list) -> dict[int | str, Knowle
                 parse_version_id=evidence.parse_version_id,
                 parse_page_id=evidence.parse_page_id,
                 parse_block_id=evidence.parse_block_id,
+                semantic_chunk_ref_id=None,
                 source_file_id=evidence.source_file_id,
                 evidence_type=evidence.evidence_type,
                 page_no=evidence.page_no,
@@ -626,6 +636,7 @@ def _build_manual_evidence_drafts(
                 parse_version_id=parse_version_id,
                 parse_page_id=parse_page.id,
                 parse_block_id=parse_block.id if parse_block is not None else None,
+                semantic_chunk_ref_id=None,
                 source_file_id=(
                     parse_block.asset_file_id
                     if parse_block is not None and parse_block.asset_file_id is not None
@@ -665,6 +676,7 @@ def _merge_evidence_drafts(points: list[KnowledgePointDraft]) -> list[KnowledgeE
                     parse_version_id=evidence.parse_version_id,
                     parse_page_id=evidence.parse_page_id,
                     parse_block_id=evidence.parse_block_id,
+                    semantic_chunk_ref_id=evidence.semantic_chunk_ref_id,
                     source_file_id=evidence.source_file_id,
                     evidence_type=evidence.evidence_type,
                     page_no=evidence.page_no,
@@ -691,29 +703,22 @@ def upsert_vectors_for_knowledge_version(
     embedding_service: OpenAICompatibleEmbeddingService,
     vector_service: MilvusVectorService,
 ) -> dict[str, int]:
-    """为知识版本补写教材块与知识点向量。"""
-    parse_pages = repository.list_parse_pages(parse_version.id)
-    parse_blocks = repository.list_parse_blocks(parse_version.id)
-    valid_blocks = [
-        block
-        for block in parse_blocks
-        if block.is_deleted == 0 and (block.markdown_content or block.text_content)
-    ]
+    """为知识版本补写教材语义块与知识点向量。"""
+    semantic_chunks = repository.list_semantic_chunks(knowledge_version.id)
     chunk_vector_count = 0
-    if valid_blocks:
-        chunk_texts = [build_textbook_chunk_embedding_text(block) for block in valid_blocks]
+    if semantic_chunks:
+        chunk_texts = [build_semantic_chunk_embedding_text(chunk) for chunk in semantic_chunks]
         chunk_embeddings = embedding_service.embed_texts(chunk_texts)
-        chunk_records = build_textbook_chunk_vector_records(
+        chunk_records = build_semantic_chunk_vector_records(
             project_id=knowledge_version.project_id,
             textbook_version_id=textbook_version.id,
             parse_version=parse_version,
-            parse_pages=parse_pages,
-            parse_blocks=parse_blocks,
+            semantic_chunks=semantic_chunks,
             chapters=snapshot.chapters,
             embeddings=chunk_embeddings,
             embedding_model=embedding_service.settings.embedding_model or "unknown",
         )
-        vector_service.upsert_vectors("textbook_chunk_vector", chunk_records)
+        vector_service.upsert_vectors("semantic_chunk_vector", chunk_records)
         chunk_vector_count = len(chunk_records)
 
     knowledge_point_vector_count = 0
@@ -738,6 +743,6 @@ def upsert_vectors_for_knowledge_version(
         knowledge_point_vector_count = len(point_records)
 
     return {
-        "textbook_chunk_vector_count": chunk_vector_count,
+        "semantic_chunk_vector_count": chunk_vector_count,
         "knowledge_point_vector_count": knowledge_point_vector_count,
     }

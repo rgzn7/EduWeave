@@ -1,7 +1,7 @@
 """
-@Date: 2026-04-13
+@Date: 2026-04-30
 @Author: xisy
-@Discription: 基于 27 表 SQL 真源创建剩余 P0 表
+@Discription: 基于 28 表 SQL 真源创建剩余 P0 表
 """
 
 from pathlib import Path
@@ -14,11 +14,11 @@ down_revision = "20260411_0001"
 branch_labels = None
 depends_on = None
 
-SCHEMA_SQL_PATH = Path(__file__).resolve().parents[3] / "sql" / "20260413_eduweave_mysql_27_tables.sql"
+SCHEMA_SQL_PATH = Path(__file__).resolve().parents[3] / "sql" / "20260430_eduweave_mysql_28_tables.sql"
 
 
 def _load_upgrade_statements() -> list[str]:
-    """从 27 表 SQL 中提取除 sys_user 外的升级语句。"""
+    """从 28 表 SQL 中提取除 sys_user 外的升级语句。"""
     raw_script = SCHEMA_SQL_PATH.read_text(encoding="utf-8")
     filtered_lines: list[str] = []
     skip_database_block = False
@@ -81,6 +81,7 @@ def downgrade() -> None:
         "curriculum_plan",
         "knowledge_evidence",
         "knowledge_point",
+        "semantic_chunk",
         "chapter_node",
         "knowledge_version",
         "parse_issue",

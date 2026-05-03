@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-14
+@Date: 2026-04-30
 @Author: xisy
 @Discription: 知识结构化模块任务执行能力
 """
@@ -13,13 +13,18 @@ from app.core.constants import REVIEW_STATUS_CONFIRMED, TASK_STATUS_FAILURE, TAS
 from app.core.database import SessionLocal
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.knowledge.domain import (
-    build_chapter_drafts_from_extraction,
-    build_point_drafts_from_extraction,
+    build_chapter_drafts_from_boundaries,
+    build_markdown_line_index,
+    build_point_drafts_for_chapter,
+    build_semantic_chunk_drafts_from_markdown_index,
     normalize_summary_json,
     persist_knowledge_snapshot,
 )
 from app.modules.knowledge.repository import KnowledgeRepository
-from app.modules.knowledge.schemas import KnowledgeExtractionResult
+from app.modules.knowledge.schemas import (
+    KnowledgeChapterBoundaryResult,
+    KnowledgeChapterPointExtractionResult,
+)
 from app.modules.knowledge.service import _build_knowledge_version_model, upsert_vectors_for_knowledge_version
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleEmbeddingService, OpenAICompatibleLlmService
@@ -67,6 +72,9 @@ def run_extract_task(payload: dict) -> dict[str, int]:
         parse_blocks = repository.list_parse_blocks(parse_version.id)
         if not parse_pages or not parse_blocks:
             raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "解析版本缺少可供抽取的页或结构块")
+        line_index = build_markdown_line_index(parse_pages)
+        if not line_index.lines:
+            raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "解析版本缺少可用页级 Markdown，无法执行章节识别")
 
         _mark_step(
             step_map["prepare_parse_source"],
@@ -82,18 +90,69 @@ def run_extract_task(payload: dict) -> dict[str, int]:
             task_repository.save(step)
         session.commit()
 
-        llm_messages = _build_extraction_messages(parse_version=parse_version, parse_pages=parse_pages, parse_blocks=parse_blocks)
-        extraction_result = llm_service.generate_structured_output(
-            messages=llm_messages,
-            response_model=KnowledgeExtractionResult,
+        boundary_result = llm_service.generate_structured_output(
+            messages=_build_chapter_boundary_messages(parse_version=parse_version, line_index=line_index),
+            response_model=KnowledgeChapterBoundaryResult,
         )
-        _validate_extraction_result(extraction_result, parse_pages=parse_pages, parse_blocks=parse_blocks)
+        try:
+            chapter_drafts = build_chapter_drafts_from_boundaries(boundary_result.items, line_index)
+        except ValueError as exc:
+            raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, str(exc)) from exc
+        semantic_chunk_drafts = build_semantic_chunk_drafts_from_markdown_index(
+            parse_pages=parse_pages,
+            parse_blocks=parse_blocks,
+            chapter_drafts=chapter_drafts,
+            line_index=line_index,
+        )
+        if not semantic_chunk_drafts:
+            raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "章节切块结果为空")
+
+        point_drafts = []
+        chapter_summaries: list[dict] = []
+        for semantic_chunk_draft in semantic_chunk_drafts:
+            chapter_draft = next(
+                chapter for chapter in chapter_drafts if chapter.draft_id == semantic_chunk_draft.chapter_ref_id
+            )
+            point_result = llm_service.generate_structured_output(
+                messages=_build_chapter_point_extraction_messages(
+                    parse_version=parse_version,
+                    chapter_draft=chapter_draft,
+                    semantic_chunk_draft=semantic_chunk_draft,
+                ),
+                response_model=KnowledgeChapterPointExtractionResult,
+            )
+            _validate_point_extraction_result(point_result, parse_pages=parse_pages, parse_blocks=parse_blocks)
+            point_drafts.extend(
+                build_point_drafts_for_chapter(
+                    parse_version=parse_version,
+                    source_file_id=textbook_version.source_file_id,
+                    chapter_ref_id=chapter_draft.draft_id,
+                    semantic_chunk_ref_id=semantic_chunk_draft.draft_id,
+                    parse_pages=parse_pages,
+                    parse_blocks=parse_blocks,
+                    point_drafts=point_result.knowledge_points,
+                    start_sort_order=len(point_drafts),
+                )
+            )
+            chapter_summaries.append(
+                {
+                    "chapter_path": chapter_draft.node_path,
+                    "chapter_title": chapter_draft.title,
+                    "summary_json": point_result.summary_json,
+                }
+            )
+        if not point_drafts:
+            raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 未返回可落库的知识点")
 
         _mark_step(
             step_map["invoke_llm_extract"],
             TASK_STATUS_SUCCESS,
             100,
-            detail_json={"chapter_count": len(extraction_result.chapters), "point_count": len(extraction_result.knowledge_points)},
+            detail_json={
+                "chapter_count": len(chapter_drafts),
+                "point_count": len(point_drafts),
+                "llm_call_count": len(semantic_chunk_drafts) + 1,
+            },
             finished_at=DateTimeUtil.now_utc(),
         )
         _mark_step(step_map["persist_knowledge_result"], TASK_STATUS_PROCESSING, 40, started_at=DateTimeUtil.now_utc())
@@ -103,16 +162,6 @@ def run_extract_task(payload: dict) -> dict[str, int]:
             task_repository.save(step)
         session.commit()
 
-        chapter_drafts = build_chapter_drafts_from_extraction(extraction_result.chapters)
-        chapter_path_to_draft_id = {chapter.node_path: chapter.draft_id for chapter in chapter_drafts}
-        point_drafts = build_point_drafts_from_extraction(
-            parse_version=parse_version,
-            source_file_id=textbook_version.source_file_id,
-            chapter_path_to_draft_id=chapter_path_to_draft_id,
-            parse_pages=parse_pages,
-            parse_blocks=parse_blocks,
-            point_drafts=extraction_result.knowledge_points,
-        )
         latest_knowledge_version = repository.get_ready_knowledge_version(parse_version.id) or repository.get_latest_knowledge_version(parse_version.id)
         knowledge_version = repository.create_knowledge_version(
             _build_knowledge_version_model(
@@ -121,7 +170,7 @@ def run_extract_task(payload: dict) -> dict[str, int]:
                 parent_knowledge_version_id=latest_knowledge_version.id if latest_knowledge_version is not None else None,
                 version_no=repository.get_next_knowledge_version_no(parse_version.project_id),
                 summary_json=normalize_summary_json(
-                    extraction_result.summary_json,
+                    {"chapter_summaries": chapter_summaries},
                     chapter_count=len(chapter_drafts),
                     point_count=len(point_drafts),
                 ),
@@ -133,6 +182,7 @@ def run_extract_task(payload: dict) -> dict[str, int]:
             knowledge_version=knowledge_version,
             chapter_drafts=chapter_drafts,
             point_drafts=point_drafts,
+            semantic_chunk_drafts=semantic_chunk_drafts,
         )
         repository.archive_other_ready_knowledge_versions(parse_version.id, knowledge_version.id)
 
@@ -198,55 +248,59 @@ def run_extract_task(payload: dict) -> dict[str, int]:
         session.close()
 
 
-def _build_extraction_messages(*, parse_version, parse_pages: list, parse_blocks: list) -> list[ChatMessage]:
-    """构造知识抽取提示词。"""
-    page_id_to_page_no = {page.id: page.page_no for page in parse_pages}
-    blocks_payload = [
-        {
-            "page_no": page_id_to_page_no.get(block.parse_page_id),
-            "block_no": block.block_no,
-            "block_type": block.block_type,
-            "heading_level": block.heading_level,
-            "text_content": block.text_content,
-            "markdown_content": block.markdown_content,
-        }
-        for block in parse_blocks
-        if block.is_deleted == 0 and (block.text_content or block.markdown_content)
-    ]
+def _build_chapter_boundary_messages(*, parse_version, line_index) -> list[ChatMessage]:
+    """构造章节边界识别提示词。"""
+    system_prompt = (
+        "你是教材章节边界识别助手。"
+        "用户会提供带 L 行号的页级 Markdown。"
+        "请只识别教材正文的一级大章开始行，不要输出封面、版权页、目录、前言、习题汇总、栏目标题或小节标题。"
+        "严格输出 JSON 对象，字段只包含 items。"
+        "items 是平铺数组，每项必须包含 title、start_line、line_text、confidence。"
+        "start_line 必须是不带 L 前缀的整数行号，line_text 必须复制该行 Markdown 原文。"
+        "不要输出 node_path、node_type、page_end、end_line，也不要输出额外说明。"
+    )
     user_payload = {
         "parse_version_id": parse_version.id,
-        "page_count": len(parse_pages),
-        "blocks": blocks_payload,
+        "line_count": line_index.total_lines,
+        "numbered_markdown": line_index.numbered_text,
     }
-    system_prompt = (
-        "你是教材知识结构抽取助手。"
-        "请严格输出 JSON 对象，字段必须包含 summary_json、chapters、knowledge_points。"
-        "chapters 必须是平铺数组，每个节点提供 node_path、node_no、node_level、node_type、title、summary_text、page_start、page_end、sort_order。"
-        "knowledge_points 必须提供 chapter_path、point_name、point_type、importance_level、difficulty_level、mastery_level_hint、tags_json、summary_text、sort_order、evidences。"
-        "evidences 中必须至少包含 page_no，可选 block_no、excerpt_text、bbox_json、score_value。"
-        "如果解析内容不足，请基于现有结构尽量抽取，不要输出额外说明文字。"
-    )
     return [
         ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=json.dumps(user_payload, ensure_ascii=False)),
     ]
 
 
-def _validate_extraction_result(result: KnowledgeExtractionResult, *, parse_pages: list, parse_blocks: list) -> None:
-    """校验知识抽取结果引用合法。"""
-    chapter_paths = [chapter.node_path for chapter in result.chapters]
-    if len(set(chapter_paths)) != len(chapter_paths):
-        raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 返回了重复的章节路径")
-    chapter_path_set = set(chapter_paths)
-    for chapter in result.chapters:
-        parent_path = chapter.node_path.rsplit(".", 1)[0] if "." in chapter.node_path else None
-        if parent_path and parent_path not in chapter_path_set:
-            raise AppException(
-                BusinessErrorCode.LLM_RESULT_INVALID,
-                "LLM 返回的章节父路径不存在",
-                {"node_path": chapter.node_path, "parent_path": parent_path},
-            )
+def _build_chapter_point_extraction_messages(*, parse_version, chapter_draft, semantic_chunk_draft) -> list[ChatMessage]:
+    """构造单章节知识点抽取提示词。"""
+    system_prompt = (
+        "你是教材知识点抽取助手。"
+        "用户会提供一个一级章节的 Markdown 正文。"
+        "请只基于该章节内容抽取知识点，严格输出 JSON 对象，字段只包含 summary_json、knowledge_points。"
+        "knowledge_points 每项提供 point_code、point_name、point_type、importance_level、difficulty_level、"
+        "mastery_level_hint、tags_json、summary_text、sort_order、evidences。"
+        "evidences 必须至少包含 page_no 和 excerpt_text；如果能判断解析块序号，可以补充 block_no。"
+        "不要输出 chapters，不要输出额外说明，不要编造章节外内容。"
+    )
+    user_payload = {
+        "parse_version_id": parse_version.id,
+        "chapter": {
+            "node_path": chapter_draft.node_path,
+            "title": chapter_draft.title,
+            "page_start": semantic_chunk_draft.page_start,
+            "page_end": semantic_chunk_draft.page_end,
+            "line_start": semantic_chunk_draft.line_start,
+            "line_end": semantic_chunk_draft.line_end,
+        },
+        "markdown": semantic_chunk_draft.chunk_text,
+    }
+    return [
+        ChatMessage(role="system", content=system_prompt),
+        ChatMessage(role="user", content=json.dumps(user_payload, ensure_ascii=False)),
+    ]
 
+
+def _validate_point_extraction_result(result: KnowledgeChapterPointExtractionResult, *, parse_pages: list, parse_blocks: list) -> None:
+    """校验单章节知识点抽取结果引用合法。"""
     page_set = {page.page_no for page in parse_pages}
     block_set = {
         (page.page_no, block.block_no)
@@ -255,12 +309,6 @@ def _validate_extraction_result(result: KnowledgeExtractionResult, *, parse_page
         if page.id == block.parse_page_id
     }
     for point in result.knowledge_points:
-        if point.chapter_path and point.chapter_path not in chapter_path_set:
-            raise AppException(
-                BusinessErrorCode.LLM_RESULT_INVALID,
-                "LLM 返回的知识点引用了不存在的章节路径",
-                {"point_name": point.point_name, "chapter_path": point.chapter_path},
-            )
         if not point.evidences:
             raise AppException(
                 BusinessErrorCode.LLM_RESULT_INVALID,

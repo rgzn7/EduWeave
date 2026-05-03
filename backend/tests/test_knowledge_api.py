@@ -13,12 +13,13 @@ from app.core.config import get_settings
 from app.core.constants import KNOWLEDGE_EXTRACT_TASK_TYPE, KNOWLEDGE_MODULE_CODE, KNOWLEDGE_QUEUE_NAME, TASK_STATUS_PENDING
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.knowledge.schemas import (
-    KnowledgeExtractionChapterDraft,
+    KnowledgeChapterBoundaryItem,
+    KnowledgeChapterBoundaryResult,
+    KnowledgeChapterPointExtractionResult,
     KnowledgeExtractionEvidenceDraft,
     KnowledgeExtractionPointDraft,
-    KnowledgeExtractionResult,
 )
-from app.modules.p0_models import Project, TaskRecord
+from app.modules.p0_models import ChapterNode, KnowledgeEvidence, Project, SemanticChunk, TaskRecord
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import OpenAICompatibleEmbeddingService, OpenAICompatibleLlmService
 from app.shared.vector import MilvusVectorService
@@ -77,39 +78,25 @@ def knowledge_test_stubs(monkeypatch: pytest.MonkeyPatch):
 
     def fake_generate_structured_output(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
         _ = (self, messages, response_model, temperature)
-        return KnowledgeExtractionResult(
+        if response_model is KnowledgeChapterBoundaryResult:
+            return KnowledgeChapterBoundaryResult(
+                items=[
+                    KnowledgeChapterBoundaryItem(
+                        title="第2页标题",
+                        start_line=6,
+                        line_text="# 第2页标题",
+                        confidence=0.96,
+                    )
+                ]
+            )
+        return KnowledgeChapterPointExtractionResult(
             summary_json={
                 "teaching_objectives": ["掌握乘法口诀", "理解乘法含义"],
                 "key_points": ["乘法口诀"],
                 "difficult_points": ["乘法应用题"],
             },
-            chapters=[
-                KnowledgeExtractionChapterDraft(
-                    node_path="1",
-                    node_no=1,
-                    node_level=1,
-                    node_type="unit",
-                    title="第一单元 表内乘法",
-                    summary_text="乘法基础知识",
-                    page_start=1,
-                    page_end=2,
-                    sort_order=0,
-                ),
-                KnowledgeExtractionChapterDraft(
-                    node_path="1.1",
-                    node_no=1,
-                    node_level=2,
-                    node_type="section",
-                    title="乘法口诀",
-                    summary_text="重点掌握口诀记忆与应用",
-                    page_start=1,
-                    page_end=2,
-                    sort_order=1,
-                ),
-            ],
             knowledge_points=[
                 KnowledgeExtractionPointDraft(
-                    chapter_path="1.1",
                     point_code="kp_multiplication_table",
                     point_name="乘法口诀",
                     point_type="knowledge",
@@ -121,10 +108,10 @@ def knowledge_test_stubs(monkeypatch: pytest.MonkeyPatch):
                     sort_order=0,
                     evidences=[
                         KnowledgeExtractionEvidenceDraft(
-                            page_no=1,
+                            page_no=2,
                             block_no=2,
                             evidence_type="parse_block",
-                            excerpt_text="textbook.pdf 第1页解析内容",
+                            excerpt_text="textbook.pdf 第2页解析内容",
                             score_value=0.95,
                         )
                     ],
@@ -163,7 +150,7 @@ def test_knowledge_task_should_require_confirmed_parse_version(client, knowledge
     assert response.json()["errors"][0]["code"] == "PARSE_VERSION_NOT_CONFIRMED"
 
 
-def test_knowledge_task_should_create_version_and_query_details(client, knowledge_test_stubs) -> None:
+def test_knowledge_task_should_create_version_and_query_details(client, seeded_session_factory, knowledge_test_stubs) -> None:
     """确认解析版本后应可抽取知识结构并查询详情。"""
     headers = build_auth_headers(client)
     project_id = create_project(client, headers)
@@ -200,36 +187,72 @@ def test_knowledge_task_should_create_version_and_query_details(client, knowledg
     assert version_list_response.status_code == 200
     version_payload = version_list_response.json()["data"]["items"][0]
     assert version_payload["version_status"] == "ready"
-    assert version_payload["chapter_count"] == 2
+    assert version_payload["chapter_count"] == 1
     assert version_payload["point_count"] == 1
 
     knowledge_version_id = version_payload["id"]
     detail_response = client.get(f"/api/v1/knowledge-versions/{knowledge_version_id}", headers=headers)
     assert detail_response.status_code == 200
     assert detail_response.json()["data"]["summary_json"]["knowledge_point_count"] == 1
+    assert detail_response.json()["data"]["summary_json"]["chapter_summaries"][0]["chapter_title"] == "第2页标题"
 
     chapters_response = client.get(f"/api/v1/knowledge-versions/{knowledge_version_id}/chapters", headers=headers)
     assert chapters_response.status_code == 200
-    assert len(chapters_response.json()["data"]) == 2
-    assert chapters_response.json()["data"][1]["node_path"] == "1.1"
+    chapters = chapters_response.json()["data"]
+    assert len(chapters) == 1
+    assert chapters[0]["node_path"] == "1"
+    assert chapters[0]["node_type"] == "chapter"
+    assert chapters[0]["line_start"] == 6
+    assert chapters[0]["line_end"] == 8
+    assert chapters[0]["page_start"] == 2
+    assert chapters[0]["page_end"] == 2
 
     points_response = client.get(f"/api/v1/knowledge-versions/{knowledge_version_id}/points", headers=headers)
     assert points_response.status_code == 200
     points = points_response.json()["data"]["items"]
     assert len(points) == 1
     assert points[0]["point_name"] == "乘法口诀"
-    assert points[0]["chapter_title"] == "乘法口诀"
+    assert points[0]["chapter_title"] == "第2页标题"
 
     point_detail_response = client.get(f"/api/v1/knowledge-points/{points[0]['id']}", headers=headers)
     assert point_detail_response.status_code == 200
-    assert point_detail_response.json()["data"]["evidences"][0]["page_no"] == 1
+    assert point_detail_response.json()["data"]["evidences"][0]["page_no"] == 2
+    assert point_detail_response.json()["data"]["evidences"][0]["semantic_chunk_id"] is not None
 
-    assert "textbook_chunk_vector" in knowledge_test_stubs
+    session = seeded_session_factory()
+    try:
+        chapter = session.query(ChapterNode).filter(ChapterNode.knowledge_version_id == knowledge_version_id).one()
+        semantic_chunk = session.query(SemanticChunk).filter(SemanticChunk.knowledge_version_id == knowledge_version_id).one()
+        evidence = session.query(KnowledgeEvidence).filter(KnowledgeEvidence.knowledge_point_id == points[0]["id"]).one()
+        assert chapter.line_start == 6
+        assert chapter.line_end == 8
+        assert semantic_chunk.line_start == 6
+        assert semantic_chunk.line_end == 8
+        assert semantic_chunk.page_start == 2
+        assert semantic_chunk.page_end == 2
+        assert "# 第1页标题" not in semantic_chunk.chunk_text
+        assert "textbook.pdf 第1页解析内容" not in semantic_chunk.chunk_text
+        assert "# 第2页标题" in semantic_chunk.chunk_text
+        assert evidence.semantic_chunk_id == semantic_chunk.id
+    finally:
+        session.close()
+
+    assert "semantic_chunk_vector" in knowledge_test_stubs
     assert "knowledge_point_vector" in knowledge_test_stubs
-    chunk_record = knowledge_test_stubs["textbook_chunk_vector"][0]
+    chunk_record = knowledge_test_stubs["semantic_chunk_vector"][0]
+    assert chunk_record.id.startswith("semantic_chunk:")
+    assert chunk_record.semantic_chunk_id > 0
     assert chunk_record.project_id > 0
     assert chunk_record.textbook_version_id > 0
     assert chunk_record.parse_version_id == parse_version_id
+    assert chunk_record.knowledge_version_id == knowledge_version_id
+    assert chunk_record.page_start == 2
+    assert chunk_record.page_end == 2
+    assert chunk_record.chunk_type == "semantic"
+    assert chunk_record.metadata["semantic_chunk_id"] > 0
+    assert chunk_record.metadata["line_start"] == 6
+    assert chunk_record.metadata["line_end"] == 8
+    assert "parse_block_id" not in chunk_record.metadata
     point_record = knowledge_test_stubs["knowledge_point_vector"][0]
     assert point_record.knowledge_version_id == knowledge_version_id
     assert point_record.importance_level == 5

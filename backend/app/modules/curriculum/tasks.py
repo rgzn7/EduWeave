@@ -11,6 +11,10 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.constants import (
+    GENERATION_QUEUE_NAME,
+    LESSON_PLAN_GENERATE_TASK_TYPE,
+    LESSON_PLAN_MODULE_CODE,
+    TASK_STATUS_PENDING,
     TASK_STATUS_FAILURE,
     TASK_STATUS_PROCESSING,
     TASK_STATUS_SUCCESS,
@@ -23,6 +27,7 @@ from app.modules.curriculum.schemas import CurriculumGenerationResult
 from app.modules.p0_models import CurriculumPlan
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
+from app.shared.queue import dispatch_task
 from app.shared.utils import DateTimeUtil
 
 
@@ -35,6 +40,7 @@ def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
     task = task_repository.get_task_by_id(payload["task_record_id"])
     step_map = _get_step_map(task_repository, payload["task_record_id"])
     now = DateTimeUtil.now_utc()
+    curriculum_task_completed = False
 
     try:
         if task is None:
@@ -176,14 +182,24 @@ def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
             task_repository.save(step)
         session.commit()
 
+        lesson_task = _create_lesson_plan_task(
+            task_repository=task_repository,
+            generation_batch=generation_batch,
+            curriculum_plan=curriculum_plan,
+            owner_user_id=payload.get("operator_user_id"),
+            request_id=task.request_id,
+        )
         finished_at = DateTimeUtil.now_utc()
-        generation_batch.batch_status = TASK_STATUS_SUCCESS
-        generation_batch.finished_at = finished_at
+        generation_batch.batch_status = TASK_STATUS_PROCESSING
         _mark_step(
             step_map["finalize_generation_batch"],
             TASK_STATUS_SUCCESS,
             100,
-            detail_json={"batch_status": TASK_STATUS_SUCCESS},
+            detail_json={
+                "batch_status": TASK_STATUS_PROCESSING,
+                "next_task_id": lesson_task.id,
+                "next_task_type": LESSON_PLAN_GENERATE_TASK_TYPE,
+            },
             finished_at=finished_at,
         )
         _mark_task(
@@ -194,6 +210,7 @@ def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
             result_json={
                 "generation_batch_id": generation_batch.id,
                 "curriculum_plan_id": curriculum_plan.id,
+                "lesson_plan_task_id": lesson_task.id,
             },
             finished_at=finished_at,
         )
@@ -202,10 +219,31 @@ def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
         for step in step_map.values():
             task_repository.save(step)
         session.commit()
-        return {"generation_batch_id": generation_batch.id, "curriculum_plan_id": curriculum_plan.id}
+        curriculum_task_completed = True
+
+        dispatch_result = dispatch_task(
+            "app.modules.lesson_plan.tasks.run_generate_lesson_plan_task",
+            {
+                "task_record_id": lesson_task.id,
+                "generation_batch_id": generation_batch.id,
+                "curriculum_plan_id": curriculum_plan.id,
+                "operator_user_id": payload.get("operator_user_id"),
+                "database_url": session.get_bind().url.render_as_string(hide_password=False),
+            },
+        )
+        if dispatch_result.worker_task_id:
+            lesson_task.worker_task_id = dispatch_result.worker_task_id
+            task_repository.save(lesson_task)
+            session.commit()
+        return {
+            "generation_batch_id": generation_batch.id,
+            "curriculum_plan_id": curriculum_plan.id,
+            "lesson_plan_task_id": lesson_task.id,
+        }
     except Exception as exc:  # noqa: BLE001
         session.rollback()
-        _mark_task_failure(task_repository, repository, payload, exc)
+        if not curriculum_task_completed:
+            _mark_task_failure(task_repository, repository, payload, exc)
         raise
     finally:
         session.close()
@@ -359,6 +397,47 @@ def _pick_target_profile_record(profile_records: list, subject_code: str):
         if record.subject_code == subject_code:
             return record
     return profile_records[0] if profile_records else None
+
+
+def _create_lesson_plan_task(
+    *,
+    task_repository: TaskCenterRepository,
+    generation_batch,
+    curriculum_plan,
+    owner_user_id: int | None,
+    request_id: str | None,
+):
+    """创建教案生成任务。"""
+    task = task_repository.create_task(
+        project_id=generation_batch.project_id,
+        generation_batch_id=generation_batch.id,
+        module_code=LESSON_PLAN_MODULE_CODE,
+        task_type=LESSON_PLAN_GENERATE_TASK_TYPE,
+        task_status=TASK_STATUS_PENDING,
+        queue_name=GENERATION_QUEUE_NAME,
+        biz_key=f"generation_batch:{generation_batch.id}:lesson_plan",
+        operator_user_id=owner_user_id,
+        payload_json={
+            "generation_batch_id": generation_batch.id,
+            "curriculum_plan_id": curriculum_plan.id,
+        },
+        request_id=request_id,
+    )
+    step_names = [
+        ("prepare_lesson_baseline", "准备教案生成基线"),
+        ("invoke_llm_lesson_plan", "调用 LLM 生成教案"),
+        ("persist_lesson_plan", "落库教案"),
+        ("finalize_generation_batch", "完成生成批次"),
+    ]
+    for step_order, (step_code, step_name) in enumerate(step_names, start=1):
+        task_repository.create_task_step(
+            task_record_id=task.id,
+            step_code=step_code,
+            step_name=step_name,
+            step_order=step_order,
+            step_status=TASK_STATUS_PENDING,
+        )
+    return task
 
 
 def _mark_task(task, *, task_status: str, current_stage: str, progress_percent: int, started_at=None, finished_at=None, result_json: dict | None = None) -> None:

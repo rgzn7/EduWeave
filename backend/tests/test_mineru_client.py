@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-14
+@Date: 2026-04-30
 @Author: xisy
 @Discription: MinerU 客户端与结果归一化测试
 """
@@ -150,3 +150,120 @@ def test_mineru_document_service_should_normalize_zip_payload() -> None:
     assert document.pages[0].page_no == 1
     assert document.pages[0].blocks[0].block_type == "heading"
     assert "images/1.png" in document.asset_files
+
+
+def test_mineru_document_service_should_match_real_content_list_fields() -> None:
+    """归一化应匹配 MinerU 真实 content_list 字段。"""
+    zip_buffer = io.BytesIO()
+    with ZipFile(zip_buffer, "w") as archive:
+        archive.writestr("full.md", "# 小数乘法")
+        archive.writestr(
+            "sample_content_list.json",
+            json.dumps(
+                [
+                    {"page_idx": 0, "type": "text", "text": "小数乘法", "text_level": 1, "bbox": [1, 2, 3, 4]},
+                    {
+                        "page_idx": 0,
+                        "type": "table",
+                        "img_path": "images/table.jpg",
+                        "table_caption": ["表 1"],
+                        "table_footnote": ["说明"],
+                        "table_body": "<table><tr><td>数量</td></tr></table>",
+                        "bbox": [5, 6, 7, 8],
+                    },
+                    {
+                        "page_idx": 0,
+                        "type": "list",
+                        "sub_type": "ordered",
+                        "list_items": ["观察情境图", "列出算式"],
+                        "bbox": [9, 10, 11, 12],
+                    },
+                    {
+                        "page_idx": 0,
+                        "type": "image",
+                        "img_path": "images/image.jpg",
+                        "image_caption": ["主题图"],
+                        "image_footnote": ["图片说明"],
+                        "bbox": [13, 14, 15, 16],
+                    },
+                    {"page_idx": 0, "type": "equation", "text": "3.5\\times3", "text_format": "latex", "bbox": [17, 18, 19, 20]},
+                ],
+                ensure_ascii=False,
+            ),
+        )
+        archive.writestr("images/table.jpg", b"table-image")
+        archive.writestr("images/image.jpg", b"image")
+
+    service = MineruDocumentService()
+    document = service.normalize_zip_payload(
+        batch_id="batch-1",
+        file_name="demo.pdf",
+        data_id="data-1",
+        model_version="vlm",
+        full_zip_bytes=zip_buffer.getvalue(),
+    )
+
+    blocks = document.pages[0].blocks
+    assert blocks[0].block_type == "heading"
+    assert blocks[0].heading_level == 1
+    assert blocks[0].bbox_json == {"points": [1, 2, 3, 4]}
+    assert blocks[1].block_type == "table"
+    assert blocks[1].asset_relative_path == "images/table.jpg"
+    assert "数量" in blocks[1].text_content
+    assert "表 1" in blocks[1].text_content
+    assert blocks[2].text_content == "观察情境图\n列出算式"
+    assert blocks[3].asset_relative_path == "images/image.jpg"
+    assert blocks[3].text_content == "主题图\n图片说明"
+    assert blocks[4].block_type == "equation"
+    assert blocks[4].text_content == "3.5\\times3"
+
+
+def test_mineru_document_service_should_normalize_content_list_v2_pages() -> None:
+    """仅存在 content_list_v2 时应按页分组补齐页码。"""
+    zip_buffer = io.BytesIO()
+    with ZipFile(zip_buffer, "w") as archive:
+        archive.writestr("full.md", "# 第一页\n\n第二页正文")
+        archive.writestr(
+            "content_list_v2.json",
+            json.dumps(
+                [
+                    [
+                        {
+                            "type": "title",
+                            "content": {"title_content": "第一页标题", "level": 1},
+                            "bbox": [1, 2, 3, 4],
+                        }
+                    ],
+                    [
+                        {
+                            "type": "paragraph",
+                            "content": {"paragraph_content": "第二页正文"},
+                            "bbox": [5, 6, 7, 8],
+                        },
+                        {
+                            "type": "image",
+                            "content": {"image_source": "images/page2.jpg", "image_caption": ["第二页图片"]},
+                            "bbox": [9, 10, 11, 12],
+                        },
+                    ],
+                ],
+                ensure_ascii=False,
+            ),
+        )
+        archive.writestr("images/page2.jpg", b"image")
+
+    service = MineruDocumentService()
+    document = service.normalize_zip_payload(
+        batch_id="batch-1",
+        file_name="demo.pdf",
+        data_id="data-1",
+        model_version="vlm",
+        full_zip_bytes=zip_buffer.getvalue(),
+    )
+
+    assert [page.page_no for page in document.pages] == [1, 2]
+    assert document.pages[0].blocks[0].block_type == "heading"
+    assert document.pages[0].blocks[0].heading_level == 1
+    assert document.pages[1].blocks[0].text_content == "第二页正文"
+    assert document.pages[1].blocks[1].asset_relative_path == "images/page2.jpg"
+    assert document.pages[1].blocks[1].text_content == "第二页图片"

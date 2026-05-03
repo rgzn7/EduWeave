@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-11
+@Date: 2026-04-30
 @Author: xisy
 @Discription: Alembic 迁移测试
 """
@@ -56,8 +56,9 @@ def test_alembic_upgrade_head() -> None:
             assert "project" in table_names
             assert "generation_batch" in table_names
             assert "audit_log" in table_names
+            assert "semantic_chunk" in table_names
             assert "alembic_version" in table_names
-            assert len(table_names) == 28
+            assert len(table_names) == 29
     finally:
         with connection.cursor() as cursor:
             cursor.execute(f"DROP DATABASE IF EXISTS `{database_name}`")

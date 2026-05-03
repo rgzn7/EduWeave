@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-14
+@Date: 2026-04-30
 @Author: xisy
 @Discription: 知识结构化模块数据访问层
 """
@@ -16,6 +16,7 @@ from app.modules.p0_models import (
     ParsePage,
     ParseVersion,
     Project,
+    SemanticChunk,
     TextbookVersion,
 )
 
@@ -104,6 +105,12 @@ class KnowledgeRepository:
         self.session.flush()
         return chapter_node
 
+    def create_semantic_chunk(self, semantic_chunk: SemanticChunk) -> SemanticChunk:
+        """创建教材语义块。"""
+        self.session.add(semantic_chunk)
+        self.session.flush()
+        return semantic_chunk
+
     def create_knowledge_point(self, knowledge_point: KnowledgePoint) -> KnowledgePoint:
         """创建知识点。"""
         self.session.add(knowledge_point)
@@ -166,6 +173,15 @@ class KnowledgeRepository:
             select(ChapterNode)
             .where(ChapterNode.knowledge_version_id == knowledge_version_id)
             .order_by(ChapterNode.node_path.asc(), ChapterNode.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
+    def list_semantic_chunks(self, knowledge_version_id: int) -> list[SemanticChunk]:
+        """查询知识版本下全部教材语义块。"""
+        statement = (
+            select(SemanticChunk)
+            .where(SemanticChunk.knowledge_version_id == knowledge_version_id)
+            .order_by(SemanticChunk.chunk_no.asc(), SemanticChunk.id.asc())
         )
         return list(self.session.scalars(statement))
 

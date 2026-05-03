@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-11
+@Date: 2026-05-03
 @Author: xisy
 @Discription: 测试环境公共夹具
 """
@@ -43,6 +43,11 @@ os.environ.setdefault("EMBEDDING_API_BASE_URL", "https://embedding.test.example.
 os.environ.setdefault("EMBEDDING_API_KEY", "test-embedding-key")
 os.environ.setdefault("EMBEDDING_MODEL", "test-embedding-model")
 os.environ.setdefault("EMBEDDING_TIMEOUT_SECONDS", "60")
+os.environ.setdefault("RACCOON_API_HOST", "https://raccoon.test.example.com")
+os.environ.setdefault("RACCOON_API_TOKEN", "test-raccoon-key")
+os.environ.setdefault("RACCOON_REQUEST_TIMEOUT_SECONDS", "60")
+os.environ.setdefault("RACCOON_POLL_INTERVAL_SECONDS", "1")
+os.environ.setdefault("RACCOON_SHORT_POLL_TIMEOUT_SECONDS", "1")
 os.environ.setdefault("MILVUS_URI", "http://127.0.0.1:19530")
 os.environ.setdefault("MILVUS_TOKEN", "")
 os.environ.setdefault("MILVUS_DB_NAME", "default")
@@ -67,7 +72,7 @@ from app.shared.mineru import NormalizedBlock, NormalizedDocument, NormalizedPag
 from app.shared.storage import ObsStorageClient
 
 TEST_PASSWORD = "Teacher@123"
-SCHEMA_SQL_PATH = Path(__file__).resolve().parents[2] / "sql" / "20260413_eduweave_mysql_27_tables.sql"
+SCHEMA_SQL_PATH = Path(__file__).resolve().parents[2] / "sql" / "20260430_eduweave_mysql_28_tables.sql"
 
 
 def build_mysql_uri(database_name: str) -> str:
@@ -80,7 +85,7 @@ def build_mysql_uri(database_name: str) -> str:
 
 
 def execute_schema_sql(database_name: str) -> None:
-    """向指定 MySQL 数据库执行 27 张表初始化脚本。"""
+    """向指定 MySQL 数据库执行 28 张表初始化脚本。"""
     settings = get_settings()
     connection = pymysql.connect(
         host=settings.mysql_host,
@@ -183,6 +188,7 @@ def seeded_session_factory(mysql_session_factory):
             "curriculum_plan",
             "knowledge_evidence",
             "knowledge_point",
+            "semantic_chunk",
             "chapter_node",
             "knowledge_version",
             "parse_issue",

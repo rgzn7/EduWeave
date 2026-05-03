@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-14
+@Date: 2026-04-30
 @Author: xisy
 @Discription: MinerU 文档解析服务与结果归一化
 """
@@ -174,17 +174,23 @@ class MineruDocumentService:
     def _normalize_content_list(content_list_payload: Any) -> list[dict[str, Any]]:
         if isinstance(content_list_payload, list):
             normalized_items: list[dict[str, Any]] = []
-            for item in content_list_payload:
+            for index, item in enumerate(content_list_payload):
                 if isinstance(item, dict):
                     normalized_items.append(item)
                 elif isinstance(item, list):
-                    normalized_items.extend(sub_item for sub_item in item if isinstance(sub_item, dict))
+                    for sub_item in item:
+                        if not isinstance(sub_item, dict):
+                            continue
+                        normalized_sub_item = dict(sub_item)
+                        if not any(key in normalized_sub_item for key in ("page_no", "page_num", "page_idx")):
+                            normalized_sub_item["page_idx"] = index
+                        normalized_items.append(normalized_sub_item)
             return normalized_items
         if isinstance(content_list_payload, dict):
             for key in ("content_list", "items", "data"):
                 value = content_list_payload.get(key)
                 if isinstance(value, list):
-                    return [item for item in value if isinstance(item, dict)]
+                    return MineruDocumentService._normalize_content_list(value)
         raise AppException(
             BusinessErrorCode.MINERU_RESULT_INVALID,
             "MinerU content_list.json 结构非法",
@@ -248,20 +254,49 @@ class MineruDocumentService:
         for key in ("block_type", "type", "category_type"):
             value = item.get(key)
             if isinstance(value, str) and value.strip():
-                return value.strip().lower().replace(" ", "_")
+                normalized_value = value.strip().lower().replace(" ", "_")
+                if normalized_value == "text":
+                    return "heading" if MineruDocumentService._extract_heading_level(item) is not None else "paragraph"
+                if normalized_value == "title":
+                    return "heading"
+                if normalized_value == "equation_interline":
+                    return "equation"
+                if normalized_value == "page_header":
+                    return "header"
+                if normalized_value == "page_footer":
+                    return "footer"
+                return normalized_value
         return "paragraph"
 
-    @staticmethod
-    def _extract_text_content(item: dict[str, Any]) -> str | None:
-        for key in ("text", "content", "latex", "caption", "html"):
-            value = item.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        for key in ("text", "content"):
-            value = item.get("text_block", {}).get(key) if isinstance(item.get("text_block"), dict) else None
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return None
+    @classmethod
+    def _extract_text_content(cls, item: dict[str, Any]) -> str | None:
+        text_parts: list[str] = []
+        for source in cls._iter_content_sources(item):
+            for key in (
+                "text",
+                "latex",
+                "math_content",
+                "title_content",
+                "paragraph_content",
+                "page_header_content",
+                "page_footer_content",
+                "page_number_content",
+                "table_body",
+                "html",
+                "code_body",
+                "caption",
+                "image_caption",
+                "table_caption",
+                "code_caption",
+                "image_footnote",
+                "table_footnote",
+                "code_footnote",
+                "list_items",
+            ):
+                text_value = cls._coerce_text(source.get(key))
+                if text_value:
+                    text_parts.append(text_value)
+        return cls._join_unique_text_parts(text_parts)
 
     @classmethod
     def _extract_markdown_content(cls, item: dict[str, Any]) -> str | None:
@@ -273,10 +308,11 @@ class MineruDocumentService:
 
     @staticmethod
     def _extract_heading_level(item: dict[str, Any]) -> int | None:
-        for key in ("heading_level", "level", "title_level"):
-            value = item.get(key)
-            if isinstance(value, int):
-                return value
+        for source in MineruDocumentService._iter_content_sources(item):
+            for key in ("heading_level", "level", "title_level", "text_level"):
+                value = source.get(key)
+                if isinstance(value, int):
+                    return value
         return None
 
     @staticmethod
@@ -291,8 +327,47 @@ class MineruDocumentService:
 
     @staticmethod
     def _extract_asset_path(item: dict[str, Any]) -> str | None:
-        for key in ("asset_path", "image_path", "img_path", "path", "file_path", "resource_path"):
-            value = item.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip().lstrip("/")
+        for source in MineruDocumentService._iter_content_sources(item):
+            for key in ("asset_path", "image_path", "img_path", "image_source", "path", "file_path", "resource_path"):
+                value = source.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip().lstrip("/")
         return None
+
+    @staticmethod
+    def _iter_content_sources(item: dict[str, Any]) -> list[dict[str, Any]]:
+        sources = [item]
+        for key in ("content", "text_block"):
+            value = item.get(key)
+            if isinstance(value, dict):
+                sources.append(value)
+        return sources
+
+    @classmethod
+    def _coerce_text(cls, value: Any) -> str | None:
+        if isinstance(value, str):
+            normalized_value = value.strip()
+            return normalized_value or None
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, list):
+            return cls._join_unique_text_parts(
+                [text for item in value if (text := cls._coerce_text(item)) is not None]
+            )
+        if isinstance(value, dict):
+            return cls._join_unique_text_parts(
+                [text for item in value.values() if (text := cls._coerce_text(item)) is not None]
+            )
+        return None
+
+    @staticmethod
+    def _join_unique_text_parts(text_parts: list[str]) -> str | None:
+        unique_parts: list[str] = []
+        seen_parts: set[str] = set()
+        for text_part in text_parts:
+            normalized_part = text_part.strip()
+            if not normalized_part or normalized_part in seen_parts:
+                continue
+            unique_parts.append(normalized_part)
+            seen_parts.add(normalized_part)
+        return "\n".join(unique_parts) if unique_parts else None

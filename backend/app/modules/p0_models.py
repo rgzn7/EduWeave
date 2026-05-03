@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-13
+@Date: 2026-04-30
 @Author: xisy
 @Discription: EduWeave P0 阶段数据库模型骨架
 """
@@ -653,7 +653,71 @@ class ChapterNode(TimestampMixin, Base):
     summary_text: Mapped[str | None] = mapped_column(Text, nullable=True, comment="摘要")
     page_start: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="起始页")
     page_end: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="结束页")
+    line_start: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="Markdown起始行号")
+    line_end: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="Markdown结束行号")
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"), comment="排序")
+
+
+class SemanticChunk(TimestampMixin, Base):
+    """教材语义块表。"""
+
+    __tablename__ = "semantic_chunk"
+    __table_args__ = (
+        Index("uk_semantic_chunk_knowledge_no", "knowledge_version_id", "chunk_no", unique=True),
+        Index("idx_semantic_chunk_project", "project_id", "created_at"),
+        Index("idx_semantic_chunk_knowledge", "knowledge_version_id", "chapter_node_id"),
+        Index("idx_semantic_chunk_page_range", "parse_version_id", "page_start", "page_end"),
+        {"comment": "教材语义块表"},
+    )
+
+    id: Mapped[int] = mapped_column(MYSQL_BIGINT_UNSIGNED, primary_key=True, autoincrement=True, comment="主键")
+    project_id: Mapped[int] = mapped_column(MYSQL_BIGINT_UNSIGNED, ForeignKey("project.id"), nullable=False, comment="所属项目")
+    parse_version_id: Mapped[int] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("parse_version.id"),
+        nullable=False,
+        comment="解析版本",
+    )
+    knowledge_version_id: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("knowledge_version.id"),
+        nullable=True,
+        comment="知识版本",
+    )
+    chapter_node_id: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("chapter_node.id"),
+        nullable=True,
+        comment="章节节点",
+    )
+    chunk_no: Mapped[int] = mapped_column(Integer, nullable=False, comment="语义块序号")
+    chunk_title: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="语义块标题")
+    chunk_type: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="semantic",
+        server_default=text("'semantic'"),
+        comment="语义块类型",
+    )
+    page_start: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="起始页")
+    page_end: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="结束页")
+    line_start: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="Markdown起始行号")
+    line_end: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="Markdown结束行号")
+    source_block_refs_json: Mapped[dict[str, Any] | None] = mapped_column(
+        MYSQL_JSON,
+        nullable=True,
+        comment="来源解析块引用，保留页码、块号、坐标和资源文件",
+    )
+    source_text_hash: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="来源文本哈希")
+    chunk_text: Mapped[str] = mapped_column(MYSQL_MEDIUMTEXT, nullable=False, comment="语义块正文")
+    summary_text: Mapped[str | None] = mapped_column(Text, nullable=True, comment="摘要")
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="附加元数据")
+    created_by: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("sys_user.id"),
+        nullable=True,
+        comment="创建人",
+    )
 
 
 class KnowledgePoint(TimestampMixin, Base):
@@ -702,6 +766,7 @@ class KnowledgeEvidence(CreatedAtMixin, Base):
     __tablename__ = "knowledge_evidence"
     __table_args__ = (
         Index("idx_knowledge_evidence_point", "knowledge_point_id"),
+        Index("idx_knowledge_evidence_semantic_chunk", "semantic_chunk_id"),
         Index("idx_knowledge_evidence_block", "parse_block_id"),
         {"comment": "知识点证据表"},
     )
@@ -712,6 +777,12 @@ class KnowledgeEvidence(CreatedAtMixin, Base):
         ForeignKey("knowledge_point.id"),
         nullable=False,
         comment="知识点",
+    )
+    semantic_chunk_id: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("semantic_chunk.id"),
+        nullable=True,
+        comment="语义块",
     )
     parse_version_id: Mapped[int] = mapped_column(
         MYSQL_BIGINT_UNSIGNED,

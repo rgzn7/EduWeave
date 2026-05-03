@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-13
+@Date: 2026-04-30
 @Author: xisy
 @Discription: Milvus 向量服务封装
 """
@@ -16,7 +16,7 @@ class MilvusVectorService:
     """屏蔽 pymilvus 细节的向量服务层。"""
 
     REQUIRED_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
-        "textbook_chunk_vector": ("textbook_version_id", "parse_version_id"),
+        "semantic_chunk_vector": ("semantic_chunk_id", "textbook_version_id", "parse_version_id", "knowledge_version_id"),
         "knowledge_point_vector": ("knowledge_version_id",),
     }
 
@@ -54,15 +54,18 @@ class MilvusVectorService:
     def _normalize_record(self, collection_name: str, record: VectorRecord) -> dict[str, Any]:
         """按集合结构归一化写入记录。"""
         self._ensure_required_fields(collection_name, record)
-        if collection_name == "textbook_chunk_vector":
+        if collection_name == "semantic_chunk_vector":
             return {
                 "id": record.id,
+                "semantic_chunk_id": record.semantic_chunk_id,
                 "project_id": record.project_id,
                 "textbook_version_id": record.textbook_version_id,
                 "parse_version_id": record.parse_version_id,
+                "knowledge_version_id": record.knowledge_version_id,
                 "chapter_node_id": record.chapter_node_id,
-                "page_no": record.page_no,
-                "block_type": record.block_type,
+                "page_start": record.page_start,
+                "page_end": record.page_end,
+                "chunk_type": record.chunk_type,
                 "embedding_model": record.embedding_model,
                 "content": record.content,
                 "metadata": record.metadata,
@@ -140,10 +143,14 @@ class MilvusVectorService:
                     collection_name=collection_name,
                     project_id=entity.get("project_id"),
                     embedding_model=entity.get("embedding_model"),
+                    semantic_chunk_id=entity.get("semantic_chunk_id"),
                     textbook_version_id=entity.get("textbook_version_id"),
                     parse_version_id=entity.get("parse_version_id"),
                     knowledge_version_id=entity.get("knowledge_version_id"),
                     chapter_node_id=entity.get("chapter_node_id"),
+                    page_start=entity.get("page_start"),
+                    page_end=entity.get("page_end"),
+                    chunk_type=entity.get("chunk_type"),
                     page_no=entity.get("page_no"),
                     block_type=entity.get("block_type"),
                     importance_level=entity.get("importance_level"),

@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-14
+@Date: 2026-04-30
 @Author: xisy
 @Discription: 解析模块版本构建与快照辅助能力
 """
@@ -415,8 +415,13 @@ def extract_pdf_subset(pdf_bytes: bytes, page_nos: list[int]) -> bytes:
 def _has_asset_reference(origin_ref_json: dict[str, Any] | None) -> bool:
     if not origin_ref_json:
         return False
-    for key in ("asset_path", "image_path", "img_path", "path", "file_path", "resource_path"):
-        value = origin_ref_json.get(key)
-        if isinstance(value, str) and value.strip():
-            return True
+    sources = [origin_ref_json]
+    content_value = origin_ref_json.get("content")
+    if isinstance(content_value, dict):
+        sources.append(content_value)
+    for source in sources:
+        for key in ("asset_path", "image_path", "img_path", "image_source", "path", "file_path", "resource_path"):
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return True
     return False

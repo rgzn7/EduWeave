@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-14
+@Date: 2026-04-30
 @Author: xisy
 @Discription: 知识结构化模块请求与响应模型
 """
@@ -195,6 +195,8 @@ class ChapterNodeResponse(BaseSchema):
     summary_text: str | None = Field(default=None, description="摘要")
     page_start: int | None = Field(default=None, description="起始页")
     page_end: int | None = Field(default=None, description="结束页")
+    line_start: int | None = Field(default=None, description="Markdown 起始行号")
+    line_end: int | None = Field(default=None, description="Markdown 结束行号")
     sort_order: int = Field(description="排序号", examples=[0])
     created_at: datetime = Field(description="创建时间")
     updated_at: datetime = Field(description="更新时间")
@@ -205,6 +207,7 @@ class KnowledgeEvidenceResponse(BaseSchema):
 
     id: int = Field(description="证据主键", examples=[1])
     knowledge_point_id: int = Field(description="知识点主键", examples=[1])
+    semantic_chunk_id: int | None = Field(default=None, description="语义块主键")
     parse_version_id: int = Field(description="解析版本主键", examples=[1])
     parse_page_id: int | None = Field(default=None, description="解析页主键")
     parse_block_id: int | None = Field(default=None, description="解析块主键")
@@ -310,6 +313,28 @@ class KnowledgeExtractionPointDraft(BaseSchema):
     summary_text: str | None = Field(default=None, description="摘要")
     sort_order: int = Field(default=0, description="排序号", ge=0)
     evidences: list[KnowledgeExtractionEvidenceDraft] = Field(default_factory=list, description="证据列表")
+
+
+class KnowledgeChapterBoundaryItem(BaseSchema):
+    """LLM 章节边界识别项。"""
+
+    title: str = Field(description="章节标题", min_length=1, max_length=255)
+    start_line: int = Field(description="章节起始行号", ge=1)
+    line_text: str = Field(description="起始行原文", min_length=1)
+    confidence: float | None = Field(default=None, description="识别置信度", ge=0, le=1)
+
+
+class KnowledgeChapterBoundaryResult(BaseSchema):
+    """LLM 章节边界识别结果。"""
+
+    items: list[KnowledgeChapterBoundaryItem] = Field(description="一级章节开始行列表", min_length=1)
+
+
+class KnowledgeChapterPointExtractionResult(BaseSchema):
+    """单章节知识点抽取结果。"""
+
+    summary_json: dict[str, Any] | None = Field(default=None, description="章节知识摘要 JSON")
+    knowledge_points: list[KnowledgeExtractionPointDraft] = Field(default_factory=list, description="知识点列表")
 
 
 class KnowledgeExtractionResult(BaseSchema):
