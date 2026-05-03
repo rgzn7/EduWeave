@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 
 from app.core.constants import COVERAGE_ANALYZE_TASK_TYPE, COVERAGE_MODULE_CODE
 from app.modules.p0_models import (
-    AssessmentBlueprint,
     CoursewareResult,
     CoverageReport,
     CurriculumPlan,
@@ -65,11 +64,14 @@ class CoverageRepository:
             return None
         return self.session.scalar(select(LessonPlan).where(LessonPlan.id == lesson_plan_id))
 
-    def get_assessment_blueprint(self, assessment_blueprint_id: int | None) -> AssessmentBlueprint | None:
-        """查询测评蓝图。"""
-        if assessment_blueprint_id is None:
-            return None
-        return self.session.scalar(select(AssessmentBlueprint).where(AssessmentBlueprint.id == assessment_blueprint_id))
+    def list_lesson_plans_by_batch(self, generation_batch_id: int) -> list[LessonPlan]:
+        """查询批次下全部教案。"""
+        statement = (
+            select(LessonPlan)
+            .where(LessonPlan.generation_batch_id == generation_batch_id)
+            .order_by(LessonPlan.class_session_no.asc(), LessonPlan.id.asc())
+        )
+        return list(self.session.scalars(statement))
 
     def get_paper_result_by_batch(self, generation_batch_id: int) -> PaperResult | None:
         """查询批次下首个试卷结果。"""

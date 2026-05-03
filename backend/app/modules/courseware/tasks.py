@@ -12,7 +12,6 @@ from app.core.database import SessionLocal
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.courseware.repository import CoursewareRepository
 from app.modules.courseware.service import CoursewareService
-from app.modules.coverage.service import dispatch_coverage_task_if_needed
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.utils import DateTimeUtil
 
@@ -33,11 +32,8 @@ def run_generate_courseware_task(payload: dict) -> dict[str, int | str | None]:
         generation_batch = repository.get_generation_batch(payload["generation_batch_id"])
         if generation_batch is None:
             raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "生成批次不存在")
-        if generation_batch.lesson_plan_id != payload.get("lesson_plan_id"):
-            raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "课件任务教案基线与生成批次不一致")
+        lesson_plan_id = int(payload["lesson_plan_id"])
 
-        generation_batch.batch_status = TASK_STATUS_PROCESSING
-        generation_batch.started_at = generation_batch.started_at or now
         _mark_task(
             task,
             task_status=TASK_STATUS_PROCESSING,
@@ -46,12 +42,11 @@ def run_generate_courseware_task(payload: dict) -> dict[str, int | str | None]:
             started_at=now,
         )
         _mark_step(step_map["prepare_courseware_baseline"], TASK_STATUS_PROCESSING, 20, started_at=now)
-        repository.save(generation_batch)
         task_repository.save(task)
         task_repository.save(step_map["prepare_courseware_baseline"])
         session.commit()
 
-        context = service.build_generation_context(generation_batch.id)
+        context = service.build_generation_context(generation_batch.id, lesson_plan_id)
         _mark_step(
             step_map["prepare_courseware_baseline"],
             TASK_STATUS_SUCCESS,
@@ -73,6 +68,7 @@ def run_generate_courseware_task(payload: dict) -> dict[str, int | str | None]:
 
         courseware_result, state = service.create_remote_courseware_result(
             generation_batch_id=generation_batch.id,
+            lesson_plan_id=lesson_plan_id,
             operator_user_id=payload.get("operator_user_id"),
         )
         normalized_status = state.status.lower()
@@ -105,7 +101,7 @@ def run_generate_courseware_task(payload: dict) -> dict[str, int | str | None]:
                 step_map["finalize_generation_batch"],
                 TASK_STATUS_SUCCESS,
                 100,
-                detail_json={"batch_status": TASK_STATUS_PROCESSING},
+                detail_json={"courseware_result_status": TASK_STATUS_SUCCESS},
                 started_at=DateTimeUtil.now_utc(),
                 finished_at=DateTimeUtil.now_utc(),
             )
@@ -173,27 +169,11 @@ def run_generate_courseware_task(payload: dict) -> dict[str, int | str | None]:
             task_repository.save(step)
         task_repository.save(task)
         session.commit()
-        coverage_task = None
-        if normalized_status == "succeeded":
-            coverage_task = dispatch_coverage_task_if_needed(
-                session=session,
-                generation_batch_id=generation_batch.id,
-                operator_user_id=payload.get("operator_user_id"),
-                request_id=task.request_id if task is not None else None,
-            )
-            if coverage_task is not None and task is not None:
-                task.result_json = {
-                    **(task.result_json or {}),
-                    "coverage_task_id": coverage_task.id,
-                }
-                task_repository.save(task)
-                session.commit()
         return {
             "generation_batch_id": generation_batch.id,
             "courseware_result_id": courseware_result.id,
             "export_file_id": courseware_result.export_file_id,
             "raccoon_status": state.status,
-            "coverage_task_id": coverage_task.id if coverage_task is not None else None,
         }
     except Exception as exc:  # noqa: BLE001
         session.rollback()
@@ -263,11 +243,6 @@ def _mark_task_failure(
     exc: Exception,
 ) -> None:
     task = task_repository.get_task_by_id(payload["task_record_id"])
-    generation_batch = repository.get_generation_batch(payload["generation_batch_id"])
-    if generation_batch is not None:
-        generation_batch.batch_status = TASK_STATUS_FAILURE
-        generation_batch.finished_at = DateTimeUtil.now_utc()
-        repository.save(generation_batch)
     if task is not None:
         task.task_status = TASK_STATUS_FAILURE
         task.last_error_code = getattr(exc, "code", None).value if isinstance(exc, AppException) else "COURSEWARE_TASK_FAILED"

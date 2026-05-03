@@ -163,7 +163,9 @@ class CoverageService:
                         "knowledge_point_ids": invalid_refs,
                     }
                 )
-            artifact_coverage[artifact["artifact_type"]] = {
+            artifact_coverage_key = f"{artifact['artifact_type']}:{artifact['artifact_id']}"
+            artifact_coverage[artifact_coverage_key] = {
+                "artifact_type": artifact["artifact_type"],
                 "artifact_id": artifact["artifact_id"],
                 "reference_count": len(refs),
                 "valid_knowledge_point_ids": sorted(set(valid_refs)),
@@ -282,10 +284,7 @@ class CoverageService:
 
         artifacts: list[dict[str, Any]] = []
         curriculum_plan = self.repository.get_curriculum_plan(generation_batch.curriculum_plan_id)
-        lesson_plan = self.repository.get_lesson_plan(generation_batch.lesson_plan_id)
-        assessment_blueprint = self.repository.get_assessment_blueprint(generation_batch.assessment_blueprint_id)
-        paper_result = self.repository.get_paper_result_by_batch(generation_batch_id)
-        courseware_result = self.repository.get_courseware_result_by_batch(generation_batch_id)
+        lesson_plans = self.repository.list_lesson_plans_by_batch(generation_batch_id)
 
         if curriculum_plan is not None:
             artifacts.append(
@@ -295,42 +294,13 @@ class CoverageService:
                     curriculum_plan.content_json,
                 )
             )
-        if lesson_plan is not None:
-            artifacts.append(self._build_artifact_reference("lesson_plan", lesson_plan.id, lesson_plan.content_json))
-        if assessment_blueprint is not None:
+        for lesson_plan in lesson_plans:
             artifacts.append(
                 self._build_artifact_reference(
-                    "assessment_blueprint",
-                    assessment_blueprint.id,
-                    assessment_blueprint.content_json,
+                    "lesson_plan",
+                    lesson_plan.id,
+                    lesson_plan.content_json,
                 )
-            )
-        if paper_result is not None:
-            artifacts.append(self._build_artifact_reference("paper_result", paper_result.id, paper_result.paper_json))
-        if courseware_result is not None:
-            artifacts.append(
-                self._build_artifact_reference(
-                    "courseware_result",
-                    courseware_result.id,
-                    {
-                        "structure_json": courseware_result.structure_json,
-                        "preview_json": courseware_result.preview_json,
-                    },
-                )
-            )
-
-        question_refs: list[int] = []
-        for question in self.repository.list_question_items_by_batch(generation_batch_id):
-            if question.knowledge_point_id is not None:
-                question_refs.append(int(question.knowledge_point_id))
-            question_refs.extend(_extract_knowledge_point_ids(question.source_trace_json))
-        if question_refs:
-            artifacts.append(
-                {
-                    "artifact_type": "question_item",
-                    "artifact_id": paper_result.id if paper_result is not None else None,
-                    "knowledge_point_ids": question_refs,
-                }
             )
         return artifacts
 

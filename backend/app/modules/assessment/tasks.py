@@ -11,10 +11,6 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.constants import (
-    COURSEWARE_GENERATE_TASK_TYPE,
-    COURSEWARE_MODULE_CODE,
-    GENERATION_QUEUE_NAME,
-    TASK_STATUS_PENDING,
     TASK_STATUS_FAILURE,
     TASK_STATUS_PROCESSING,
     TASK_STATUS_SUCCESS,
@@ -27,7 +23,6 @@ from app.modules.assessment.schemas import AssessmentGenerationResult
 from app.modules.p0_models import AssessmentBlueprint, PaperResult, QuestionItem
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
-from app.shared.queue import dispatch_task
 from app.shared.utils import DateTimeUtil
 
 DEFAULT_ASSESSMENT_STRATEGY = {
@@ -54,22 +49,15 @@ def run_generate_assessment_task(payload: dict) -> dict[str, int | str]:
             raise RuntimeError("测评生成任务不存在")
         generation_batch = repository.get_generation_batch(payload["generation_batch_id"])
         curriculum_plan = repository.get_curriculum_plan(payload["curriculum_plan_id"])
-        lesson_plan = repository.get_lesson_plan(payload["lesson_plan_id"])
         if generation_batch is None:
             raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "生成批次不存在")
         if curriculum_plan is None:
             raise AppException(BusinessErrorCode.CURRICULUM_PLAN_NOT_FOUND, "课程大纲不存在")
-        if lesson_plan is None:
-            raise AppException(BusinessErrorCode.LESSON_PLAN_NOT_FOUND, "教案不存在")
         if curriculum_plan.project_id != generation_batch.project_id:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "课程大纲不属于当前生成批次")
-        if lesson_plan.curriculum_plan_id != curriculum_plan.id:
-            raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "教案不属于当前课程大纲")
-        if generation_batch.curriculum_plan_id != curriculum_plan.id or generation_batch.lesson_plan_id != lesson_plan.id:
+        if generation_batch.curriculum_plan_id != curriculum_plan.id:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "生成批次结果引用不完整")
 
-        generation_batch.batch_status = TASK_STATUS_PROCESSING
-        generation_batch.started_at = generation_batch.started_at or now
         _mark_task(
             task,
             task_status=TASK_STATUS_PROCESSING,
@@ -78,32 +66,32 @@ def run_generate_assessment_task(payload: dict) -> dict[str, int | str]:
             started_at=now,
         )
         _mark_step(step_map["prepare_assessment_baseline"], TASK_STATUS_PROCESSING, 20, started_at=now)
-        repository.save(generation_batch)
         task_repository.save(task)
         task_repository.save(step_map["prepare_assessment_baseline"])
         session.commit()
 
         if curriculum_plan.version_status != VERSION_STATUS_READY:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "课程大纲版本不可用")
-        if lesson_plan.version_status != VERSION_STATUS_READY:
-            raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "教案版本不可用")
         project = repository.get_project(curriculum_plan.project_id)
         knowledge_points = repository.list_knowledge_points(curriculum_plan.knowledge_version_id)
+        lesson_plans = repository.list_lesson_plans_by_batch(generation_batch.id)
         if project is None:
             raise AppException(BusinessErrorCode.PROJECT_NOT_FOUND, "项目不存在")
         if not knowledge_points:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "课程大纲绑定的知识版本缺少知识点")
 
-        strategy = _normalize_assessment_strategy(generation_batch.assessment_strategy_json)
+        strategy = _normalize_assessment_strategy(
+            payload.get("assessment_strategy_json") or generation_batch.assessment_strategy_json
+        )
         _mark_step(
             step_map["prepare_assessment_baseline"],
             TASK_STATUS_SUCCESS,
             100,
             detail_json={
                 "curriculum_plan_id": curriculum_plan.id,
-                "lesson_plan_id": lesson_plan.id,
                 "knowledge_version_id": curriculum_plan.knowledge_version_id,
                 "knowledge_point_count": len(knowledge_points),
+                "lesson_plan_count": len(lesson_plans),
                 "assessment_strategy": strategy,
             },
             finished_at=DateTimeUtil.now_utc(),
@@ -119,7 +107,7 @@ def run_generate_assessment_task(payload: dict) -> dict[str, int | str]:
             project=project,
             generation_batch=generation_batch,
             curriculum_plan=curriculum_plan,
-            lesson_plan=lesson_plan,
+            lesson_plans=lesson_plans,
             knowledge_points=knowledge_points,
             strategy=strategy,
         )
@@ -192,8 +180,6 @@ def run_generate_assessment_task(payload: dict) -> dict[str, int | str]:
                 for question in generation_result.questions
             ]
         )
-        generation_batch.assessment_blueprint_id = assessment_blueprint.id
-
         _mark_step(
             step_map["persist_assessment_result"],
             TASK_STATUS_SUCCESS,
@@ -205,73 +191,43 @@ def run_generate_assessment_task(payload: dict) -> dict[str, int | str]:
             },
             finished_at=DateTimeUtil.now_utc(),
         )
-        _mark_step(step_map["finalize_generation_batch"], TASK_STATUS_PROCESSING, 70, started_at=DateTimeUtil.now_utc())
-        _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="finalize_generation_batch", progress_percent=90)
-        repository.save(generation_batch)
+        _mark_step(step_map["finalize_assessment_task"], TASK_STATUS_PROCESSING, 70, started_at=DateTimeUtil.now_utc())
+        _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="finalize_assessment_task", progress_percent=90)
         task_repository.save(task)
         for step in step_map.values():
             task_repository.save(step)
         session.commit()
 
-        courseware_task = _create_courseware_task(
-            task_repository=task_repository,
-            generation_batch=generation_batch,
-            lesson_plan=lesson_plan,
-            owner_user_id=payload.get("operator_user_id"),
-            request_id=task.request_id,
-        )
         finished_at = DateTimeUtil.now_utc()
-        generation_batch.batch_status = TASK_STATUS_PROCESSING
         _mark_step(
-            step_map["finalize_generation_batch"],
+            step_map["finalize_assessment_task"],
             TASK_STATUS_SUCCESS,
             100,
-            detail_json={
-                "batch_status": TASK_STATUS_PROCESSING,
-                "next_task_id": courseware_task.id,
-                "next_task_type": COURSEWARE_GENERATE_TASK_TYPE,
-            },
+            detail_json={"assessment_blueprint_id": assessment_blueprint.id, "paper_result_id": paper_result.id},
             finished_at=finished_at,
         )
         _mark_task(
             task,
             task_status=TASK_STATUS_SUCCESS,
-            current_stage="finalize_generation_batch",
+            current_stage="finalize_assessment_task",
             progress_percent=100,
             result_json={
                 "generation_batch_id": generation_batch.id,
                 "assessment_blueprint_id": assessment_blueprint.id,
                 "paper_result_id": paper_result.id,
                 "question_count": len(generation_result.questions),
-                "courseware_task_id": courseware_task.id,
             },
             finished_at=finished_at,
         )
-        repository.save(generation_batch)
         task_repository.save(task)
         for step in step_map.values():
             task_repository.save(step)
         session.commit()
-        dispatch_result = dispatch_task(
-            "app.modules.courseware.tasks.run_generate_courseware_task",
-            {
-                "task_record_id": courseware_task.id,
-                "generation_batch_id": generation_batch.id,
-                "lesson_plan_id": lesson_plan.id,
-                "operator_user_id": payload.get("operator_user_id"),
-                "database_url": session.get_bind().url.render_as_string(hide_password=False),
-            },
-        )
-        if dispatch_result.worker_task_id:
-            courseware_task.worker_task_id = dispatch_result.worker_task_id
-            task_repository.save(courseware_task)
-            session.commit()
         return {
             "generation_batch_id": generation_batch.id,
             "assessment_blueprint_id": assessment_blueprint.id,
             "paper_result_id": paper_result.id,
             "question_count": len(generation_result.questions),
-            "courseware_task_id": courseware_task.id,
         }
     except Exception as exc:  # noqa: BLE001
         session.rollback()
@@ -301,7 +257,7 @@ def _build_assessment_messages(
     project,
     generation_batch,
     curriculum_plan,
-    lesson_plan,
+    lesson_plans: list,
     knowledge_points: list,
     strategy: dict[str, Any],
 ) -> list[ChatMessage]:
@@ -338,17 +294,21 @@ def _build_assessment_messages(
             "summary_text": curriculum_plan.summary_text,
             "content_json": curriculum_plan.content_json,
         },
-        "lesson_plan": {
-            "id": lesson_plan.id,
-            "lesson_title": lesson_plan.lesson_title,
-            "summary_text": lesson_plan.summary_text,
-            "content_json": lesson_plan.content_json,
-        },
+        "lesson_plans": [
+            {
+                "id": lesson_plan.id,
+                "class_session_no": lesson_plan.class_session_no,
+                "lesson_title": lesson_plan.lesson_title,
+                "summary_text": lesson_plan.summary_text,
+                "content_json": lesson_plan.content_json,
+            }
+            for lesson_plan in lesson_plans
+        ],
         "knowledge_points": point_payload,
         "assessment_strategy": strategy,
     }
     system_prompt = (
-        "你是测评蓝图和试卷生成助手。请基于课程大纲、教案和知识点生成中文单元测试蓝图与题目。"
+        "你是测评蓝图和试卷生成助手。请基于课程大纲、批次内教案和知识点生成中文单元测试蓝图与题目。"
         "必须严格输出 JSON 对象，字段包含 blueprint_name、paper_title、strategy_summary、"
         "knowledge_weights、question_type_distribution、difficulty_distribution、questions。"
         "questions 数量必须等于 assessment_strategy.question_count，question_no 必须从 1 连续递增。"
@@ -450,48 +410,6 @@ def _build_difficulty_stats(result: AssessmentGenerationResult) -> dict[str, Any
     return stats
 
 
-def _create_courseware_task(
-    *,
-    task_repository: TaskCenterRepository,
-    generation_batch,
-    lesson_plan,
-    owner_user_id: int | None,
-    request_id: str | None,
-):
-    """创建课件生成任务。"""
-    task = task_repository.create_task(
-        project_id=generation_batch.project_id,
-        generation_batch_id=generation_batch.id,
-        module_code=COURSEWARE_MODULE_CODE,
-        task_type=COURSEWARE_GENERATE_TASK_TYPE,
-        task_status=TASK_STATUS_PENDING,
-        queue_name=GENERATION_QUEUE_NAME,
-        biz_key=f"generation_batch:{generation_batch.id}:courseware",
-        operator_user_id=owner_user_id,
-        payload_json={
-            "generation_batch_id": generation_batch.id,
-            "lesson_plan_id": lesson_plan.id,
-        },
-        request_id=request_id,
-    )
-    step_names = [
-        ("prepare_courseware_baseline", "准备课件生成基线"),
-        ("create_raccoon_ppt_job", "创建 Raccoon PPT 任务"),
-        ("poll_raccoon_ppt_job", "轮询 Raccoon PPT 任务"),
-        ("archive_courseware_result", "归档课件 PPTX"),
-        ("finalize_generation_batch", "完成生成批次"),
-    ]
-    for step_order, (step_code, step_name) in enumerate(step_names, start=1):
-        task_repository.create_task_step(
-            task_record_id=task.id,
-            step_code=step_code,
-            step_name=step_name,
-            step_order=step_order,
-            step_status=TASK_STATUS_PENDING,
-        )
-    return task
-
-
 def _mark_task(task, *, task_status: str, current_stage: str, progress_percent: int, started_at=None, finished_at=None, result_json: dict | None = None) -> None:
     task.task_status = task_status
     task.current_stage = current_stage
@@ -522,18 +440,13 @@ def _get_step_map(task_repository: TaskCenterRepository, task_record_id: int) ->
             "prepare_assessment_baseline",
             "invoke_llm_assessment",
             "persist_assessment_result",
-            "finalize_generation_batch",
+            "finalize_assessment_task",
         )
     }
 
 
 def _mark_task_failure(task_repository: TaskCenterRepository, repository: AssessmentRepository, payload: dict, exc: Exception) -> None:
     task = task_repository.get_task_by_id(payload["task_record_id"])
-    generation_batch = repository.get_generation_batch(payload["generation_batch_id"])
-    if generation_batch is not None:
-        generation_batch.batch_status = TASK_STATUS_FAILURE
-        generation_batch.finished_at = DateTimeUtil.now_utc()
-        repository.save(generation_batch)
     if task is not None:
         task.task_status = TASK_STATUS_FAILURE
         task.last_error_code = getattr(exc, "code", None).value if isinstance(exc, AppException) else "ASSESSMENT_TASK_FAILED"
@@ -544,7 +457,7 @@ def _mark_task_failure(task_repository: TaskCenterRepository, repository: Assess
         "prepare_assessment_baseline",
         "invoke_llm_assessment",
         "persist_assessment_result",
-        "finalize_generation_batch",
+        "finalize_assessment_task",
     ):
         step = task_repository.get_task_step(payload["task_record_id"], step_code)
         if step is None or step.step_status == TASK_STATUS_SUCCESS:

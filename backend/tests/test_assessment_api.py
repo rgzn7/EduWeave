@@ -64,6 +64,13 @@ def create_generation_batch(client, headers, project_id: int, knowledge_version_
     return response.json()["data"]
 
 
+def create_assessment_task(client, headers, curriculum_plan_id: int) -> dict:
+    """创建按需测评任务。"""
+    response = client.post(f"/api/v1/curriculum-plans/{curriculum_plan_id}/assessment-tasks", headers=headers, json={})
+    assert response.status_code == 201
+    return response.json()["data"]
+
+
 def create_generation_baseline(client, headers) -> tuple[int, int, int]:
     """创建生成所需的项目、知识版本和学情版本。"""
     project_id = create_project(client, headers)
@@ -82,6 +89,8 @@ def test_assessment_apis_should_query_results_and_protect_owner(
     headers = build_auth_headers(client)
     project_id, knowledge_version_id, learner_profile_version_id = create_generation_baseline(client, headers)
     batch_payload = create_generation_batch(client, headers, project_id, knowledge_version_id, learner_profile_version_id)
+    assessment_task_payload = create_assessment_task(client, headers, batch_payload["curriculum_plan_id"])
+    assessment_blueprint_id = assessment_task_payload["result_json"]["assessment_blueprint_id"]
 
     blueprint_list_response = client.get(
         f"/api/v1/assessment-blueprints?curriculum_plan_id={batch_payload['curriculum_plan_id']}&scenario_type=unit_test",
@@ -91,7 +100,7 @@ def test_assessment_apis_should_query_results_and_protect_owner(
     blueprint_list_payload = blueprint_list_response.json()["data"]
     assert blueprint_list_payload["pagination"]["total_count"] == 1
     blueprint_id = blueprint_list_payload["items"][0]["id"]
-    assert blueprint_id == batch_payload["assessment_blueprint_id"]
+    assert blueprint_id == assessment_blueprint_id
 
     blueprint_detail_response = client.get(f"/api/v1/assessment-blueprints/{blueprint_id}", headers=headers)
     assert blueprint_detail_response.status_code == 200
@@ -128,10 +137,11 @@ def test_generation_batch_should_mark_failure_when_assessment_has_invalid_knowle
     generation_test_stubs,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """测评引用不存在的知识点时应写入失败批次与失败任务。"""
+    """按需测评引用不存在的知识点时不应把基础批次改成失败。"""
     _ = generation_test_stubs
     headers = build_auth_headers(client)
     project_id, knowledge_version_id, learner_profile_version_id = create_generation_baseline(client, headers)
+    batch_payload = create_generation_batch(client, headers, project_id, knowledge_version_id, learner_profile_version_id)
     original_generate = OpenAICompatibleLlmService.generate_structured_output
 
     def mixed_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
@@ -171,15 +181,9 @@ def test_generation_batch_should_mark_failure_when_assessment_has_invalid_knowle
 
     monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", mixed_generate)
     response = client.post(
-        "/api/v1/generation-batches",
+        f"/api/v1/curriculum-plans/{batch_payload['curriculum_plan_id']}/assessment-tasks",
         headers=headers,
-        json={
-            "project_id": project_id,
-            "knowledge_version_id": knowledge_version_id,
-            "learner_profile_version_id": learner_profile_version_id,
-            "course_count": 2,
-            "session_duration_minutes": 90,
-        },
+        json={},
     )
 
     assert response.status_code == 503
@@ -187,20 +191,21 @@ def test_generation_batch_should_mark_failure_when_assessment_has_invalid_knowle
 
     list_response = client.get(f"/api/v1/generation-batches?project_id={project_id}", headers=headers)
     assert list_response.status_code == 200
-    failed_batch = list_response.json()["data"]["items"][0]
-    assert failed_batch["batch_status"] == "failure"
-    assert failed_batch["curriculum_plan_id"] is not None
-    assert failed_batch["lesson_plan_id"] is not None
-    assert failed_batch["assessment_blueprint_id"] is None
+    succeeded_batch = list_response.json()["data"]["items"][0]
+    assert succeeded_batch["batch_status"] == "success"
+    assert succeeded_batch["curriculum_plan_id"] is not None
+    assert succeeded_batch["lesson_plan_id"] is not None
 
-    detail_response = client.get(f"/api/v1/generation-batches/{failed_batch['id']}", headers=headers)
+    detail_response = client.get(f"/api/v1/generation-batches/{succeeded_batch['id']}", headers=headers)
     tasks = detail_response.json()["data"]["tasks"]
     assert [task["task_type"] for task in tasks] == [
         "curriculum_generate",
         "lesson_plan_generate",
+        "coverage_analyze",
         "assessment_generate",
     ]
     assert tasks[0]["task_status"] == "success"
     assert tasks[1]["task_status"] == "success"
-    assert tasks[2]["task_status"] == "failure"
-    assert tasks[2]["last_error_code"] == BusinessErrorCode.LLM_RESULT_INVALID.value
+    assert tasks[2]["task_status"] == "success"
+    assert tasks[3]["task_status"] == "failure"
+    assert tasks[3]["last_error_code"] == BusinessErrorCode.LLM_RESULT_INVALID.value

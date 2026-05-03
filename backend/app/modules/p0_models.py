@@ -888,7 +888,9 @@ class LessonPlan(TimestampMixin, Base):
     __tablename__ = "lesson_plan"
     __table_args__ = (
         Index("uk_lesson_plan_curriculum_no", "curriculum_plan_id", "version_no", unique=True),
+        Index("uk_lesson_plan_batch_session", "generation_batch_id", "class_session_no", unique=True),
         Index("idx_lesson_plan_curriculum_status", "curriculum_plan_id", "version_status", "created_at"),
+        Index("idx_lesson_plan_generation_batch", "generation_batch_id", "class_session_no"),
         {"comment": "教案表"},
     )
 
@@ -899,6 +901,13 @@ class LessonPlan(TimestampMixin, Base):
         nullable=False,
         comment="课程大纲",
     )
+    generation_batch_id: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("generation_batch.id"),
+        nullable=True,
+        comment="生成批次",
+    )
+    class_session_no: Mapped[int | None] = mapped_column(Integer, nullable=True, comment="课次序号")
     version_no: Mapped[int] = mapped_column(Integer, nullable=False, comment="版本号")
     lesson_title: Mapped[str] = mapped_column(String(255), nullable=False, comment="教案标题")
     style_code: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="教案风格")
@@ -1026,12 +1035,6 @@ class GenerationBatch(TimestampMixin, Base):
         nullable=True,
         comment="生成的教案版本",
     )
-    assessment_blueprint_id: Mapped[int | None] = mapped_column(
-        MYSQL_BIGINT_UNSIGNED,
-        ForeignKey("assessment_blueprint.id"),
-        nullable=True,
-        comment="生成的蓝图版本",
-    )
     started_at: Mapped[datetime | None] = mapped_column(MYSQL_DATETIME_MS, nullable=True, comment="开始时间")
     finished_at: Mapped[datetime | None] = mapped_column(MYSQL_DATETIME_MS, nullable=True, comment="结束时间")
     created_by: Mapped[int | None] = mapped_column(
@@ -1047,7 +1050,7 @@ class CoursewareResult(TimestampMixin, Base):
 
     __tablename__ = "courseware_result"
     __table_args__ = (
-        Index("uk_courseware_result_batch", "generation_batch_id", unique=True),
+        Index("uk_courseware_result_batch_lesson", "generation_batch_id", "lesson_plan_id", unique=True),
         Index("idx_courseware_result_lesson", "lesson_plan_id", "created_at"),
         {"comment": "课件结果表"},
     )

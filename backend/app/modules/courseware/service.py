@@ -14,17 +14,23 @@ from app.core.constants import (
     COURSEWARE_EXPORT_BIZ_TYPE,
     COURSEWARE_GENERATE_TASK_TYPE,
     COURSEWARE_MODULE_CODE,
+    GENERATION_QUEUE_NAME,
     TASK_STATUS_FAILURE,
+    TASK_STATUS_PENDING,
     TASK_STATUS_PROCESSING,
     TASK_STATUS_SUCCESS,
     VERSION_STATUS_READY,
 )
 from app.core.exceptions import AppException, BusinessErrorCode
+from app.core.middleware import get_request_id
 from app.modules.courseware.repository import CoursewareRepository
 from app.modules.courseware.schemas import CoursewareResultDetailResponse, CoursewareResultListItemResponse
-from app.modules.coverage.service import dispatch_coverage_task_if_needed
 from app.modules.p0_models import CoursewareResult, FileObject
+from app.modules.task_center.repository import TaskCenterRepository
+from app.modules.task_center.schemas import TaskListItemResponse
+from app.modules.task_center.service import TaskCenterService
 from app.shared.ppt import RaccoonPptJobState, RaccoonPptService
+from app.shared.queue import dispatch_task
 from app.shared.storage import ObsStorageClient
 from app.shared.utils import DateTimeUtil
 
@@ -50,6 +56,46 @@ class CoursewareService:
         self.repository = repository or CoursewareRepository(session)
         self.ppt_service = ppt_service or RaccoonPptService()
         self.storage_client = storage_client or ObsStorageClient()
+        self.task_repository = TaskCenterRepository(session)
+
+    def create_courseware_task(self, *, owner_user_id: int, lesson_plan_id: int) -> TaskListItemResponse:
+        """按教案创建课件生成任务。"""
+        lesson_plan = self.repository.get_lesson_plan_for_owner(lesson_plan_id, owner_user_id)
+        if lesson_plan is None:
+            raise AppException(BusinessErrorCode.LESSON_PLAN_NOT_FOUND, "教案不存在")
+        generation_batch = self.repository.get_generation_batch_by_lesson_plan(lesson_plan)
+        if generation_batch is None:
+            raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "教案未关联生成批次")
+
+        if self.repository.get_courseware_result_by_batch_lesson(generation_batch.id, lesson_plan.id) is not None:
+            raise AppException(BusinessErrorCode.TASK_CONFLICT, "当前批次下该教案已存在课件结果")
+        if self.repository.get_active_courseware_task(generation_batch.id, lesson_plan.id) is not None:
+            raise AppException(BusinessErrorCode.TASK_CONFLICT, "当前批次下该教案已有运行中的课件任务")
+
+        task = self._create_courseware_task_record(
+            generation_batch=generation_batch,
+            lesson_plan_id=lesson_plan.id,
+            owner_user_id=owner_user_id,
+        )
+        self.session.commit()
+        dispatch_result = dispatch_task(
+            "app.modules.courseware.tasks.run_generate_courseware_task",
+            {
+                "task_record_id": task.id,
+                "generation_batch_id": generation_batch.id,
+                "lesson_plan_id": lesson_plan.id,
+                "operator_user_id": owner_user_id,
+                "database_url": self.session.get_bind().url.render_as_string(hide_password=False),
+            },
+        )
+        if dispatch_result.worker_task_id:
+            task.worker_task_id = dispatch_result.worker_task_id
+            self.task_repository.save(task)
+            self.session.commit()
+
+        self.session.expire_all()
+        fresh_task = self.task_repository.get_task_by_id(task.id)
+        return TaskCenterService.build_task_list_item(fresh_task)
 
     def list_courseware_results(
         self,
@@ -100,13 +146,6 @@ class CoursewareService:
             raise AppException(BusinessErrorCode.COURSEWARE_RESULT_NOT_FOUND, "课件结果不存在")
         state = self.refresh_remote_state(courseware_result)
         self.session.commit()
-        if state.status.lower() == "succeeded":
-            dispatch_coverage_task_if_needed(
-                session=self.session,
-                generation_batch_id=courseware_result.generation_batch_id,
-                operator_user_id=owner_user_id,
-                request_id=None,
-            )
         self.session.refresh(courseware_result)
         return CoursewareResultDetailResponse(**self.build_courseware_response(courseware_result).model_dump())
 
@@ -125,13 +164,6 @@ class CoursewareService:
         state = self.ppt_service.reply_and_short_poll(job_id=job_id, answer=answer)
         self.apply_remote_state(courseware_result, state)
         self.session.commit()
-        if state.status.lower() == "succeeded":
-            dispatch_coverage_task_if_needed(
-                session=self.session,
-                generation_batch_id=courseware_result.generation_batch_id,
-                operator_user_id=owner_user_id,
-                request_id=None,
-            )
         self.session.refresh(courseware_result)
         return CoursewareResultDetailResponse(**self.build_courseware_response(courseware_result).model_dump())
 
@@ -139,10 +171,11 @@ class CoursewareService:
         self,
         *,
         generation_batch_id: int,
+        lesson_plan_id: int,
         operator_user_id: int | None,
     ) -> tuple[CoursewareResult, RaccoonPptJobState]:
         """基于生成批次创建 Raccoon PPT 课件任务。"""
-        context = self.build_generation_context(generation_batch_id)
+        context = self.build_generation_context(generation_batch_id, lesson_plan_id)
         prompt = self.build_raccoon_prompt(context)
         state = self.ppt_service.create_job_and_short_poll(
             prompt=prompt,
@@ -184,17 +217,15 @@ class CoursewareService:
             **(courseware_result.structure_json or {}),
             "raccoon_job": state.model_dump(mode="json"),
         }
-        generation_batch = self.repository.get_generation_batch(courseware_result.generation_batch_id)
-        task = self.repository.get_courseware_task_by_batch(courseware_result.generation_batch_id)
+        task = self.repository.get_courseware_task_by_batch_lesson(
+            courseware_result.generation_batch_id,
+            courseware_result.lesson_plan_id,
+        )
 
         if normalized_status == "succeeded":
             if courseware_result.export_file_id is None:
                 self.archive_pptx(courseware_result, state)
             courseware_result.result_status = TASK_STATUS_SUCCESS
-            if generation_batch is not None:
-                if generation_batch.batch_status != TASK_STATUS_SUCCESS:
-                    generation_batch.batch_status = TASK_STATUS_PROCESSING
-                self.repository.save(generation_batch)
             if task is not None:
                 task.task_status = TASK_STATUS_SUCCESS
                 task.current_stage = "finalize_courseware_result"
@@ -215,10 +246,6 @@ class CoursewareService:
                 )
         elif normalized_status in {"failed", "canceled"}:
             courseware_result.result_status = TASK_STATUS_FAILURE
-            if generation_batch is not None:
-                generation_batch.batch_status = TASK_STATUS_FAILURE
-                generation_batch.finished_at = DateTimeUtil.now_utc()
-                self.repository.save(generation_batch)
             if task is not None:
                 task.task_status = TASK_STATUS_FAILURE
                 task.current_stage = "raccoon_task_failed"
@@ -230,9 +257,6 @@ class CoursewareService:
                 self._sync_task_steps(task.id, state=state, step_status=TASK_STATUS_FAILURE)
         else:
             courseware_result.result_status = TASK_STATUS_PROCESSING
-            if generation_batch is not None:
-                generation_batch.batch_status = TASK_STATUS_PROCESSING
-                self.repository.save(generation_batch)
             if task is not None:
                 task.task_status = TASK_STATUS_PROCESSING
                 task.current_stage = "waiting_raccoon_result" if normalized_status != "waiting_user_input" else "waiting_user_input"
@@ -286,17 +310,17 @@ class CoursewareService:
         )
         courseware_result.export_file_id = file_object.id
 
-    def build_generation_context(self, generation_batch_id: int) -> dict[str, Any]:
+    def build_generation_context(self, generation_batch_id: int, lesson_plan_id: int) -> dict[str, Any]:
         """构造课件生成上下文。"""
         generation_batch = self.repository.get_generation_batch(generation_batch_id)
         if generation_batch is None:
             raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "生成批次不存在")
-        if generation_batch.lesson_plan_id is None or generation_batch.curriculum_plan_id is None:
+        if generation_batch.curriculum_plan_id is None:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "生成批次缺少课程大纲或教案")
 
         project = self.repository.get_project(generation_batch.project_id)
         curriculum_plan = self.repository.get_curriculum_plan(generation_batch.curriculum_plan_id)
-        lesson_plan = self.repository.get_lesson_plan(generation_batch.lesson_plan_id)
+        lesson_plan = self.repository.get_lesson_plan(lesson_plan_id)
         profile_version = self.repository.get_learner_profile_version(generation_batch.learner_profile_version_id)
         if project is None:
             raise AppException(BusinessErrorCode.PROJECT_NOT_FOUND, "项目不存在")
@@ -304,6 +328,8 @@ class CoursewareService:
             raise AppException(BusinessErrorCode.CURRICULUM_PLAN_NOT_FOUND, "课程大纲不存在或不可用")
         if lesson_plan is None or lesson_plan.version_status != VERSION_STATUS_READY:
             raise AppException(BusinessErrorCode.LESSON_PLAN_NOT_FOUND, "教案不存在或不可用")
+        if lesson_plan.curriculum_plan_id != curriculum_plan.id or lesson_plan.generation_batch_id != generation_batch.id:
+            raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "教案不属于当前生成批次")
         if profile_version is None:
             raise AppException(BusinessErrorCode.LEARNER_PROFILE_NOT_FOUND, "学情版本不存在")
 
@@ -315,11 +341,6 @@ class CoursewareService:
             "profile_version": profile_version,
             "profile_records": self.repository.list_profile_records(profile_version.id),
             "knowledge_points": self.repository.list_knowledge_points(generation_batch.knowledge_version_id),
-            "assessment_blueprint": (
-                self.repository.get_assessment_blueprint(generation_batch.assessment_blueprint_id)
-                if generation_batch.assessment_blueprint_id
-                else None
-            ),
             "paper_result": self.repository.get_paper_result_by_batch(generation_batch.id),
         }
 
@@ -333,7 +354,6 @@ class CoursewareService:
         profile_version = context["profile_version"]
         knowledge_points = context["knowledge_points"]
         profile_records = context["profile_records"]
-        assessment_blueprint = context["assessment_blueprint"]
         paper_result = context["paper_result"]
 
         payload = {
@@ -344,7 +364,8 @@ class CoursewareService:
                 "适用对象": project.applicable_target,
             },
             "生成要求": {
-                "课次": generation_batch.course_count,
+                "课次": lesson_plan.class_session_no,
+                "总课次": generation_batch.course_count,
                 "单次课时分钟": generation_batch.session_duration_minutes,
                 "章节范围": generation_batch.chapter_range_json,
                 "课件页型": ["封面", "目录", "知识讲解", "例题讲解", "课堂互动", "总结", "课后作业"],
@@ -385,10 +406,7 @@ class CoursewareService:
                 }
                 for point in knowledge_points[:30]
             ],
-            "测评": {
-                "蓝图": assessment_blueprint.content_json if assessment_blueprint is not None else None,
-                "试卷": paper_result.paper_json if paper_result is not None else None,
-            },
+            "测评": {"试卷": paper_result.paper_json if paper_result is not None else None},
         }
         return (
             "请基于以下结构化教学材料，生成一份可直接用于课堂授课的中文 PPTX 课件。"
@@ -442,6 +460,46 @@ class CoursewareService:
         """构造课件结果响应。"""
         return CoursewareResultListItemResponse.model_validate(courseware_result, from_attributes=True)
 
+    def _create_courseware_task_record(
+        self,
+        *,
+        generation_batch,
+        lesson_plan_id: int,
+        owner_user_id: int | None,
+    ):
+        """创建课件生成任务记录。"""
+        task = self.task_repository.create_task(
+            project_id=generation_batch.project_id,
+            generation_batch_id=generation_batch.id,
+            module_code=COURSEWARE_MODULE_CODE,
+            task_type=COURSEWARE_GENERATE_TASK_TYPE,
+            task_status=TASK_STATUS_PENDING,
+            queue_name=GENERATION_QUEUE_NAME,
+            biz_key=f"generation_batch:{generation_batch.id}:lesson_plan:{lesson_plan_id}:courseware",
+            operator_user_id=owner_user_id,
+            payload_json={
+                "generation_batch_id": generation_batch.id,
+                "lesson_plan_id": lesson_plan_id,
+            },
+            request_id=get_request_id() or None,
+        )
+        step_names = [
+            ("prepare_courseware_baseline", "准备课件生成基线"),
+            ("create_raccoon_ppt_job", "创建 Raccoon PPT 任务"),
+            ("poll_raccoon_ppt_job", "轮询 Raccoon PPT 任务"),
+            ("archive_courseware_result", "归档课件 PPTX"),
+            ("finalize_generation_batch", "完成课件任务"),
+        ]
+        for step_order, (step_code, step_name) in enumerate(step_names, start=1):
+            self.task_repository.create_task_step(
+                task_record_id=task.id,
+                step_code=step_code,
+                step_name=step_name,
+                step_order=step_order,
+                step_status=TASK_STATUS_PENDING,
+            )
+        return task
+
     def _sync_task_steps(
         self,
         task_record_id: int,
@@ -476,7 +534,7 @@ class CoursewareService:
                 "finalize_generation_batch",
                 TASK_STATUS_SUCCESS,
                 100,
-                detail_json={"batch_status": TASK_STATUS_PROCESSING},
+                detail_json={"courseware_result_status": TASK_STATUS_SUCCESS},
                 started_at=now,
                 finished_at=now,
             )

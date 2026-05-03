@@ -61,7 +61,6 @@ class GenerationBatchListItemResponse(BaseSchema):
     pipeline_options_json: dict[str, Any] | None = Field(default=None, description="编排选项")
     curriculum_plan_id: int | None = Field(default=None, description="课程大纲版本主键")
     lesson_plan_id: int | None = Field(default=None, description="教案版本主键")
-    assessment_blueprint_id: int | None = Field(default=None, description="测评蓝图版本主键")
     started_at: datetime | None = Field(default=None, description="开始时间")
     finished_at: datetime | None = Field(default=None, description="结束时间")
     created_by: int | None = Field(default=None, description="创建人")
@@ -72,4 +71,5 @@ class GenerationBatchListItemResponse(BaseSchema):
 class GenerationBatchDetailResponse(GenerationBatchListItemResponse):
     """生成批次详情响应。"""
 
+    lesson_plan_ids: list[int] = Field(default_factory=list, description="批次下全部教案主键列表")
     tasks: list[TaskListItemResponse] = Field(default_factory=list, description="批次关联任务列表")

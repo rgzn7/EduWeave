@@ -15,11 +15,13 @@ from app.modules.assessment.repository import AssessmentRepository
 from app.modules.assessment.schemas import (
     AssessmentBlueprintDetailResponse,
     AssessmentBlueprintListItemResponse,
+    AssessmentTaskCreateRequest,
     PaperResultDetailResponse,
     PaperResultListItemResponse,
 )
 from app.modules.assessment.service import AssessmentService
 from app.modules.auth.models import SysUser
+from app.modules.task_center.schemas import TaskListItemResponse
 from app.schemas.response import ApiResponse, PaginatedData, ResponseFactory
 
 router = APIRouter(tags=["测评"])
@@ -28,6 +30,29 @@ router = APIRouter(tags=["测评"])
 def get_assessment_service(session: Annotated[Session, Depends(get_db_session)]) -> AssessmentService:
     """构造测评服务依赖。"""
     return AssessmentService(session, AssessmentRepository(session))
+
+
+@router.post(
+    "/curriculum-plans/{curriculum_plan_id}/assessment-tasks",
+    summary="创建按需测评生成任务",
+    description="为当前教师可见的课程大纲创建测评生成任务，生成测评蓝图、试卷和题目。",
+    operation_id="assessment_task_create",
+    response_model=ApiResponse[TaskListItemResponse],
+    status_code=status.HTTP_201_CREATED,
+)
+def create_assessment_task(
+    request: AssessmentTaskCreateRequest,
+    curriculum_plan_id: int = Path(..., description="课程大纲主键", examples=[1]),
+    service: Annotated[AssessmentService, Depends(get_assessment_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """创建按需测评生成任务。"""
+    task = service.create_assessment_task(
+        owner_user_id=current_user.id,
+        curriculum_plan_id=curriculum_plan_id,
+        request=request,
+    )
+    return ResponseFactory.success(task.model_dump(mode="json"), "创建测评生成任务成功", status_code=status.HTTP_201_CREATED)
 
 
 @router.get(

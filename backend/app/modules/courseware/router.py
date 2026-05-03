@@ -19,6 +19,7 @@ from app.modules.courseware.schemas import (
     CoursewareResultListItemResponse,
 )
 from app.modules.courseware.service import CoursewareService
+from app.modules.task_center.schemas import TaskListItemResponse
 from app.schemas.response import ApiResponse, PaginatedData, ResponseFactory
 
 router = APIRouter(tags=["课件"])
@@ -27,6 +28,24 @@ router = APIRouter(tags=["课件"])
 def get_courseware_service(session: Annotated[Session, Depends(get_db_session)]) -> CoursewareService:
     """构造课件服务依赖。"""
     return CoursewareService(session, CoursewareRepository(session))
+
+
+@router.post(
+    "/lesson-plans/{lesson_plan_id}/courseware-tasks",
+    summary="创建按需课件生成任务",
+    description="为当前教师可见的教案创建 Raccoon PPT 课件生成任务并归档 PPTX。",
+    operation_id="courseware_task_create",
+    response_model=ApiResponse[TaskListItemResponse],
+    status_code=status.HTTP_201_CREATED,
+)
+def create_courseware_task(
+    lesson_plan_id: int = Path(..., description="教案主键", examples=[1]),
+    service: Annotated[CoursewareService, Depends(get_courseware_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """创建按需课件生成任务。"""
+    task = service.create_courseware_task(owner_user_id=current_user.id, lesson_plan_id=lesson_plan_id)
+    return ResponseFactory.success(task.model_dump(mode="json"), "创建课件生成任务成功", status_code=status.HTTP_201_CREATED)
 
 
 @router.get(

@@ -7,7 +7,7 @@
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.modules.p0_models import GenerationBatch, KnowledgeVersion, LearnerProfileVersion, Project
+from app.modules.p0_models import GenerationBatch, KnowledgeVersion, LearnerProfileVersion, LessonPlan, Project
 
 
 class PipelineRepository:
@@ -90,6 +90,15 @@ class PipelineRepository:
             .where(Project.owner_user_id == owner_user_id, GenerationBatch.project_id == project_id)
         )
         return int(self.session.scalar(statement) or 0)
+
+    def list_lesson_plan_ids_by_batch(self, generation_batch_id: int) -> list[int]:
+        """查询批次下全部教案主键。"""
+        statement = (
+            select(LessonPlan.id)
+            .where(LessonPlan.generation_batch_id == generation_batch_id)
+            .order_by(LessonPlan.class_session_no.asc(), LessonPlan.id.asc())
+        )
+        return [int(lesson_plan_id) for lesson_plan_id in self.session.scalars(statement)]
 
     def save(self, instance) -> None:
         """保存实体。"""

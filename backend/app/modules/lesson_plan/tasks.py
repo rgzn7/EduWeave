@@ -11,10 +11,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.constants import (
-    ASSESSMENT_GENERATE_TASK_TYPE,
-    ASSESSMENT_MODULE_CODE,
-    GENERATION_QUEUE_NAME,
-    TASK_STATUS_PENDING,
+    COVERAGE_ANALYZE_TASK_TYPE,
     TASK_STATUS_FAILURE,
     TASK_STATUS_PROCESSING,
     TASK_STATUS_SUCCESS,
@@ -22,6 +19,7 @@ from app.core.constants import (
 )
 from app.core.database import SessionLocal
 from app.core.exceptions import AppException, BusinessErrorCode
+from app.modules.coverage.service import CoverageService
 from app.modules.lesson_plan.repository import LessonPlanRepository
 from app.modules.lesson_plan.schemas import LessonPlanGenerationResult
 from app.modules.p0_models import LessonPlan
@@ -84,6 +82,7 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
         if not profile_records:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "课程大纲绑定的学情版本缺少画像记录")
 
+        lesson_sessions = _get_curriculum_lesson_sessions(curriculum_plan)
         _mark_step(
             step_map["prepare_lesson_baseline"],
             TASK_STATUS_SUCCESS,
@@ -94,6 +93,7 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
                 "learner_profile_version_id": curriculum_plan.learner_profile_version_id,
                 "knowledge_point_count": len(knowledge_points),
                 "profile_record_count": len(profile_records),
+                "lesson_session_count": len(lesson_sessions),
             },
             finished_at=DateTimeUtil.now_utc(),
         )
@@ -104,85 +104,95 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
             task_repository.save(step)
         session.commit()
 
-        llm_messages = _build_lesson_plan_messages(
-            project=project,
-            generation_batch=generation_batch,
-            curriculum_plan=curriculum_plan,
-            profile_version=profile_version,
-            knowledge_points=knowledge_points,
-            profile_records=profile_records,
-        )
-        generation_result = llm_service.generate_structured_output(
-            messages=llm_messages,
-            response_model=LessonPlanGenerationResult,
-        )
-        _validate_lesson_plan_result(
-            generation_result,
-            knowledge_point_ids={point.id for point in knowledge_points},
-        )
+        lesson_plan_ids: list[int] = []
+        next_version_no = repository.get_next_lesson_plan_version_no(curriculum_plan.id)
+        for index, lesson_session in enumerate(lesson_sessions, start=1):
+            class_session_no = int(lesson_session["session_no"])
+            llm_messages = _build_lesson_plan_messages(
+                project=project,
+                generation_batch=generation_batch,
+                curriculum_plan=curriculum_plan,
+                target_lesson_session=lesson_session,
+                profile_version=profile_version,
+                knowledge_points=knowledge_points,
+                profile_records=profile_records,
+            )
+            generation_result = llm_service.generate_structured_output(
+                messages=llm_messages,
+                response_model=LessonPlanGenerationResult,
+            )
+            _validate_lesson_plan_result(
+                generation_result,
+                expected_session_no=class_session_no,
+                knowledge_point_ids={point.id for point in knowledge_points},
+            )
+            lesson_plan = repository.create_lesson_plan(
+                LessonPlan(
+                    curriculum_plan_id=curriculum_plan.id,
+                    generation_batch_id=generation_batch.id,
+                    class_session_no=class_session_no,
+                    version_no=next_version_no + index - 1,
+                    lesson_title=generation_result.lesson_title,
+                    style_code="standard",
+                    version_status=VERSION_STATUS_READY,
+                    summary_text=generation_result.summary_text,
+                    content_json=_build_lesson_plan_content_json(
+                        generation_result,
+                        target_lesson_session=lesson_session,
+                    ),
+                    export_file_id=None,
+                    created_by=payload.get("operator_user_id"),
+                )
+            )
+            lesson_plan_ids.append(lesson_plan.id)
 
+        generation_batch.lesson_plan_id = lesson_plan_ids[0]
         _mark_step(
             step_map["invoke_llm_lesson_plan"],
             TASK_STATUS_SUCCESS,
             100,
-            detail_json={"session_count": len(generation_result.session_plans)},
+            detail_json={"lesson_plan_count": len(lesson_plan_ids), "lesson_plan_ids": lesson_plan_ids},
             finished_at=DateTimeUtil.now_utc(),
         )
         _mark_step(step_map["persist_lesson_plan"], TASK_STATUS_PROCESSING, 45, started_at=DateTimeUtil.now_utc())
         _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="persist_lesson_plan", progress_percent=75)
-        task_repository.save(task)
-        for step in step_map.values():
-            task_repository.save(step)
-        session.commit()
-
-        lesson_plan = repository.create_lesson_plan(
-            LessonPlan(
-                curriculum_plan_id=curriculum_plan.id,
-                version_no=repository.get_next_lesson_plan_version_no(curriculum_plan.id),
-                lesson_title=generation_result.lesson_title,
-                style_code="standard",
-                version_status=VERSION_STATUS_READY,
-                summary_text=generation_result.summary_text,
-                content_json=_build_lesson_plan_content_json(generation_result),
-                export_file_id=None,
-                created_by=payload.get("operator_user_id"),
-            )
-        )
-        generation_batch.lesson_plan_id = lesson_plan.id
-
-        _mark_step(
-            step_map["persist_lesson_plan"],
-            TASK_STATUS_SUCCESS,
-            100,
-            detail_json={"lesson_plan_id": lesson_plan.id},
-            finished_at=DateTimeUtil.now_utc(),
-        )
-        _mark_step(step_map["finalize_generation_batch"], TASK_STATUS_PROCESSING, 70, started_at=DateTimeUtil.now_utc())
-        _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="finalize_generation_batch", progress_percent=90)
         repository.save(generation_batch)
         task_repository.save(task)
         for step in step_map.values():
             task_repository.save(step)
         session.commit()
 
-        assessment_task = _create_assessment_task(
-            task_repository=task_repository,
-            generation_batch=generation_batch,
-            curriculum_plan=curriculum_plan,
-            lesson_plan=lesson_plan,
-            owner_user_id=payload.get("operator_user_id"),
+        _mark_step(
+            step_map["persist_lesson_plan"],
+            TASK_STATUS_SUCCESS,
+            100,
+            detail_json={"lesson_plan_ids": lesson_plan_ids, "lesson_plan_count": len(lesson_plan_ids)},
+            finished_at=DateTimeUtil.now_utc(),
+        )
+        _mark_step(step_map["finalize_generation_batch"], TASK_STATUS_PROCESSING, 70, started_at=DateTimeUtil.now_utc())
+        _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="finalize_generation_batch", progress_percent=90)
+        task_repository.save(task)
+        for step in step_map.values():
+            task_repository.save(step)
+        session.commit()
+
+        coverage_service = CoverageService(session)
+        coverage_task = coverage_service.create_coverage_task_if_needed(
+            generation_batch_id=generation_batch.id,
+            operator_user_id=payload.get("operator_user_id"),
             request_id=task.request_id,
         )
         finished_at = DateTimeUtil.now_utc()
         generation_batch.batch_status = TASK_STATUS_PROCESSING
+        coverage_task_id = coverage_task.id if coverage_task is not None else None
         _mark_step(
             step_map["finalize_generation_batch"],
             TASK_STATUS_SUCCESS,
             100,
             detail_json={
                 "batch_status": TASK_STATUS_PROCESSING,
-                "next_task_id": assessment_task.id,
-                "next_task_type": ASSESSMENT_GENERATE_TASK_TYPE,
+                "next_task_id": coverage_task_id,
+                "next_task_type": COVERAGE_ANALYZE_TASK_TYPE if coverage_task_id is not None else None,
             },
             finished_at=finished_at,
         )
@@ -194,8 +204,10 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
             result_json={
                 "generation_batch_id": generation_batch.id,
                 "curriculum_plan_id": curriculum_plan.id,
-                "lesson_plan_id": lesson_plan.id,
-                "assessment_task_id": assessment_task.id,
+                "lesson_plan_id": lesson_plan_ids[0],
+                "lesson_plan_ids": lesson_plan_ids,
+                "lesson_plan_count": len(lesson_plan_ids),
+                "coverage_task_id": coverage_task_id,
             },
             finished_at=finished_at,
         )
@@ -206,26 +218,27 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
         session.commit()
         lesson_task_completed = True
 
-        dispatch_result = dispatch_task(
-            "app.modules.assessment.tasks.run_generate_assessment_task",
-            {
-                "task_record_id": assessment_task.id,
-                "generation_batch_id": generation_batch.id,
-                "curriculum_plan_id": curriculum_plan.id,
-                "lesson_plan_id": lesson_plan.id,
-                "operator_user_id": payload.get("operator_user_id"),
-                "database_url": session.get_bind().url.render_as_string(hide_password=False),
-            },
-        )
-        if dispatch_result.worker_task_id:
-            assessment_task.worker_task_id = dispatch_result.worker_task_id
-            task_repository.save(assessment_task)
-            session.commit()
+        if coverage_task is not None:
+            dispatch_result = dispatch_task(
+                "app.modules.coverage.tasks.run_analyze_coverage_task",
+                {
+                    "task_record_id": coverage_task.id,
+                    "generation_batch_id": generation_batch.id,
+                    "operator_user_id": payload.get("operator_user_id"),
+                    "database_url": session.get_bind().url.render_as_string(hide_password=False),
+                },
+            )
+            if dispatch_result.worker_task_id:
+                coverage_task.worker_task_id = dispatch_result.worker_task_id
+                task_repository.save(coverage_task)
+                session.commit()
         return {
             "generation_batch_id": generation_batch.id,
             "curriculum_plan_id": curriculum_plan.id,
-            "lesson_plan_id": lesson_plan.id,
-            "assessment_task_id": assessment_task.id,
+            "lesson_plan_id": lesson_plan_ids[0],
+            "lesson_plan_ids": lesson_plan_ids,
+            "lesson_plan_count": len(lesson_plan_ids),
+            "coverage_task_id": coverage_task_id,
         }
     except Exception as exc:  # noqa: BLE001
         session.rollback()
@@ -241,6 +254,7 @@ def _build_lesson_plan_messages(
     project,
     generation_batch,
     curriculum_plan,
+    target_lesson_session: dict[str, Any],
     profile_version,
     knowledge_points: list,
     profile_records: list,
@@ -298,6 +312,7 @@ def _build_lesson_plan_messages(
             "summary_text": curriculum_plan.summary_text,
             "content_json": curriculum_plan.content_json,
         },
+        "target_lesson_session": target_lesson_session,
         "knowledge_points": point_payload,
         "learner_profile_version": {
             "id": profile_version.id,
@@ -308,9 +323,11 @@ def _build_lesson_plan_messages(
         },
     }
     system_prompt = (
-        "你是教案生成助手。请基于课程大纲、教材知识点和学生学情生成中文教师教案。"
+        "你是教案生成助手。请基于课程大纲中的 target_lesson_session、教材知识点和学生学情生成中文教师教案。"
         "必须严格输出 JSON 对象，字段包含 lesson_title、summary_text、course_overview、material_list、"
         "core_knowledge、teaching_flow、session_plans、after_class_plan、learner_adjustments、knowledge_point_refs。"
+        "每次只生成 target_lesson_session 对应的一节课，session_plans 必须且只能包含 1 个课次安排，"
+        "其 session_no 必须等于 target_lesson_session.session_no。"
         "teaching_flow 和 session_plans 中的 knowledge_point_refs 必须只引用输入中的知识点 id。"
         "教案需覆盖课程概述、物料清单、核心知识、导入、讲解、练习、总结和课后安排。"
         "不要输出 Markdown、解释文字或代码块。"
@@ -321,8 +338,48 @@ def _build_lesson_plan_messages(
     ]
 
 
-def _validate_lesson_plan_result(result: LessonPlanGenerationResult, *, knowledge_point_ids: set[int]) -> None:
+def _get_curriculum_lesson_sessions(curriculum_plan) -> list[dict[str, Any]]:
+    """从课程大纲中读取按课次拆分的生成计划。"""
+    content_json = curriculum_plan.content_json or {}
+    lesson_sessions = content_json.get("lesson_sessions") if isinstance(content_json, dict) else None
+    if not isinstance(lesson_sessions, list) or not lesson_sessions:
+        raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "课程大纲缺少 lesson_sessions，无法生成教案")
+
+    normalized_sessions: list[dict[str, Any]] = []
+    for index, lesson_session in enumerate(lesson_sessions, start=1):
+        if not isinstance(lesson_session, dict):
+            raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "课程大纲课次结构非法")
+        session_no = int(lesson_session.get("session_no") or 0)
+        if session_no != index:
+            raise AppException(
+                BusinessErrorCode.GENERATION_BASELINE_INVALID,
+                "课程大纲课次序号必须从 1 连续递增",
+                {"expected_session_no": index, "actual_session_no": session_no},
+            )
+        normalized_sessions.append(lesson_session)
+    return normalized_sessions
+
+
+def _validate_lesson_plan_result(
+    result: LessonPlanGenerationResult,
+    *,
+    expected_session_no: int,
+    knowledge_point_ids: set[int],
+) -> None:
     """校验教案生成结果。"""
+    if len(result.session_plans) != 1:
+        raise AppException(
+            BusinessErrorCode.LLM_RESULT_INVALID,
+            "LLM 每次必须只返回一个课次教案",
+            {"expected_session_count": 1, "actual_session_count": len(result.session_plans)},
+        )
+    actual_session_no = result.session_plans[0].session_no
+    if actual_session_no != expected_session_no:
+        raise AppException(
+            BusinessErrorCode.LLM_RESULT_INVALID,
+            "LLM 返回教案课次序号与当前课次不一致",
+            {"expected_session_no": expected_session_no, "actual_session_no": actual_session_no},
+        )
     invalid_ids = [point_id for point_id in result.knowledge_point_refs if point_id not in knowledge_point_ids]
     for step in result.teaching_flow:
         invalid_ids.extend(point_id for point_id in step.knowledge_point_refs if point_id not in knowledge_point_ids)
@@ -338,9 +395,14 @@ def _validate_lesson_plan_result(result: LessonPlanGenerationResult, *, knowledg
         )
 
 
-def _build_lesson_plan_content_json(result: LessonPlanGenerationResult) -> dict[str, Any]:
+def _build_lesson_plan_content_json(
+    result: LessonPlanGenerationResult,
+    *,
+    target_lesson_session: dict[str, Any],
+) -> dict[str, Any]:
     """构造教案内容 JSON。"""
     return {
+        "target_lesson_session": target_lesson_session,
         "course_overview": result.course_overview,
         "material_list": result.material_list,
         "core_knowledge": result.core_knowledge,
@@ -350,49 +412,6 @@ def _build_lesson_plan_content_json(result: LessonPlanGenerationResult) -> dict[
         "learner_adjustments": result.learner_adjustments,
         "knowledge_point_refs": result.knowledge_point_refs,
     }
-
-
-def _create_assessment_task(
-    *,
-    task_repository: TaskCenterRepository,
-    generation_batch,
-    curriculum_plan,
-    lesson_plan,
-    owner_user_id: int | None,
-    request_id: str | None,
-):
-    """创建测评生成任务。"""
-    task = task_repository.create_task(
-        project_id=generation_batch.project_id,
-        generation_batch_id=generation_batch.id,
-        module_code=ASSESSMENT_MODULE_CODE,
-        task_type=ASSESSMENT_GENERATE_TASK_TYPE,
-        task_status=TASK_STATUS_PENDING,
-        queue_name=GENERATION_QUEUE_NAME,
-        biz_key=f"generation_batch:{generation_batch.id}:assessment",
-        operator_user_id=owner_user_id,
-        payload_json={
-            "generation_batch_id": generation_batch.id,
-            "curriculum_plan_id": curriculum_plan.id,
-            "lesson_plan_id": lesson_plan.id,
-        },
-        request_id=request_id,
-    )
-    step_names = [
-        ("prepare_assessment_baseline", "准备测评生成基线"),
-        ("invoke_llm_assessment", "调用 LLM 生成测评"),
-        ("persist_assessment_result", "落库测评蓝图与试卷"),
-        ("finalize_generation_batch", "完成生成批次"),
-    ]
-    for step_order, (step_code, step_name) in enumerate(step_names, start=1):
-        task_repository.create_task_step(
-            task_record_id=task.id,
-            step_code=step_code,
-            step_name=step_name,
-            step_order=step_order,
-            step_status=TASK_STATUS_PENDING,
-        )
-    return task
 
 
 def _mark_task(task, *, task_status: str, current_stage: str, progress_percent: int, started_at=None, finished_at=None, result_json: dict | None = None) -> None:

@@ -254,9 +254,12 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
             )
 
         point_id = int(user_payload["knowledge_points"][0]["id"])
+        target_session = user_payload.get("target_lesson_session") or {"session_no": 1, "title": "第1讲 乘法口诀训练"}
+        session_no = int(target_session["session_no"])
+        session_title = target_session.get("title") or f"第{session_no}讲 乘法口诀训练"
         return LessonPlanGenerationResult(
-            lesson_title="三年级数学乘法提升教案",
-            summary_text="围绕乘法口诀组织导入、讲解、练习与课后巩固。",
+            lesson_title=f"{session_title}教案",
+            summary_text=f"围绕{session_title}组织导入、讲解、练习与课后巩固。",
             course_overview={"lesson_type": "提升课", "duration_minutes": 90},
             material_list=["教材解析片段", "口算练习纸"],
             core_knowledge=["乘法口诀", "应用题分析"],
@@ -280,8 +283,8 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
             ],
             session_plans=[
                 {
-                    "session_no": 1,
-                    "title": "第1讲 乘法口诀训练",
+                    "session_no": session_no,
+                    "title": session_title,
                     "objectives": ["掌握乘法口诀"],
                     "teaching_focus": ["口诀记忆", "基础应用"],
                     "teaching_steps": [
@@ -332,8 +335,8 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
     yield vector_store
 
 
-def test_generation_batch_should_create_curriculum_lesson_plan_and_assessment(client, generation_test_stubs) -> None:
-    """创建生成批次后应自动生成课程大纲、教案、测评、课件和覆盖率报告。"""
+def test_generation_batch_should_create_curriculum_lesson_plans_and_coverage(client, generation_test_stubs) -> None:
+    """创建生成批次后应自动生成课程大纲、多课次教案和覆盖率报告。"""
     _ = generation_test_stubs
     headers = build_auth_headers(client)
     project_id = create_project(client, headers)
@@ -359,36 +362,22 @@ def test_generation_batch_should_create_curriculum_lesson_plan_and_assessment(cl
     assert batch_payload["batch_status"] == "success"
     assert batch_payload["curriculum_plan_id"] is not None
     assert batch_payload["lesson_plan_id"] is not None
-    assert batch_payload["assessment_blueprint_id"] is not None
-    assert batch_payload["pipeline_options_json"]["enabled_steps"] == [
-        "curriculum",
-        "lesson_plan",
-        "assessment",
-        "courseware",
-        "coverage",
-    ]
+    assert batch_payload["lesson_plan_ids"][0] == batch_payload["lesson_plan_id"]
+    assert len(batch_payload["lesson_plan_ids"]) == 2
+    assert batch_payload["pipeline_options_json"]["enabled_steps"] == ["curriculum", "lesson_plan", "coverage"]
     assert batch_payload["assessment_strategy_json"]["scene_type"] == "unit_test"
     assert batch_payload["tasks"][0]["task_type"] == "curriculum_generate"
     assert batch_payload["tasks"][0]["task_status"] == "success"
     assert batch_payload["tasks"][0]["result_json"]["curriculum_plan_id"] == batch_payload["curriculum_plan_id"]
     assert batch_payload["tasks"][1]["task_type"] == "lesson_plan_generate"
     assert batch_payload["tasks"][1]["task_status"] == "success"
-    assert batch_payload["tasks"][1]["result_json"]["lesson_plan_id"] == batch_payload["lesson_plan_id"]
-    assert batch_payload["tasks"][1]["result_json"]["assessment_task_id"] == batch_payload["tasks"][2]["id"]
-    assert batch_payload["tasks"][2]["task_type"] == "assessment_generate"
+    assert batch_payload["tasks"][1]["result_json"]["lesson_plan_ids"] == batch_payload["lesson_plan_ids"]
+    assert batch_payload["tasks"][1]["result_json"]["lesson_plan_count"] == 2
+    assert batch_payload["tasks"][1]["result_json"]["coverage_task_id"] == batch_payload["tasks"][2]["id"]
+    assert batch_payload["tasks"][2]["task_type"] == "coverage_analyze"
     assert batch_payload["tasks"][2]["task_status"] == "success"
-    assert batch_payload["tasks"][2]["result_json"]["assessment_blueprint_id"] == batch_payload["assessment_blueprint_id"]
-    assert batch_payload["tasks"][2]["result_json"]["question_count"] == 10
-    assert batch_payload["tasks"][2]["result_json"]["courseware_task_id"] == batch_payload["tasks"][3]["id"]
-    assert batch_payload["tasks"][3]["task_type"] == "courseware_generate"
-    assert batch_payload["tasks"][3]["task_status"] == "success"
-    assert batch_payload["tasks"][3]["result_json"]["courseware_result_id"] is not None
-    assert batch_payload["tasks"][3]["result_json"]["export_file_id"] is not None
-    assert batch_payload["tasks"][3]["result_json"]["coverage_task_id"] == batch_payload["tasks"][4]["id"]
-    assert batch_payload["tasks"][4]["task_type"] == "coverage_analyze"
-    assert batch_payload["tasks"][4]["task_status"] == "success"
-    assert batch_payload["tasks"][4]["result_json"]["coverage_report_id"] is not None
-    assert batch_payload["tasks"][4]["result_json"]["coverage_rate"] == 100.0
+    assert batch_payload["tasks"][2]["result_json"]["coverage_report_id"] is not None
+    assert batch_payload["tasks"][2]["result_json"]["coverage_rate"] == 100.0
 
     task_detail_response = client.get(f"/api/v1/tasks/{batch_payload['tasks'][0]['id']}", headers=headers)
     assert task_detail_response.status_code == 200
@@ -419,18 +408,19 @@ def test_generation_batch_should_create_curriculum_lesson_plan_and_assessment(cl
     assert batch_detail_response.status_code == 200
     assert batch_detail_response.json()["data"]["curriculum_plan_id"] == batch_payload["curriculum_plan_id"]
     assert batch_detail_response.json()["data"]["lesson_plan_id"] == batch_payload["lesson_plan_id"]
+    assert batch_detail_response.json()["data"]["lesson_plan_ids"] == batch_payload["lesson_plan_ids"]
     assert [task["task_type"] for task in batch_detail_response.json()["data"]["tasks"]] == [
         "curriculum_generate",
         "lesson_plan_generate",
-        "assessment_generate",
-        "courseware_generate",
         "coverage_analyze",
     ]
 
     lesson_detail_response = client.get(f"/api/v1/lesson-plans/{batch_payload['lesson_plan_id']}", headers=headers)
     assert lesson_detail_response.status_code == 200
     lesson_payload = lesson_detail_response.json()["data"]
-    assert lesson_payload["lesson_title"] == "三年级数学乘法提升教案"
+    assert lesson_payload["generation_batch_id"] == batch_payload["id"]
+    assert lesson_payload["class_session_no"] == 1
+    assert lesson_payload["lesson_title"] == "第1讲 乘法口诀训练教案"
     assert lesson_payload["content_json"]["teaching_flow"][0]["stage_name"] == "导入"
     assert lesson_payload["content_json"]["session_plans"][0]["title"] == "第1讲 乘法口诀训练"
 
@@ -439,46 +429,33 @@ def test_generation_batch_should_create_curriculum_lesson_plan_and_assessment(cl
         headers=headers,
     )
     assert lesson_list_response.status_code == 200
-    assert lesson_list_response.json()["data"]["pagination"]["total_count"] == 1
+    lesson_items = lesson_list_response.json()["data"]["items"]
+    assert lesson_list_response.json()["data"]["pagination"]["total_count"] == 2
+    assert [item["class_session_no"] for item in lesson_items] == [1, 2]
 
     missing_lesson_response = client.get("/api/v1/lesson-plans/999999", headers=headers)
     assert missing_lesson_response.status_code == 404
     assert missing_lesson_response.json()["errors"][0]["code"] == "LESSON_PLAN_NOT_FOUND"
 
-    blueprint_detail_response = client.get(
-        f"/api/v1/assessment-blueprints/{batch_payload['assessment_blueprint_id']}",
+    blueprint_list_response = client.get(
+        f"/api/v1/assessment-blueprints?curriculum_plan_id={batch_payload['curriculum_plan_id']}",
         headers=headers,
     )
-    assert blueprint_detail_response.status_code == 200
-    blueprint_payload = blueprint_detail_response.json()["data"]
-    assert blueprint_payload["blueprint_name"] == "三年级数学乘法单元测试蓝图"
-    assert blueprint_payload["scenario_type"] == "unit_test"
+    assert blueprint_list_response.json()["data"]["pagination"]["total_count"] == 0
 
     paper_list_response = client.get(
         f"/api/v1/paper-results?generation_batch_id={batch_payload['id']}&scene_type=unit_test",
         headers=headers,
     )
     assert paper_list_response.status_code == 200
-    paper_payload = paper_list_response.json()["data"]["items"][0]
-    assert paper_payload["question_count"] == 10
-
-    paper_detail_response = client.get(f"/api/v1/paper-results/{paper_payload['id']}", headers=headers)
-    assert paper_detail_response.status_code == 200
-    assert len(paper_detail_response.json()["data"]["questions"]) == 10
+    assert paper_list_response.json()["data"]["pagination"]["total_count"] == 0
 
     courseware_list_response = client.get(
         f"/api/v1/courseware-results?generation_batch_id={batch_payload['id']}",
         headers=headers,
     )
     assert courseware_list_response.status_code == 200
-    courseware_payload = courseware_list_response.json()["data"]["items"][0]
-    assert courseware_payload["result_status"] == "success"
-    assert courseware_payload["preview_json"]["raccoon_status"] == "succeeded"
-    assert courseware_payload["export_file_id"] is not None
-
-    courseware_detail_response = client.get(f"/api/v1/courseware-results/{courseware_payload['id']}", headers=headers)
-    assert courseware_detail_response.status_code == 200
-    assert courseware_detail_response.json()["data"]["structure_json"]["generator"] == "raccoon_ppt"
+    assert courseware_list_response.json()["data"]["pagination"]["total_count"] == 0
 
     coverage_list_response = client.get(
         f"/api/v1/coverage-reports?generation_batch_id={batch_payload['id']}",
@@ -489,13 +466,71 @@ def test_generation_batch_should_create_curriculum_lesson_plan_and_assessment(cl
     assert coverage_payload["coverage_rate"] == 100.0
     assert coverage_payload["warning_count"] == 0
     assert coverage_payload["report_json"]["total_knowledge_point_count"] == 1
-    assert coverage_payload["report_json"]["covered_knowledge_point_ids"] == [
-        paper_detail_response.json()["data"]["questions"][0]["knowledge_point_id"]
-    ]
+    assert coverage_payload["report_json"]["covered_knowledge_point_ids"]
+    assert len(coverage_payload["report_json"]["artifact_coverage"]) == 3
 
     coverage_detail_response = client.get(f"/api/v1/coverage-reports/{coverage_payload['id']}", headers=headers)
     assert coverage_detail_response.status_code == 200
     assert coverage_detail_response.json()["data"]["report_json"]["important_knowledge_point_coverage"]["coverage_rate"] == 100.0
+
+    assessment_task_response = client.post(
+        f"/api/v1/curriculum-plans/{batch_payload['curriculum_plan_id']}/assessment-tasks",
+        headers=headers,
+        json={},
+    )
+    assert assessment_task_response.status_code == 201
+    assessment_task_payload = assessment_task_response.json()["data"]
+    assert assessment_task_payload["task_type"] == "assessment_generate"
+    assert assessment_task_payload["task_status"] == "success"
+    assert assessment_task_payload["result_json"]["question_count"] == 10
+
+    duplicate_assessment_response = client.post(
+        f"/api/v1/curriculum-plans/{batch_payload['curriculum_plan_id']}/assessment-tasks",
+        headers=headers,
+        json={},
+    )
+    assert duplicate_assessment_response.status_code == 409
+    assert duplicate_assessment_response.json()["errors"][0]["code"] == "TASK_CONFLICT"
+
+    refreshed_batch_response = client.get(f"/api/v1/generation-batches/{batch_payload['id']}", headers=headers)
+    refreshed_batch_payload = refreshed_batch_response.json()["data"]
+    assert refreshed_batch_payload["batch_status"] == "success"
+
+    blueprint_detail_response = client.get(
+        f"/api/v1/assessment-blueprints/{assessment_task_payload['result_json']['assessment_blueprint_id']}",
+        headers=headers,
+    )
+    assert blueprint_detail_response.status_code == 200
+    assert blueprint_detail_response.json()["data"]["scenario_type"] == "unit_test"
+
+    paper_id = assessment_task_payload["result_json"]["paper_result_id"]
+    paper_detail_response = client.get(f"/api/v1/paper-results/{paper_id}", headers=headers)
+    assert paper_detail_response.status_code == 200
+    assert len(paper_detail_response.json()["data"]["questions"]) == 10
+
+    courseware_task_response = client.post(
+        f"/api/v1/lesson-plans/{batch_payload['lesson_plan_ids'][0]}/courseware-tasks",
+        headers=headers,
+    )
+    assert courseware_task_response.status_code == 201
+    courseware_task_payload = courseware_task_response.json()["data"]
+    assert courseware_task_payload["task_type"] == "courseware_generate"
+    assert courseware_task_payload["task_status"] == "success"
+    courseware_result_id = courseware_task_payload["result_json"]["courseware_result_id"]
+
+    courseware_detail_response = client.get(f"/api/v1/courseware-results/{courseware_result_id}", headers=headers)
+    assert courseware_detail_response.status_code == 200
+    courseware_payload = courseware_detail_response.json()["data"]
+    assert courseware_payload["result_status"] == "success"
+    assert courseware_payload["lesson_plan_id"] == batch_payload["lesson_plan_ids"][0]
+    assert courseware_payload["preview_json"]["raccoon_status"] == "succeeded"
+
+    duplicate_courseware_response = client.post(
+        f"/api/v1/lesson-plans/{batch_payload['lesson_plan_ids'][0]}/courseware-tasks",
+        headers=headers,
+    )
+    assert duplicate_courseware_response.status_code == 409
+    assert duplicate_courseware_response.json()["errors"][0]["code"] == "TASK_CONFLICT"
 
     file_url_response = client.get(f"/api/v1/files/{courseware_payload['export_file_id']}/download-url", headers=headers)
     assert file_url_response.status_code == 200
@@ -548,7 +583,7 @@ def test_coverage_report_should_protect_owner(client, generation_test_stubs, see
         },
     )
     batch_payload = response.json()["data"]
-    coverage_report_id = batch_payload["tasks"][4]["result_json"]["coverage_report_id"]
+    coverage_report_id = batch_payload["tasks"][2]["result_json"]["coverage_report_id"]
 
     forbidden_list_response = client.get(
         f"/api/v1/coverage-reports?generation_batch_id={batch_payload['id']}",
@@ -562,12 +597,12 @@ def test_coverage_report_should_protect_owner(client, generation_test_stubs, see
     assert forbidden_detail_response.json()["errors"][0]["code"] == "COVERAGE_REPORT_NOT_FOUND"
 
 
-def test_coverage_report_should_warn_invalid_knowledge_refs(
+def test_coverage_report_should_ignore_on_demand_courseware_refs(
     client,
     generation_test_stubs,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """覆盖率分析遇到无效知识点引用时应保留告警但不阻断链路。"""
+    """自动覆盖率只统计课程大纲和本批次教案，不纳入后续按需课件。"""
     _ = generation_test_stubs
 
     def invalid_ref_create_job(self, *, prompt: str, role: str, scene: str, audience: str):  # noqa: ANN001
@@ -612,9 +647,21 @@ def test_coverage_report_should_warn_invalid_knowledge_refs(
     )
     coverage_payload = coverage_response.json()["data"]["items"][0]
     assert coverage_payload["coverage_rate"] == 100.0
-    assert coverage_payload["warning_count"] == 1
-    assert coverage_payload["report_json"]["warnings"][0]["code"] == "INVALID_KNOWLEDGE_POINT_REF"
-    assert coverage_payload["report_json"]["warnings"][0]["knowledge_point_ids"] == [999999]
+    assert coverage_payload["warning_count"] == 0
+
+    courseware_task_response = client.post(
+        f"/api/v1/lesson-plans/{batch_payload['lesson_plan_ids'][0]}/courseware-tasks",
+        headers=headers,
+    )
+    assert courseware_task_response.status_code == 201
+
+    refreshed_coverage_response = client.get(
+        f"/api/v1/coverage-reports?generation_batch_id={batch_payload['id']}",
+        headers=headers,
+    )
+    refreshed_coverage_payload = refreshed_coverage_response.json()["data"]["items"][0]
+    assert refreshed_coverage_payload["warning_count"] == 0
+    assert refreshed_coverage_payload["report_json"]["warnings"] == []
 
 
 def test_courseware_refresh_should_finalize_pending_raccoon_job(
@@ -654,10 +701,17 @@ def test_courseware_refresh_should_finalize_pending_raccoon_job(
 
     assert response.status_code == 201
     batch_payload = response.json()["data"]
-    assert batch_payload["batch_status"] == "processing"
-    assert batch_payload["tasks"][3]["task_type"] == "courseware_generate"
-    assert batch_payload["tasks"][3]["task_status"] == "processing"
-    assert len(batch_payload["tasks"]) == 4
+    assert batch_payload["batch_status"] == "success"
+    assert len(batch_payload["tasks"]) == 3
+
+    courseware_task_response = client.post(
+        f"/api/v1/lesson-plans/{batch_payload['lesson_plan_ids'][0]}/courseware-tasks",
+        headers=headers,
+    )
+    assert courseware_task_response.status_code == 201
+    courseware_task_payload = courseware_task_response.json()["data"]
+    assert courseware_task_payload["task_type"] == "courseware_generate"
+    assert courseware_task_payload["task_status"] == "processing"
 
     courseware_list_response = client.get(
         f"/api/v1/courseware-results?generation_batch_id={batch_payload['id']}",
@@ -671,7 +725,7 @@ def test_courseware_refresh_should_finalize_pending_raccoon_job(
         headers=headers,
     )
     assert coverage_list_response.status_code == 200
-    assert coverage_list_response.json()["data"]["pagination"]["total_count"] == 0
+    assert coverage_list_response.json()["data"]["pagination"]["total_count"] == 1
 
     def succeeded_short_poll(self, job_id: str, initial_state=None):  # noqa: ANN001
         _ = (self, initial_state)
@@ -696,12 +750,11 @@ def test_courseware_refresh_should_finalize_pending_raccoon_job(
     assert [task["task_type"] for task in batch_detail_payload["tasks"]] == [
         "curriculum_generate",
         "lesson_plan_generate",
-        "assessment_generate",
-        "courseware_generate",
         "coverage_analyze",
+        "courseware_generate",
     ]
-    assert batch_detail_payload["tasks"][4]["task_status"] == "success"
-    task_detail_response = client.get(f"/api/v1/tasks/{batch_payload['tasks'][3]['id']}", headers=headers)
+    assert batch_detail_payload["tasks"][3]["task_status"] == "success"
+    task_detail_response = client.get(f"/api/v1/tasks/{courseware_task_payload['id']}", headers=headers)
     task_steps = {step["step_code"]: step for step in task_detail_response.json()["data"]["steps"]}
     assert task_steps["poll_raccoon_ppt_job"]["step_status"] == "success"
     assert task_steps["archive_courseware_result"]["step_status"] == "success"
@@ -751,8 +804,16 @@ def test_courseware_reply_should_continue_after_required_user_input(
 
     assert response.status_code == 201
     batch_payload = response.json()["data"]
-    assert batch_payload["batch_status"] == "processing"
-    assert len(batch_payload["tasks"]) == 4
+    assert batch_payload["batch_status"] == "success"
+    assert len(batch_payload["tasks"]) == 3
+
+    courseware_task_response = client.post(
+        f"/api/v1/lesson-plans/{batch_payload['lesson_plan_ids'][0]}/courseware-tasks",
+        headers=headers,
+    )
+    assert courseware_task_response.status_code == 201
+    courseware_task_payload = courseware_task_response.json()["data"]
+    assert courseware_task_payload["task_status"] == "processing"
 
     courseware_list_response = client.get(
         f"/api/v1/courseware-results?generation_batch_id={batch_payload['id']}",
@@ -786,9 +847,14 @@ def test_courseware_reply_should_continue_after_required_user_input(
     batch_detail_response = client.get(f"/api/v1/generation-batches/{batch_payload['id']}", headers=headers)
     batch_detail_payload = batch_detail_response.json()["data"]
     assert batch_detail_payload["batch_status"] == "success"
-    assert batch_detail_payload["tasks"][4]["task_type"] == "coverage_analyze"
-    assert batch_detail_payload["tasks"][4]["task_status"] == "success"
-    task_detail_response = client.get(f"/api/v1/tasks/{batch_payload['tasks'][3]['id']}", headers=headers)
+    assert [task["task_type"] for task in batch_detail_payload["tasks"]] == [
+        "curriculum_generate",
+        "lesson_plan_generate",
+        "coverage_analyze",
+        "courseware_generate",
+    ]
+    assert batch_detail_payload["tasks"][3]["task_status"] == "success"
+    task_detail_response = client.get(f"/api/v1/tasks/{courseware_task_payload['id']}", headers=headers)
     task_steps = {step["step_code"]: step for step in task_detail_response.json()["data"]["steps"]}
     assert task_steps["poll_raccoon_ppt_job"]["step_status"] == "success"
     assert task_steps["archive_courseware_result"]["step_status"] == "success"

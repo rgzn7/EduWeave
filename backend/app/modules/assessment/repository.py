@@ -7,6 +7,7 @@
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.core.constants import ASSESSMENT_GENERATE_TASK_TYPE, ASSESSMENT_MODULE_CODE, TASK_STATUS_SUCCESS
 from app.modules.p0_models import (
     AssessmentBlueprint,
     CurriculumPlan,
@@ -16,6 +17,7 @@ from app.modules.p0_models import (
     PaperResult,
     Project,
     QuestionItem,
+    TaskRecord,
 )
 
 
@@ -28,6 +30,15 @@ class AssessmentRepository:
     def get_generation_batch(self, generation_batch_id: int) -> GenerationBatch | None:
         """按主键查询生成批次。"""
         statement = select(GenerationBatch).where(GenerationBatch.id == generation_batch_id)
+        return self.session.scalar(statement)
+
+    def get_generation_batch_by_curriculum_plan(self, curriculum_plan_id: int) -> GenerationBatch | None:
+        """按课程大纲查询所属生成批次。"""
+        statement = (
+            select(GenerationBatch)
+            .where(GenerationBatch.curriculum_plan_id == curriculum_plan_id)
+            .order_by(GenerationBatch.id.desc())
+        )
         return self.session.scalar(statement)
 
     def get_project(self, project_id: int) -> Project | None:
@@ -44,6 +55,15 @@ class AssessmentRepository:
         """按主键查询教案。"""
         statement = select(LessonPlan).where(LessonPlan.id == lesson_plan_id)
         return self.session.scalar(statement)
+
+    def list_lesson_plans_by_batch(self, generation_batch_id: int) -> list[LessonPlan]:
+        """查询批次下全部教案。"""
+        statement = (
+            select(LessonPlan)
+            .where(LessonPlan.generation_batch_id == generation_batch_id)
+            .order_by(LessonPlan.class_session_no.asc(), LessonPlan.id.asc())
+        )
+        return list(self.session.scalars(statement))
 
     def list_knowledge_points(self, knowledge_version_id: int) -> list[KnowledgePoint]:
         """查询知识版本下知识点。"""
@@ -80,6 +100,30 @@ class AssessmentRepository:
         self.session.add_all(question_items)
         self.session.flush()
         return question_items
+
+    def get_success_paper_result_by_batch_scene(self, generation_batch_id: int, scene_type: str) -> PaperResult | None:
+        """查询批次下指定场景已成功试卷。"""
+        statement = select(PaperResult).where(
+            PaperResult.generation_batch_id == generation_batch_id,
+            PaperResult.scene_type == scene_type,
+            PaperResult.result_status == TASK_STATUS_SUCCESS,
+        )
+        return self.session.scalar(statement)
+
+    def get_active_assessment_task(self, generation_batch_id: int, scene_type: str) -> TaskRecord | None:
+        """查询批次下指定场景运行中的测评任务。"""
+        statement = (
+            select(TaskRecord)
+            .where(
+                TaskRecord.generation_batch_id == generation_batch_id,
+                TaskRecord.module_code == ASSESSMENT_MODULE_CODE,
+                TaskRecord.task_type == ASSESSMENT_GENERATE_TASK_TYPE,
+                TaskRecord.biz_key == f"generation_batch:{generation_batch_id}:assessment:{scene_type}",
+                TaskRecord.task_status.in_(["pending", "processing"]),
+            )
+            .order_by(TaskRecord.id.desc())
+        )
+        return self.session.scalar(statement)
 
     def get_curriculum_plan_for_owner(self, curriculum_plan_id: int, owner_user_id: int) -> CurriculumPlan | None:
         """查询当前教师可见的课程大纲。"""

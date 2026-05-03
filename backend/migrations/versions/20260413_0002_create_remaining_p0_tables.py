@@ -51,7 +51,7 @@ def _load_upgrade_statements() -> list[str]:
         if normalized_statement.startswith("create table "):
             upgrade_statements.append(statement)
             continue
-        if normalized_statement.startswith("alter table `project`"):
+        if normalized_statement.startswith("alter table "):
             upgrade_statements.append(statement)
     return upgrade_statements
 
@@ -65,6 +65,7 @@ def downgrade() -> None:
     op.drop_constraint("fk_project_latest_generation_batch", "project", type_="foreignkey")
     op.drop_constraint("fk_project_current_profile_version", "project", type_="foreignkey")
     op.drop_constraint("fk_project_current_textbook_version", "project", type_="foreignkey")
+    op.drop_constraint("fk_lesson_plan_generation_batch", "lesson_plan", type_="foreignkey")
 
     tables = [
         "audit_log",

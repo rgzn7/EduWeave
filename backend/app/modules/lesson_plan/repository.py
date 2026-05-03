@@ -74,6 +74,15 @@ class LessonPlanRepository:
         self.session.flush()
         return lesson_plan
 
+    def list_lesson_plans_by_batch(self, generation_batch_id: int) -> list[LessonPlan]:
+        """查询批次下全部教案。"""
+        statement = (
+            select(LessonPlan)
+            .where(LessonPlan.generation_batch_id == generation_batch_id)
+            .order_by(LessonPlan.class_session_no.asc(), LessonPlan.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
     def get_curriculum_plan_for_owner(self, curriculum_plan_id: int, owner_user_id: int) -> CurriculumPlan | None:
         """查询当前教师可见的课程大纲。"""
         statement = (
@@ -107,7 +116,7 @@ class LessonPlanRepository:
             .join(CurriculumPlan, CurriculumPlan.id == LessonPlan.curriculum_plan_id)
             .join(Project, Project.id == CurriculumPlan.project_id)
             .where(Project.owner_user_id == owner_user_id, LessonPlan.curriculum_plan_id == curriculum_plan_id)
-            .order_by(LessonPlan.version_no.desc(), LessonPlan.id.desc())
+            .order_by(LessonPlan.class_session_no.asc(), LessonPlan.version_no.asc(), LessonPlan.id.asc())
             .offset(offset)
             .limit(limit)
         )
@@ -128,4 +137,3 @@ class LessonPlanRepository:
         """保存实体。"""
         self.session.add(instance)
         self.session.flush()
-

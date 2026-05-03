@@ -48,10 +48,6 @@ def run_analyze_coverage_task(payload: dict) -> dict[str, int | float]:
         task_repository.save(step_map["prepare_coverage_baseline"])
         session.commit()
 
-        courseware_result = repository.get_courseware_result_by_batch(generation_batch.id)
-        if courseware_result is None or courseware_result.result_status != TASK_STATUS_SUCCESS:
-            raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "课件结果未完成，无法分析覆盖率")
-
         _mark_step(
             step_map["prepare_coverage_baseline"],
             TASK_STATUS_SUCCESS,
@@ -59,7 +55,8 @@ def run_analyze_coverage_task(payload: dict) -> dict[str, int | float]:
             detail_json={
                 "generation_batch_id": generation_batch.id,
                 "knowledge_version_id": generation_batch.knowledge_version_id,
-                "courseware_result_id": courseware_result.id,
+                "curriculum_plan_id": generation_batch.curriculum_plan_id,
+                "lesson_plan_count": len(repository.list_lesson_plans_by_batch(generation_batch.id)),
             },
             finished_at=DateTimeUtil.now_utc(),
         )

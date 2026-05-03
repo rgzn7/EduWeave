@@ -472,6 +472,8 @@ CREATE TABLE `curriculum_plan` (
 CREATE TABLE `lesson_plan` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
   `curriculum_plan_id` BIGINT UNSIGNED NOT NULL COMMENT '课程大纲',
+  `generation_batch_id` BIGINT UNSIGNED NULL COMMENT '生成批次',
+  `class_session_no` INT NULL COMMENT '课次序号',
   `version_no` INT NOT NULL COMMENT '版本号',
   `lesson_title` VARCHAR(255) NOT NULL COMMENT '教案标题',
   `style_code` VARCHAR(64) NULL COMMENT '教案风格',
@@ -484,7 +486,9 @@ CREATE TABLE `lesson_plan` (
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_lesson_plan_curriculum_no` (`curriculum_plan_id`, `version_no`),
+  UNIQUE KEY `uk_lesson_plan_batch_session` (`generation_batch_id`, `class_session_no`),
   KEY `idx_lesson_plan_curriculum_status` (`curriculum_plan_id`, `version_status`, `created_at`),
+  KEY `idx_lesson_plan_generation_batch` (`generation_batch_id`, `class_session_no`),
   CONSTRAINT `fk_lesson_plan_curriculum` FOREIGN KEY (`curriculum_plan_id`) REFERENCES `curriculum_plan` (`id`),
   CONSTRAINT `fk_lesson_plan_export_file` FOREIGN KEY (`export_file_id`) REFERENCES `file_object` (`id`),
   CONSTRAINT `fk_lesson_plan_created_by` FOREIGN KEY (`created_by`) REFERENCES `sys_user` (`id`)
@@ -528,7 +532,6 @@ CREATE TABLE `generation_batch` (
   `pipeline_options_json` JSON NULL COMMENT '编排选项',
   `curriculum_plan_id` BIGINT UNSIGNED NULL COMMENT '生成的大纲版本',
   `lesson_plan_id` BIGINT UNSIGNED NULL COMMENT '生成的教案版本',
-  `assessment_blueprint_id` BIGINT UNSIGNED NULL COMMENT '生成的蓝图版本',
   `started_at` DATETIME(3) NULL COMMENT '开始时间',
   `finished_at` DATETIME(3) NULL COMMENT '结束时间',
   `created_by` BIGINT UNSIGNED NULL COMMENT '创建人',
@@ -542,7 +545,6 @@ CREATE TABLE `generation_batch` (
   CONSTRAINT `fk_generation_batch_profile_version` FOREIGN KEY (`learner_profile_version_id`) REFERENCES `learner_profile_version` (`id`),
   CONSTRAINT `fk_generation_batch_curriculum_plan` FOREIGN KEY (`curriculum_plan_id`) REFERENCES `curriculum_plan` (`id`),
   CONSTRAINT `fk_generation_batch_lesson_plan` FOREIGN KEY (`lesson_plan_id`) REFERENCES `lesson_plan` (`id`),
-  CONSTRAINT `fk_generation_batch_assessment_blueprint` FOREIGN KEY (`assessment_blueprint_id`) REFERENCES `assessment_blueprint` (`id`),
   CONSTRAINT `fk_generation_batch_created_by` FOREIGN KEY (`created_by`) REFERENCES `sys_user` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='生成批次表';
 
@@ -561,7 +563,7 @@ CREATE TABLE `courseware_result` (
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_courseware_result_batch` (`generation_batch_id`),
+  UNIQUE KEY `uk_courseware_result_batch_lesson` (`generation_batch_id`, `lesson_plan_id`),
   KEY `idx_courseware_result_lesson` (`lesson_plan_id`, `created_at`),
   CONSTRAINT `fk_courseware_result_batch` FOREIGN KEY (`generation_batch_id`) REFERENCES `generation_batch` (`id`),
   CONSTRAINT `fk_courseware_result_lesson_plan` FOREIGN KEY (`lesson_plan_id`) REFERENCES `lesson_plan` (`id`),
@@ -730,3 +732,7 @@ ALTER TABLE `project`
     FOREIGN KEY (`current_learner_profile_version_id`) REFERENCES `learner_profile_version` (`id`),
   ADD CONSTRAINT `fk_project_latest_generation_batch`
     FOREIGN KEY (`latest_generation_batch_id`) REFERENCES `generation_batch` (`id`);
+
+ALTER TABLE `lesson_plan`
+  ADD CONSTRAINT `fk_lesson_plan_generation_batch`
+    FOREIGN KEY (`generation_batch_id`) REFERENCES `generation_batch` (`id`);

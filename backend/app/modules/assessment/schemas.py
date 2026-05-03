@@ -35,6 +35,24 @@ class AssessmentBlueprintDetailResponse(AssessmentBlueprintListItemResponse):
     """测评蓝图详情响应。"""
 
 
+class AssessmentTaskCreateRequest(BaseSchema):
+    """创建测评生成任务请求。"""
+
+    assessment_strategy_json: dict[str, Any] | None = Field(
+        default=None,
+        description="测评策略配置，不传则沿用生成批次策略或默认单元测试策略",
+        examples=[
+            {
+                "scenario_type": "unit_test",
+                "scene_type": "unit_test",
+                "question_count": 10,
+                "question_types": ["single_choice", "fill_blank", "short_answer"],
+                "difficulty_range": [1, 5],
+            }
+        ],
+    )
+
+
 class QuestionItemResponse(BaseSchema):
     """题目明细响应。"""
 

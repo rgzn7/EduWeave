@@ -9,7 +9,6 @@ from sqlalchemy.orm import Session
 
 from app.core.constants import COURSEWARE_GENERATE_TASK_TYPE, COURSEWARE_MODULE_CODE
 from app.modules.p0_models import (
-    AssessmentBlueprint,
     CoursewareResult,
     CurriculumPlan,
     FileObject,
@@ -51,6 +50,23 @@ class CoursewareRepository:
         statement = select(LessonPlan).where(LessonPlan.id == lesson_plan_id)
         return self.session.scalar(statement)
 
+    def get_lesson_plan_for_owner(self, lesson_plan_id: int, owner_user_id: int) -> LessonPlan | None:
+        """查询当前教师可见的教案。"""
+        statement = (
+            select(LessonPlan)
+            .join(CurriculumPlan, CurriculumPlan.id == LessonPlan.curriculum_plan_id)
+            .join(Project, Project.id == CurriculumPlan.project_id)
+            .where(LessonPlan.id == lesson_plan_id, Project.owner_user_id == owner_user_id)
+        )
+        return self.session.scalar(statement)
+
+    def get_generation_batch_by_lesson_plan(self, lesson_plan: LessonPlan) -> GenerationBatch | None:
+        """按教案查询所属生成批次。"""
+        if lesson_plan.generation_batch_id is not None:
+            return self.get_generation_batch(lesson_plan.generation_batch_id)
+        statement = select(GenerationBatch).where(GenerationBatch.lesson_plan_id == lesson_plan.id)
+        return self.session.scalar(statement)
+
     def get_learner_profile_version(self, profile_version_id: int) -> LearnerProfileVersion | None:
         """按主键查询学情版本。"""
         statement = select(LearnerProfileVersion).where(LearnerProfileVersion.id == profile_version_id)
@@ -74,11 +90,6 @@ class CoursewareRepository:
         )
         return list(self.session.scalars(statement))
 
-    def get_assessment_blueprint(self, assessment_blueprint_id: int) -> AssessmentBlueprint | None:
-        """按主键查询测评蓝图。"""
-        statement = select(AssessmentBlueprint).where(AssessmentBlueprint.id == assessment_blueprint_id)
-        return self.session.scalar(statement)
-
     def get_paper_result_by_batch(self, generation_batch_id: int) -> PaperResult | None:
         """查询批次下首个试卷结果。"""
         statement = (
@@ -91,6 +102,18 @@ class CoursewareRepository:
     def get_courseware_result_by_batch(self, generation_batch_id: int) -> CoursewareResult | None:
         """查询批次课件结果。"""
         statement = select(CoursewareResult).where(CoursewareResult.generation_batch_id == generation_batch_id)
+        return self.session.scalar(statement)
+
+    def get_courseware_result_by_batch_lesson(
+        self,
+        generation_batch_id: int,
+        lesson_plan_id: int,
+    ) -> CoursewareResult | None:
+        """查询批次下指定教案课件结果。"""
+        statement = select(CoursewareResult).where(
+            CoursewareResult.generation_batch_id == generation_batch_id,
+            CoursewareResult.lesson_plan_id == lesson_plan_id,
+        )
         return self.session.scalar(statement)
 
     def create_courseware_result(self, courseware_result: CoursewareResult) -> CoursewareResult:
@@ -155,14 +178,30 @@ class CoursewareRepository:
         )
         return int(self.session.scalar(statement) or 0)
 
-    def get_courseware_task_by_batch(self, generation_batch_id: int) -> TaskRecord | None:
-        """查询批次下的课件任务。"""
+    def get_courseware_task_by_batch_lesson(self, generation_batch_id: int, lesson_plan_id: int) -> TaskRecord | None:
+        """查询批次下指定教案的课件任务。"""
         statement = (
             select(TaskRecord)
             .where(
                 TaskRecord.generation_batch_id == generation_batch_id,
                 TaskRecord.module_code == COURSEWARE_MODULE_CODE,
                 TaskRecord.task_type == COURSEWARE_GENERATE_TASK_TYPE,
+                TaskRecord.biz_key == f"generation_batch:{generation_batch_id}:lesson_plan:{lesson_plan_id}:courseware",
+            )
+            .order_by(TaskRecord.id.desc())
+        )
+        return self.session.scalar(statement)
+
+    def get_active_courseware_task(self, generation_batch_id: int, lesson_plan_id: int) -> TaskRecord | None:
+        """查询指定教案运行中的课件任务。"""
+        statement = (
+            select(TaskRecord)
+            .where(
+                TaskRecord.generation_batch_id == generation_batch_id,
+                TaskRecord.module_code == COURSEWARE_MODULE_CODE,
+                TaskRecord.task_type == COURSEWARE_GENERATE_TASK_TYPE,
+                TaskRecord.biz_key == f"generation_batch:{generation_batch_id}:lesson_plan:{lesson_plan_id}:courseware",
+                TaskRecord.task_status.in_(["pending", "processing"]),
             )
             .order_by(TaskRecord.id.desc())
         )

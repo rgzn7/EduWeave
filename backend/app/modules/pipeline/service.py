@@ -83,9 +83,7 @@ class PipelineService:
                 course_count=request.course_count,
                 session_duration_minutes=request.session_duration_minutes,
                 assessment_strategy_json=request.assessment_strategy_json or DEFAULT_ASSESSMENT_STRATEGY,
-                pipeline_options_json={
-                    "enabled_steps": ["curriculum", "lesson_plan", "assessment", "courseware", "coverage"]
-                },
+                pipeline_options_json={"enabled_steps": ["curriculum", "lesson_plan", "coverage"]},
                 created_by=owner_user_id,
             )
         )
@@ -157,6 +155,7 @@ class PipelineService:
         ]
         return GenerationBatchDetailResponse(
             **self.build_generation_batch_list_item(generation_batch).model_dump(),
+            lesson_plan_ids=self.repository.list_lesson_plan_ids_by_batch(generation_batch.id),
             tasks=tasks,
         )
 

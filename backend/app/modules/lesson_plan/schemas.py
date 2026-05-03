@@ -17,6 +17,8 @@ class LessonPlanListItemResponse(BaseSchema):
 
     id: int = Field(description="教案主键", examples=[1])
     curriculum_plan_id: int = Field(description="课程大纲主键", examples=[1])
+    generation_batch_id: int | None = Field(default=None, description="生成批次主键")
+    class_session_no: int | None = Field(default=None, description="批次内课次序号", examples=[1])
     version_no: int = Field(description="版本号", examples=[1])
     lesson_title: str = Field(description="教案标题", examples=["三年级数学乘法提升教案"])
     style_code: str | None = Field(default=None, description="教案风格编码", examples=["standard"])
@@ -77,4 +79,3 @@ class LessonPlanGenerationResult(BaseSchema):
         if len(set(session_nos)) != len(session_nos):
             raise ValueError("课次序号不能重复")
         return self
-
