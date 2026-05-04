@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-14
+@Date: 2026-05-04
 @Author: xisy
 @Discription: OpenAI 兼容接口底层客户端
 """
@@ -13,7 +13,7 @@ from app.core.exceptions import AppException, BusinessErrorCode
 
 
 class OpenAICompatibleLlmClient:
-    """OpenAI 兼容聊天客户端。"""
+    """OpenAI 兼容结构化生成客户端。"""
 
     def __init__(self, settings: Settings | None = None, http_client: httpx.Client | None = None) -> None:
         self.settings = settings or get_settings()
@@ -45,6 +45,20 @@ class OpenAICompatibleLlmClient:
             )
         response = self.http_client.post(
             self._build_url("/chat/completions"),
+            headers=self._build_headers(),
+            json=payload,
+        )
+        return self._ensure_success(response)
+
+    def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """调用 OpenAI Responses 接口。"""
+        if not self.settings.llm_model:
+            raise AppException(
+                BusinessErrorCode.SYSTEM_CONFIG_INVALID,
+                "LLM_MODEL 未配置",
+            )
+        response = self.http_client.post(
+            self._build_url("/responses"),
             headers=self._build_headers(),
             json=payload,
         )

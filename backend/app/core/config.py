@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-03
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 应用配置定义
 """
@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     llm_api_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str | None = None
     llm_model: str | None = None
+    llm_api_format: str = "response"
     llm_reasoning_effort: str | None = None
     llm_timeout_seconds: int = 60
 
@@ -172,6 +173,21 @@ class Settings(BaseSettings):
         if not normalized_value:
             raise ValueError("OpenAI 兼容基础地址不能为空")
         return normalized_value
+
+    @field_validator("llm_api_format", mode="before")
+    @classmethod
+    def normalize_llm_api_format(cls, value: str | None) -> str:
+        """归一化结构化 LLM 调用格式。"""
+        if value is None:
+            return "response"
+        normalized_value = value.strip().lower().replace("_", "-")
+        if not normalized_value:
+            return "response"
+        if normalized_value in {"response", "responses", "openai-response", "openai-responses"}:
+            return "response"
+        if normalized_value in {"chat", "chat-completion", "chat-completions", "openai-chat"}:
+            return "chat"
+        raise ValueError("LLM_API_FORMAT 仅支持 response 或 chat")
 
     @field_validator("raccoon_api_host")
     @classmethod

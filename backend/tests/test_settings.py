@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-11
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 配置模型测试
 """
@@ -81,3 +81,34 @@ def test_llm_reasoning_effort_should_be_optional_switch(monkeypatch: pytest.Monk
     settings = Settings()
 
     assert settings.llm_reasoning_effort == "medium"
+
+
+def test_llm_api_format_should_support_response_and_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+    """结构化 LLM 调用格式应支持 response 与 chat。"""
+    apply_required_env(monkeypatch)
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    monkeypatch.delenv("LLM_API_FORMAT", raising=False)
+
+    settings = Settings()
+
+    assert settings.llm_api_format == "response"
+
+    monkeypatch.setenv("LLM_API_FORMAT", "chat_completions")
+    settings = Settings()
+
+    assert settings.llm_api_format == "chat"
+
+    monkeypatch.setenv("LLM_API_FORMAT", "responses")
+    settings = Settings()
+
+    assert settings.llm_api_format == "response"
+
+
+def test_invalid_llm_api_format_should_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """结构化 LLM 调用格式非法时应启动失败。"""
+    apply_required_env(monkeypatch)
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    monkeypatch.setenv("LLM_API_FORMAT", "legacy")
+
+    with pytest.raises(ValidationError):
+        Settings()

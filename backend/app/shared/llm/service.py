@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-14
+@Date: 2026-05-04
 @Author: xisy
 @Discription: OpenAI 兼容 LLM 业务封装
 """
@@ -16,7 +16,7 @@ from app.shared.llm.schemas import ChatMessage, EmbeddingUsage, LlmUsage
 
 
 class OpenAICompatibleLlmService:
-    """结构化聊天输出服务。"""
+    """OpenAI 兼容结构化输出服务。"""
 
     def __init__(
         self,
@@ -34,17 +34,60 @@ class OpenAICompatibleLlmService:
         temperature: float = 0.2,
     ) -> BaseModel:
         """生成结构化 JSON 输出并解析为指定模型。"""
+        if self.settings.llm_api_format == "chat":
+            payload = self._build_chat_completion_payload(messages=messages, temperature=temperature)
+            result = self.client.create_chat_completion(payload)
+            content = self._extract_chat_completion_content(result)
+            return self._validate_structured_payload(content=content, response_model=response_model)
+
+        payload = self._build_response_payload(messages=messages, response_model=response_model, temperature=temperature)
+        result = self.client.create_response(payload)
+        content = self._extract_response_content(result)
+        return self._validate_structured_payload(content=content, response_model=response_model)
+
+    def _build_response_payload(
+        self,
+        *,
+        messages: list[ChatMessage],
+        response_model: type[BaseModel],
+        temperature: float,
+    ) -> dict[str, Any]:
+        """构造 OpenAI Responses 结构化请求。"""
         payload = {
+            "model": self.settings.llm_model,
+            "temperature": temperature,
+            "input": [message.model_dump() for message in messages],
+            "text": {
+                "format": {
+                    "type": "json_schema",
+                    "name": response_model.__name__,
+                    "schema": response_model.model_json_schema(),
+                    "strict": False,
+                }
+            },
+        }
+        if self.settings.llm_reasoning_effort:
+            payload["reasoning"] = {"effort": self.settings.llm_reasoning_effort}
+        return payload
+
+    def _build_chat_completion_payload(
+        self,
+        *,
+        messages: list[ChatMessage],
+        temperature: float,
+    ) -> dict[str, Any]:
+        """构造 Chat Completions 兼容结构化请求。"""
+        return {
             "model": self.settings.llm_model,
             "temperature": temperature,
             "response_format": {"type": "json_object"},
             "messages": [message.model_dump() for message in messages],
         }
-        if self.settings.llm_reasoning_effort:
-            payload["reasoning_effort"] = self.settings.llm_reasoning_effort
-        result = self.client.create_chat_completion(payload)
-        content = self._extract_message_content(result)
-        parsed_json = self._extract_json_payload(content)
+
+    @staticmethod
+    def _validate_structured_payload(*, content: str, response_model: type[BaseModel]) -> BaseModel:
+        """解析 JSON 文本并通过响应模型校验。"""
+        parsed_json = OpenAICompatibleLlmService._extract_json_payload(content)
         try:
             return response_model.model_validate(parsed_json)
         except ValidationError as exc:
@@ -55,18 +98,49 @@ class OpenAICompatibleLlmService:
             ) from exc
 
     @staticmethod
-    def _extract_message_content(payload: dict[str, Any]) -> str:
+    def _extract_response_content(payload: dict[str, Any]) -> str:
+        output_text = payload.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+
+        text_parts: list[str] = []
+        for output_item in payload.get("output") or []:
+            if not isinstance(output_item, dict):
+                continue
+            content = output_item.get("content")
+            if isinstance(content, str) and content.strip():
+                text_parts.append(content.strip())
+                continue
+            if not isinstance(content, list):
+                continue
+            for content_item in content:
+                if not isinstance(content_item, dict):
+                    continue
+                text = content_item.get("text")
+                if not isinstance(text, str):
+                    text = content_item.get("output_text")
+                if isinstance(text, str) and text.strip():
+                    text_parts.append(text.strip())
+
+        content = "\n".join(text_parts).strip()
+        if not content:
+            raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 返回结果缺少文本内容")
+        return content
+
+    @staticmethod
+    def _extract_chat_completion_content(payload: dict[str, Any]) -> str:
+        """从 Chat Completions 响应中提取文本内容。"""
         choices = payload.get("choices") or []
         if not choices:
             raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 返回结果缺少 choices")
         message = choices[0].get("message") or {}
         content = message.get("content")
         if isinstance(content, list):
-            joined_parts: list[str] = []
+            text_parts: list[str] = []
             for item in content:
                 if isinstance(item, dict) and item.get("type") == "text":
-                    joined_parts.append(str(item.get("text") or ""))
-            content = "\n".join(item for item in joined_parts if item)
+                    text_parts.append(str(item.get("text") or ""))
+            content = "\n".join(item for item in text_parts if item)
         if not isinstance(content, str) or not content.strip():
             raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 返回结果缺少文本内容")
         return content.strip()
@@ -111,8 +185,8 @@ class OpenAICompatibleLlmService:
         """从原始响应中提取使用量。"""
         usage = payload.get("usage") or {}
         return LlmUsage(
-            prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
-            completion_tokens=int(usage.get("completion_tokens", 0) or 0),
+            prompt_tokens=int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0),
+            completion_tokens=int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0),
             total_tokens=int(usage.get("total_tokens", 0) or 0),
         )
 
