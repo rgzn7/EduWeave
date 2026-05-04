@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.constants import TASK_STATUS_FAILURE, TASK_STATUS_PROCESSING, TASK_STATUS_SUCCESS
 from app.core.database import SessionLocal
-from app.core.exceptions import AppException, BusinessErrorCode
+from app.core.exceptions import AppException, BusinessErrorCode, get_task_error_code
 from app.modules.coverage.repository import CoverageRepository
 from app.modules.coverage.service import CoverageService
 from app.modules.task_center.repository import TaskCenterRepository
@@ -28,7 +28,7 @@ def run_analyze_coverage_task(payload: dict) -> dict[str, int | float]:
 
     try:
         if task is None:
-            raise RuntimeError("覆盖率分析任务不存在")
+            raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "覆盖率分析任务不存在")
         generation_batch = repository.get_generation_batch(payload["generation_batch_id"])
         if generation_batch is None:
             raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "生成批次不存在")
@@ -224,7 +224,7 @@ def _mark_task_failure(
         repository.save(generation_batch)
     if task is not None:
         task.task_status = TASK_STATUS_FAILURE
-        task.last_error_code = getattr(exc, "code", None).value if isinstance(exc, AppException) else "COVERAGE_TASK_FAILED"
+        task.last_error_code = get_task_error_code(exc, BusinessErrorCode.COVERAGE_TASK_FAILED)
         task.last_error_message = getattr(exc, "message", None) if isinstance(exc, AppException) else str(exc)
         task.finished_at = DateTimeUtil.now_utc()
         task_repository.save(task)

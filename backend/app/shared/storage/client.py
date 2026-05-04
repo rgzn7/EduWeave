@@ -9,6 +9,7 @@ from typing import Any
 from obs import PutObjectHeader
 
 from app.core.config import Settings, get_settings
+from app.core.exceptions import AppException, BusinessErrorCode
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -29,7 +30,7 @@ class ObsStorageClient:
         try:
             from obs import ObsClient
         except ImportError as exc:
-            raise RuntimeError("未安装 obs SDK，无法初始化 OBS 客户端") from exc
+            raise AppException(BusinessErrorCode.EXTERNAL_SERVICE_ERROR, "未安装 obs SDK，无法初始化 OBS 客户端") from exc
 
         self._client = ObsClient(
             access_key_id=self.settings.obs_ak,
@@ -65,7 +66,7 @@ class ObsStorageClient:
         if int(getattr(response, "status", 500)) >= 400:
             error_message = getattr(response, "errorMessage", "OBS 上传失败")
             logger.error("OBS 上传失败", object_key=object_key, error_message=error_message)
-            raise RuntimeError(error_message)
+            raise AppException(BusinessErrorCode.EXTERNAL_SERVICE_ERROR, error_message)
         return {
             "bucket_name": self.settings.obs_bucket,
             "object_key": object_key,
@@ -82,7 +83,7 @@ class ObsStorageClient:
         )
         if int(getattr(response, "status", 500)) >= 400:
             error_message = getattr(response, "errorMessage", "OBS 下载失败")
-            raise RuntimeError(error_message)
+            raise AppException(BusinessErrorCode.EXTERNAL_SERVICE_ERROR, error_message)
         return bytes(getattr(response.body, "buffer", b"") or b"")
 
     def delete_object(self, object_key: str) -> bool:
@@ -102,7 +103,7 @@ class ObsStorageClient:
         status = getattr(response, "status", 200)
         if int(status) >= 400:
             error_message = getattr(response, "errorMessage", "OBS 签名下载地址生成失败")
-            raise RuntimeError(error_message)
+            raise AppException(BusinessErrorCode.EXTERNAL_SERVICE_ERROR, error_message)
 
         for attr_name in ("signedUrl", "signed_url", "url"):
             value = getattr(response, attr_name, None)
@@ -115,14 +116,14 @@ class ObsStorageClient:
                 if value:
                     return value
 
-        raise RuntimeError("OBS 签名下载地址生成失败")
+        raise AppException(BusinessErrorCode.EXTERNAL_SERVICE_ERROR, "OBS 签名下载地址生成失败")
 
     def head_object(self, object_key: str) -> dict[str, Any]:
         """查询对象元数据。"""
         response = self.get_client().headObject(self.settings.obs_bucket, object_key)
         if int(getattr(response, "status", 500)) >= 400:
             error_message = getattr(response, "errorMessage", "OBS 对象不存在")
-            raise RuntimeError(error_message)
+            raise AppException(BusinessErrorCode.EXTERNAL_SERVICE_ERROR, error_message)
         return {
             "etag": getattr(response, "etag", None),
             "content_length": getattr(response, "contentLength", None),

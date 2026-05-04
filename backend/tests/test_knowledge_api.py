@@ -427,7 +427,7 @@ def test_run_extract_task_should_mark_failure_when_llm_invalid(client, seeded_se
         session.expire_all()
         failed_task = task_repository.get_task_by_id(task.id)
         assert failed_task.task_status == "failure"
-        assert failed_task.last_error_code == "LLM_RESULT_INVALID"
+        assert failed_task.last_error_code == BusinessErrorCode.LLM_RESULT_INVALID.value
         assert failed_task.last_error_message == "LLM 返回结果非法"
     finally:
         session.close()

@@ -6,10 +6,12 @@
 
 from io import BytesIO
 
+import pytest
 from pypdf import PdfWriter
 
 from app.core.constants import MINERU_STRATEGY_VLM_DEFAULT, PARSING_MODULE_CODE, PARSING_QUEUE_NAME, TASK_STATUS_PENDING, TEXTBOOK_PARSE_TASK_TYPE
-from app.modules.p0_models import Project, TaskRecord
+from app.core.exceptions import AppException, BusinessErrorCode
+from app.modules.p0_models import Project, TaskRecord, TaskStepRecord
 
 
 def build_auth_headers(client) -> dict[str, str]:
@@ -185,6 +187,160 @@ def test_parsing_task_should_reject_running_duplicate(client, seeded_session_fac
 
     assert response.status_code == 409
     assert response.json()["errors"][0]["code"] == "TASK_CONFLICT"
+
+
+def create_parse_task_record(seeded_session_factory, project_id: int, textbook_version_id: int) -> tuple[int, str]:
+    """创建解析任务记录与步骤。"""
+    session = seeded_session_factory()
+    try:
+        project = session.get(Project, project_id)
+        task = TaskRecord(
+            project_id=project_id,
+            generation_batch_id=None,
+            module_code=PARSING_MODULE_CODE,
+            task_type=TEXTBOOK_PARSE_TASK_TYPE,
+            biz_key=f"textbook_version:{textbook_version_id}:full",
+            task_status=TASK_STATUS_PENDING,
+            queue_name=PARSING_QUEUE_NAME,
+            current_stage=None,
+            progress_percent=0,
+            retry_count=0,
+            max_retry_count=3,
+            request_id="test",
+            worker_task_id=None,
+            operator_user_id=project.owner_user_id,
+            payload_json={"textbook_version_id": textbook_version_id},
+            result_json=None,
+            last_error_code=None,
+            last_error_message=None,
+            started_at=None,
+            finished_at=None,
+        )
+        session.add(task)
+        session.flush()
+        for step_order, (step_code, step_name) in enumerate(
+            [
+                ("prepare_source", "准备教材源文件"),
+                ("submit_mineru", "提交 MinerU 解析"),
+                ("poll_mineru_result", "轮询 MinerU 结果"),
+                ("persist_parse_result", "落库解析结果"),
+            ],
+            start=1,
+        ):
+            session.add(
+                TaskStepRecord(
+                    task_record_id=task.id,
+                    step_code=step_code,
+                    step_name=step_name,
+                    step_order=step_order,
+                    step_status=TASK_STATUS_PENDING,
+                    progress_percent=0,
+                    detail_json=None,
+                    started_at=None,
+                    finished_at=None,
+                )
+            )
+        session.commit()
+        database_url = session.get_bind().url.render_as_string(hide_password=False)
+        return task.id, database_url
+    finally:
+        session.close()
+
+
+def test_parse_task_should_mark_textbook_not_found_when_missing_textbook(client, seeded_session_factory) -> None:
+    """解析任务缺教材版本时应写入具体业务错误码。"""
+    from app.modules.parsing.tasks import run_parse_task
+
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    missing_textbook_version_id = 999999
+    task_id, database_url = create_parse_task_record(seeded_session_factory, project_id, missing_textbook_version_id)
+
+    with pytest.raises(AppException) as exc_info:
+        run_parse_task(
+            {
+                "task_record_id": task_id,
+                "textbook_version_id": missing_textbook_version_id,
+                "strategy_code": MINERU_STRATEGY_VLM_DEFAULT,
+                "operator_user_id": 1,
+                "set_as_current_on_success": False,
+                "database_url": database_url,
+            }
+        )
+
+    assert exc_info.value.code == BusinessErrorCode.TEXTBOOK_NOT_FOUND
+    session = seeded_session_factory()
+    try:
+        failed_task = session.get(TaskRecord, task_id)
+        assert failed_task.task_status == "failure"
+        assert failed_task.last_error_code == BusinessErrorCode.TEXTBOOK_NOT_FOUND.value
+    finally:
+        session.close()
+
+
+def test_parse_task_should_raise_task_not_found_when_missing_task(seeded_session_factory) -> None:
+    """解析任务记录不存在时应抛出统一任务不存在错误码。"""
+    from app.modules.parsing.tasks import run_parse_task
+
+    session = seeded_session_factory()
+    try:
+        database_url = session.get_bind().url.render_as_string(hide_password=False)
+    finally:
+        session.close()
+
+    with pytest.raises(AppException) as exc_info:
+        run_parse_task(
+            {
+                "task_record_id": 999999,
+                "textbook_version_id": 999999,
+                "strategy_code": MINERU_STRATEGY_VLM_DEFAULT,
+                "operator_user_id": 1,
+                "set_as_current_on_success": False,
+                "database_url": database_url,
+            }
+        )
+
+    assert exc_info.value.code == BusinessErrorCode.TASK_NOT_FOUND
+
+
+def test_parse_task_should_mark_fallback_code_when_unknown_error(
+    client,
+    seeded_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """解析任务遇到未知异常时应写入解析任务兜底错误码。"""
+    from app.modules.parsing import tasks as parsing_tasks
+    from app.modules.parsing.tasks import run_parse_task
+
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    textbook_version_id = upload_textbook(client, headers, project_id)
+    task_id, database_url = create_parse_task_record(seeded_session_factory, project_id, textbook_version_id)
+
+    def raise_unknown_error(_: bytes):
+        raise ValueError("PDF 渲染失败")
+
+    monkeypatch.setattr(parsing_tasks, "render_pdf_page_images", raise_unknown_error)
+
+    with pytest.raises(ValueError):
+        run_parse_task(
+            {
+                "task_record_id": task_id,
+                "textbook_version_id": textbook_version_id,
+                "strategy_code": MINERU_STRATEGY_VLM_DEFAULT,
+                "operator_user_id": 1,
+                "set_as_current_on_success": False,
+                "database_url": database_url,
+            }
+        )
+
+    session = seeded_session_factory()
+    try:
+        failed_task = session.get(TaskRecord, task_id)
+        assert failed_task.task_status == "failure"
+        assert failed_task.last_error_code == BusinessErrorCode.PARSE_TASK_FAILED.value
+    finally:
+        session.close()
 
 
 def test_reparse_task_should_create_child_parse_version(client) -> None:

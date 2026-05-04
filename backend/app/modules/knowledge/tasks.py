@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.constants import REVIEW_STATUS_CONFIRMED, TASK_STATUS_FAILURE, TASK_STATUS_PENDING, TASK_STATUS_PROCESSING, TASK_STATUS_SUCCESS
 from app.core.database import SessionLocal
-from app.core.exceptions import AppException, BusinessErrorCode
+from app.core.exceptions import AppException, BusinessErrorCode, get_task_error_code
 from app.modules.knowledge.domain import (
     build_chapter_drafts_from_boundaries,
     build_markdown_line_index,
@@ -46,7 +46,7 @@ def run_extract_task(payload: dict) -> dict[str, int]:
 
     try:
         if task is None:
-            raise RuntimeError("知识抽取任务不存在")
+            raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "知识抽取任务不存在")
         _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="prepare_parse_source", progress_percent=10, started_at=now)
         _mark_step(step_map["prepare_parse_source"], TASK_STATUS_PROCESSING, 20, started_at=now)
         task_repository.save(task)
@@ -370,7 +370,7 @@ def _mark_task_failure(task_repository: TaskCenterRepository, repository: Knowle
     task = task_repository.get_task_by_id(payload["task_record_id"])
     if task is not None:
         task.task_status = TASK_STATUS_FAILURE
-        task.last_error_code = getattr(exc, "code", None).value if isinstance(exc, AppException) else "KNOWLEDGE_TASK_FAILED"
+        task.last_error_code = get_task_error_code(exc, BusinessErrorCode.KNOWLEDGE_TASK_FAILED)
         task.last_error_message = getattr(exc, "message", None) if isinstance(exc, AppException) else str(exc)
         task.finished_at = DateTimeUtil.now_utc()
         task_repository.save(task)

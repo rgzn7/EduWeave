@@ -9,7 +9,10 @@ from io import BytesIO
 import pytest
 from pypdf import PdfWriter
 
+from app.core.exceptions import AppException, BusinessErrorCode
 from app.shared.storage import ObsStorageClient
+
+ORIGINAL_DOWNLOAD_BYTES = ObsStorageClient.download_bytes
 
 
 def build_auth_headers(client) -> dict[str, str]:
@@ -53,6 +56,27 @@ def test_file_download_url_should_return_signed_url(client) -> None:
     payload = response.json()["data"]
     assert payload["file_object_id"] == file_object_id
     assert payload["signed_url"].startswith("https://obs.test.example.com/")
+
+
+def test_obs_download_should_raise_business_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OBS 下载失败时应转换为统一业务异常。"""
+
+    class ErrorResponse:
+        status = 500
+        errorMessage = "OBS 下载失败"
+
+    class FakeObsClient:
+        def getObject(self, *args, **kwargs):  # noqa: N802, ANN001
+            _ = (args, kwargs)
+            return ErrorResponse()
+
+    monkeypatch.setattr(ObsStorageClient, "download_bytes", ORIGINAL_DOWNLOAD_BYTES)
+    monkeypatch.setattr(ObsStorageClient, "get_client", lambda self: FakeObsClient())
+
+    with pytest.raises(AppException) as exc_info:
+        ObsStorageClient().download_bytes("missing.pdf")
+
+    assert exc_info.value.code == BusinessErrorCode.EXTERNAL_SERVICE_ERROR
 
 
 def test_file_download_url_should_fail_when_signing_failed(client, monkeypatch: pytest.MonkeyPatch) -> None:

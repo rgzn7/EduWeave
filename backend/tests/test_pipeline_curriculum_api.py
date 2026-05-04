@@ -1219,7 +1219,7 @@ def test_generation_batch_should_mark_failure_when_llm_invalid(
     )
 
     assert response.status_code == 503
-    assert response.json()["errors"][0]["code"] == "LLM_RESULT_INVALID"
+    assert response.json()["errors"][0]["code"] == BusinessErrorCode.LLM_RESULT_INVALID.value
 
     list_response = client.get(f"/api/v1/generation-batches?project_id={project_id}", headers=headers)
     assert list_response.status_code == 200
@@ -1229,7 +1229,7 @@ def test_generation_batch_should_mark_failure_when_llm_invalid(
     detail_response = client.get(f"/api/v1/generation-batches/{failed_batch['id']}", headers=headers)
     task_payload = detail_response.json()["data"]["tasks"][0]
     assert task_payload["task_status"] == "failure"
-    assert task_payload["last_error_code"] == "LLM_RESULT_INVALID"
+    assert task_payload["last_error_code"] == BusinessErrorCode.LLM_RESULT_INVALID.value
 
 
 def test_generation_batch_should_mark_failure_when_lesson_plan_has_invalid_knowledge_ref(
@@ -1318,7 +1318,7 @@ def test_generation_batch_should_mark_failure_when_lesson_plan_has_invalid_knowl
     )
 
     assert response.status_code == 503
-    assert response.json()["errors"][0]["code"] == "LLM_RESULT_INVALID"
+    assert response.json()["errors"][0]["code"] == BusinessErrorCode.LLM_RESULT_INVALID.value
 
     list_response = client.get(f"/api/v1/generation-batches?project_id={project_id}", headers=headers)
     assert list_response.status_code == 200
@@ -1332,4 +1332,4 @@ def test_generation_batch_should_mark_failure_when_lesson_plan_has_invalid_knowl
     assert [task["task_type"] for task in tasks] == ["curriculum_generate", "lesson_plan_generate"]
     assert tasks[0]["task_status"] == "success"
     assert tasks[1]["task_status"] == "failure"
-    assert tasks[1]["last_error_code"] == "LLM_RESULT_INVALID"
+    assert tasks[1]["last_error_code"] == BusinessErrorCode.LLM_RESULT_INVALID.value

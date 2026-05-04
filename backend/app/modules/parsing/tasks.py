@@ -21,7 +21,7 @@ from app.core.constants import (
     VERSION_STATUS_READY,
 )
 from app.core.database import SessionLocal
-from app.core.exceptions import AppException
+from app.core.exceptions import AppException, BusinessErrorCode, get_task_error_code
 from app.modules.p0_models import FileObject, ParseVersion
 from app.modules.parsing.domain import (
     build_page_drafts_from_normalized_document,
@@ -54,7 +54,7 @@ def run_parse_task(payload: dict) -> dict[str, int | str]:
 
     try:
         if task is None:
-            raise RuntimeError("解析任务不存在")
+            raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "解析任务不存在")
         _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="prepare_source", progress_percent=5, started_at=now)
         _mark_step(step_map["prepare_source"], TASK_STATUS_PROCESSING, 10, started_at=now)
         task_repository.save(task)
@@ -63,10 +63,10 @@ def run_parse_task(payload: dict) -> dict[str, int | str]:
 
         textbook_version = repository.get_textbook_version(payload["textbook_version_id"])
         if textbook_version is None:
-            raise RuntimeError("教材版本不存在")
+            raise AppException(BusinessErrorCode.TEXTBOOK_NOT_FOUND, "教材版本不存在")
         source_file = repository.get_file_object(textbook_version.source_file_id)
         if source_file is None:
-            raise RuntimeError("教材源文件不存在")
+            raise AppException(BusinessErrorCode.FILE_NOT_FOUND, "教材源文件不存在")
         source_content = storage_client.download_bytes(source_file.object_key)
         page_image_bytes = render_pdf_page_images(source_content)
         _mark_step(
@@ -257,16 +257,16 @@ def run_reparse_task(payload: dict) -> dict[str, int | str]:
 
     try:
         if task is None:
-            raise RuntimeError("重解析任务不存在")
+            raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "重解析任务不存在")
         parent_parse_version = repository.get_parse_version(payload["parse_version_id"])
         if parent_parse_version is None:
-            raise RuntimeError("父解析版本不存在")
+            raise AppException(BusinessErrorCode.PARSE_VERSION_NOT_FOUND, "父解析版本不存在")
         textbook_version = repository.get_textbook_version(parent_parse_version.textbook_version_id)
         if textbook_version is None:
-            raise RuntimeError("教材版本不存在")
+            raise AppException(BusinessErrorCode.TEXTBOOK_NOT_FOUND, "教材版本不存在")
         source_file = repository.get_file_object(textbook_version.source_file_id)
         if source_file is None:
-            raise RuntimeError("教材源文件不存在")
+            raise AppException(BusinessErrorCode.FILE_NOT_FOUND, "教材源文件不存在")
 
         _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="prepare_source", progress_percent=5, started_at=now)
         _mark_step(step_map["prepare_source"], TASK_STATUS_PROCESSING, 15, started_at=now)
@@ -614,7 +614,7 @@ def _mark_task_failure(task_repository: TaskCenterRepository, repository: Parsin
     task = task_repository.get_task_by_id(payload["task_record_id"])
     if task is not None:
         task.task_status = TASK_STATUS_FAILURE
-        task.last_error_code = getattr(exc, "code", None).value if isinstance(exc, AppException) else "PARSE_TASK_FAILED"
+        task.last_error_code = get_task_error_code(exc, BusinessErrorCode.PARSE_TASK_FAILED)
         task.last_error_message = getattr(exc, "message", None) if isinstance(exc, AppException) else str(exc)
         task.finished_at = DateTimeUtil.now_utc()
         task_repository.save(task)

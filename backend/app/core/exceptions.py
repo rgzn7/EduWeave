@@ -61,6 +61,14 @@ class BusinessErrorCode(str, Enum):
     RACCOON_REQUEST_FAILED = "RACCOON_REQUEST_FAILED"
     RACCOON_POLL_TIMEOUT = "RACCOON_POLL_TIMEOUT"
     RACCOON_RESULT_INVALID = "RACCOON_RESULT_INVALID"
+    PARSE_TASK_FAILED = "PARSE_TASK_FAILED"
+    PROFILE_EXTRACT_FAILED = "PROFILE_EXTRACT_FAILED"
+    KNOWLEDGE_TASK_FAILED = "KNOWLEDGE_TASK_FAILED"
+    CURRICULUM_TASK_FAILED = "CURRICULUM_TASK_FAILED"
+    LESSON_PLAN_TASK_FAILED = "LESSON_PLAN_TASK_FAILED"
+    ASSESSMENT_TASK_FAILED = "ASSESSMENT_TASK_FAILED"
+    COURSEWARE_TASK_FAILED = "COURSEWARE_TASK_FAILED"
+    COVERAGE_TASK_FAILED = "COVERAGE_TASK_FAILED"
 
 
 ERROR_CODE_HTTP_MAPPING: dict[BusinessErrorCode, int] = {
@@ -105,6 +113,14 @@ ERROR_CODE_HTTP_MAPPING: dict[BusinessErrorCode, int] = {
     BusinessErrorCode.RACCOON_REQUEST_FAILED: 503,
     BusinessErrorCode.RACCOON_POLL_TIMEOUT: 504,
     BusinessErrorCode.RACCOON_RESULT_INVALID: 503,
+    BusinessErrorCode.PARSE_TASK_FAILED: 500,
+    BusinessErrorCode.PROFILE_EXTRACT_FAILED: 500,
+    BusinessErrorCode.KNOWLEDGE_TASK_FAILED: 500,
+    BusinessErrorCode.CURRICULUM_TASK_FAILED: 500,
+    BusinessErrorCode.LESSON_PLAN_TASK_FAILED: 500,
+    BusinessErrorCode.ASSESSMENT_TASK_FAILED: 500,
+    BusinessErrorCode.COURSEWARE_TASK_FAILED: 500,
+    BusinessErrorCode.COVERAGE_TASK_FAILED: 500,
 }
 
 
@@ -127,6 +143,13 @@ class AppException(Exception):
     @property
     def status_code(self) -> int:
         return ERROR_CODE_HTTP_MAPPING.get(self.code, 500)
+
+
+def get_task_error_code(exc: Exception, fallback_code: BusinessErrorCode) -> str:
+    """获取任务失败落库错误码。"""
+    if isinstance(exc, AppException):
+        return exc.code.value
+    return fallback_code.value
 
 
 async def app_exception_handler(_: Request, exc: AppException) -> JSONResponse:

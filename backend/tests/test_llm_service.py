@@ -146,8 +146,26 @@ def test_structured_output_should_call_chat_completion_when_configured() -> None
     assert "text" not in client.payload
     assert "reasoning" not in client.payload
     assert "reasoning_effort" not in client.payload
-    assert client.payload["messages"] == [{"role": "user", "content": "返回 ok"}]
+    assert client.payload["messages"] == [
+        {"role": "user", "content": "返回 ok"},
+        {"role": "user", "content": "请严格以 JSON 对象格式输出最终结果。"},
+    ]
     assert client.payload["response_format"] == {"type": "json_object"}
+
+
+def test_structured_output_should_not_append_json_hint_when_present() -> None:
+    """原始 user 消息已包含 JSON 要求时不应重复追加提示。"""
+    client = CaptureLlmClient()
+    service = OpenAICompatibleLlmService(client=client, settings=build_settings(None, llm_api_format="chat"))
+
+    result = service.generate_structured_output(
+        messages=[ChatMessage(role="user", content="请返回 JSON：{\"ok\": true}")],
+        response_model=DemoStructuredResponse,
+    )
+
+    assert result.ok is True
+    assert client.payload is not None
+    assert client.payload["messages"] == [{"role": "user", "content": "请返回 JSON：{\"ok\": true}"}]
 
 
 def test_structured_output_should_extract_json_from_markdown_text() -> None:

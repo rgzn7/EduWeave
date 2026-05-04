@@ -20,7 +20,7 @@ from app.core.constants import (
     TASK_STATUS_SUCCESS,
 )
 from app.core.database import SessionLocal
-from app.core.exceptions import AppException
+from app.core.exceptions import AppException, BusinessErrorCode, get_task_error_code
 from app.modules.learner_profile.repository import LearnerProfileRepository
 from app.modules.learner_profile.rules import LearnerProfileRecordDraft, parse_learner_profile_text
 from app.modules.p0_models import FileObject, LearnerProfileRecord, LearnerProfileVersion
@@ -43,7 +43,7 @@ def run_extract_task(payload: dict) -> dict[str, int | str]:
 
     try:
         if task is None:
-            raise RuntimeError("学情抽取任务不存在")
+            raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "学情抽取任务不存在")
         _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="prepare_source", progress_percent=5, started_at=now)
         _mark_step(step_map["prepare_source"], TASK_STATUS_PROCESSING, 15, started_at=now)
         task_repository.save(task)
@@ -52,13 +52,13 @@ def run_extract_task(payload: dict) -> dict[str, int | str]:
 
         profile_file = repository.get_profile_file_by_id(payload["profile_file_id"])
         if profile_file is None:
-            raise RuntimeError("学情文件不存在")
+            raise AppException(BusinessErrorCode.LEARNER_PROFILE_NOT_FOUND, "学情文件不存在")
         project = repository.get_project(payload["project_id"])
         if project is None:
-            raise RuntimeError("项目不存在")
+            raise AppException(BusinessErrorCode.PROJECT_NOT_FOUND, "项目不存在")
         source_file = repository.get_file_object(profile_file.source_file_id)
         if source_file is None:
-            raise RuntimeError("学情源文件不存在")
+            raise AppException(BusinessErrorCode.FILE_NOT_FOUND, "学情源文件不存在")
 
         source_content = storage_client.download_bytes(source_file.object_key)
         _mark_step(
@@ -102,7 +102,7 @@ def run_extract_task(payload: dict) -> dict[str, int | str]:
             fallback_filename=source_file.original_filename,
         )
         if not parse_result.records:
-            raise RuntimeError("未能从学情文档中抽取到有效学科记录")
+            raise AppException(BusinessErrorCode.PROFILE_EXTRACT_FAILED, "未能从学情文档中抽取到有效学科记录")
 
         version_no = repository.get_next_version_no(profile_file.id)
         raw_zip_file = _upload_binary_artifact(
@@ -400,7 +400,7 @@ def _mark_task_failure(task_repository: TaskCenterRepository, repository: Learne
     task = task_repository.get_task_by_id(payload["task_record_id"])
     if task is not None:
         task.task_status = TASK_STATUS_FAILURE
-        task.last_error_code = getattr(exc, "code", None).value if isinstance(exc, AppException) and getattr(exc, "code", None) is not None else "PROFILE_EXTRACT_FAILED"
+        task.last_error_code = get_task_error_code(exc, BusinessErrorCode.PROFILE_EXTRACT_FAILED)
         task.last_error_message = getattr(exc, "message", None) if isinstance(exc, AppException) else str(exc)
         task.finished_at = DateTimeUtil.now_utc()
         task_repository.save(task)

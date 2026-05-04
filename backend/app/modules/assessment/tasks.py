@@ -17,7 +17,7 @@ from app.core.constants import (
     VERSION_STATUS_READY,
 )
 from app.core.database import SessionLocal
-from app.core.exceptions import AppException, BusinessErrorCode
+from app.core.exceptions import AppException, BusinessErrorCode, get_task_error_code
 from app.modules.assessment.repository import AssessmentRepository
 from app.modules.assessment.schemas import AssessmentGenerationResult
 from app.modules.p0_models import AssessmentBlueprint, PaperResult, QuestionItem
@@ -47,7 +47,7 @@ def run_generate_assessment_task(payload: dict) -> dict[str, int | str]:
 
     try:
         if task is None:
-            raise RuntimeError("测评生成任务不存在")
+            raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "测评生成任务不存在")
         generation_batch = repository.get_generation_batch(payload["generation_batch_id"])
         curriculum_plan = repository.get_curriculum_plan(payload["curriculum_plan_id"])
         if generation_batch is None:
@@ -580,7 +580,7 @@ def _mark_task_failure(task_repository: TaskCenterRepository, repository: Assess
     task = task_repository.get_task_by_id(payload["task_record_id"])
     if task is not None:
         task.task_status = TASK_STATUS_FAILURE
-        task.last_error_code = getattr(exc, "code", None).value if isinstance(exc, AppException) else "ASSESSMENT_TASK_FAILED"
+        task.last_error_code = get_task_error_code(exc, BusinessErrorCode.ASSESSMENT_TASK_FAILED)
         task.last_error_message = getattr(exc, "message", None) if isinstance(exc, AppException) else str(exc)
         task.finished_at = DateTimeUtil.now_utc()
         task_repository.save(task)
