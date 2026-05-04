@@ -53,9 +53,10 @@ class OpenAICompatibleLlmService:
         temperature: float,
     ) -> dict[str, Any]:
         """构造 OpenAI Responses 结构化请求。"""
-        payload = {
+        # reasoning 类模型（如 gpt-5 系列）不接受 temperature，仅接受 reasoning.effort；
+        # 若配置中显式给出 reasoning_effort，则忽略 temperature 以避免上游 400。
+        payload: dict[str, Any] = {
             "model": self.settings.llm_model,
-            "temperature": temperature,
             "input": [message.model_dump() for message in messages],
             "text": {
                 "format": {
@@ -68,6 +69,8 @@ class OpenAICompatibleLlmService:
         }
         if self.settings.llm_reasoning_effort:
             payload["reasoning"] = {"effort": self.settings.llm_reasoning_effort}
+        else:
+            payload["temperature"] = temperature
         return payload
 
     def _build_chat_completion_payload(
@@ -77,12 +80,25 @@ class OpenAICompatibleLlmService:
         temperature: float,
     ) -> dict[str, Any]:
         """构造 Chat Completions 兼容结构化请求。"""
-        return {
+        # reasoning 类模型（如 gpt-5 系列）不接受 temperature，仅接受 reasoning_effort
+        message_payloads = [message.model_dump() for message in messages]
+        # OpenAI 在使用 response_format=json_object 时要求 user 消息中出现 "json" 字样，
+        # 否则会以 invalid_request_error 拒绝；此处兜底追加提示，避免上游 prompt 漏写。
+        if not any(
+            item.get("role") == "user" and "json" in str(item.get("content") or "").lower()
+            for item in message_payloads
+        ):
+            message_payloads.append({"role": "user", "content": "请严格以 JSON 对象格式输出最终结果。"})
+        payload: dict[str, Any] = {
             "model": self.settings.llm_model,
-            "temperature": temperature,
             "response_format": {"type": "json_object"},
-            "messages": [message.model_dump() for message in messages],
+            "messages": message_payloads,
         }
+        if self.settings.llm_reasoning_effort:
+            payload["reasoning_effort"] = self.settings.llm_reasoning_effort
+        else:
+            payload["temperature"] = temperature
+        return payload
 
     @staticmethod
     def _validate_structured_payload(*, content: str, response_model: type[BaseModel]) -> BaseModel:

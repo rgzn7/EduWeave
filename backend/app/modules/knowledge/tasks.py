@@ -276,9 +276,15 @@ def _build_chapter_point_extraction_messages(*, parse_version, chapter_draft, se
         "你是教材知识点抽取助手。"
         "用户会提供一个一级章节的 Markdown 正文。"
         "请只基于该章节内容抽取知识点，严格输出 JSON 对象，字段只包含 summary_json、knowledge_points。"
-        "knowledge_points 每项提供 point_code、point_name、point_type、importance_level、difficulty_level、"
-        "mastery_level_hint、tags_json、summary_text、sort_order、evidences。"
-        "evidences 必须至少包含 page_no 和 excerpt_text；如果能判断解析块序号，可以补充 block_no。"
+        "summary_json 是对象，可包含 overview、key_terms 等字段；不要使用数组。"
+        "knowledge_points 每项提供 point_code（字符串，不超过 64 字符）、point_name（字符串，不超过 64 字符）、point_type（字符串，例如 vocabulary/grammar/dialogue，不超过 32 字符）、"
+        "importance_level（1-5 之间的整数，5 最重要）、difficulty_level（1-5 之间的整数，5 最难）、"
+        "mastery_level_hint（字符串，仅 12 字以内的极简标签，例如 \"识记\"/\"理解\"/\"应用\"，禁止整句描述）、"
+        "tags_json（对象，固定形如 {\"tags\":[\"重点\",\"易错\"]}，不要直接返回数组）、"
+        "summary_text（字符串）、sort_order（从 0 开始的整数）、evidences（数组）。"
+        "evidences 每项必须至少包含 page_no（整数）和 excerpt_text（字符串）；如果能判断解析块序号，可以补充 block_no（整数）。"
+        "page_no 必须严格落在用户提供的 chapter.page_start 与 chapter.page_end 闭区间内（含两端），不允许使用区间外、章节外或自行推算的页码。"
+        "excerpt_text 必须从用户提供的 markdown 字段中原样摘录，不要改写或翻译。"
         "不要输出 chapters，不要输出额外说明，不要编造章节外内容。"
     )
     user_payload = {

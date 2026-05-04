@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -c ' *)",
+      "Bash(curl -sS -o /tmp/packy_probe.txt -w \"HTTP %{http_code}\\\\nContent-Type: %{content_type}\\\\n\" -X POST https://www.packyapi.com/v1/responses -H \"Authorization: Bearer sk-mfTENN1QzKv463h3EPOPcvWAnJfo6BDj0IgSah6cDW8IEumZ\" -H \"Content-Type: application/json\" -d '{\"model\":\"gpt-5.5\",\"input\":\"ping\",\"reasoning\":{\"effort\":\"minimal\"}}')",
+      "Read(//tmp/**)",
+      "Bash(.venv/bin/python scripts/run_generation_resume_test.py)",
+      "Bash(tee /tmp/resume_run3.log)",
+      "Bash(grep -nA1 \"ValidationError|pydantic.dev\" /tmp/resume_run6.log)",
+      "Bash(tee /tmp/resume_run7.log)",
+      "Bash(mysql -uroot -pboss1114 eduweave -e \"SELECT TABLE_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='eduweave' AND COLUMN_NAME='project_id' ORDER BY TABLE_NAME\")"
+    ]
+  }
+}
