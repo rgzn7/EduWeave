@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-03
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 覆盖率分析模块数据访问层
 """
@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.constants import COVERAGE_ANALYZE_TASK_TYPE, COVERAGE_MODULE_CODE
 from app.modules.p0_models import (
+    ChapterNode,
     CoursewareResult,
     CoverageReport,
     CurriculumPlan,
@@ -49,6 +50,15 @@ class CoverageRepository:
             select(KnowledgePoint)
             .where(KnowledgePoint.knowledge_version_id == knowledge_version_id)
             .order_by(KnowledgePoint.sort_order.asc(), KnowledgePoint.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
+    def list_chapter_nodes(self, knowledge_version_id: int) -> list[ChapterNode]:
+        """查询知识版本下章节节点。"""
+        statement = (
+            select(ChapterNode)
+            .where(ChapterNode.knowledge_version_id == knowledge_version_id)
+            .order_by(ChapterNode.node_path.asc(), ChapterNode.id.asc())
         )
         return list(self.session.scalars(statement))
 

@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-03
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 生成编排与课程大纲、教案、测评、课件接口测试
 """
@@ -8,6 +8,7 @@ import json
 from io import BytesIO
 
 import pytest
+from pydantic import ValidationError
 from pypdf import PdfWriter
 
 from app.core.config import get_settings
@@ -24,6 +25,7 @@ from app.modules.knowledge.schemas import (
     KnowledgeExtractionPointDraft,
 )
 from app.modules.lesson_plan.schemas import LessonPlanGenerationResult
+from app.modules.p0_models import ChapterNode, KnowledgePoint, LessonPlan
 from app.shared.llm import OpenAICompatibleEmbeddingService, OpenAICompatibleLlmService
 from app.shared.ppt import RaccoonPptJobState, RaccoonPptService
 from app.shared.vector import MilvusVectorService
@@ -127,6 +129,79 @@ def create_learner_profile_version(client, headers, project_id: int) -> int:
         data={"title": "学生学情", "subject_scope": "math"},
     )
     return response.json()["data"]["latest_version"]["id"]
+
+
+def add_extra_chapter_with_point(seeded_session_factory, knowledge_version_id: int) -> tuple[int, int]:
+    """向知识版本追加一个用于范围测试的章节和知识点。"""
+    session = seeded_session_factory()
+    try:
+        chapter = ChapterNode(
+            knowledge_version_id=knowledge_version_id,
+            parent_id=None,
+            node_path="99",
+            node_no=99,
+            node_level=1,
+            node_type="chapter",
+            title="范围章节",
+            summary_text="用于验证章节范围收敛。",
+            page_start=99,
+            page_end=100,
+            sort_order=99,
+        )
+        session.add(chapter)
+        session.flush()
+        point = KnowledgePoint(
+            knowledge_version_id=knowledge_version_id,
+            chapter_node_id=chapter.id,
+            point_code="kp_scope_only",
+            point_name="范围内知识点",
+            point_type="knowledge",
+            importance_level=4,
+            difficulty_level=2,
+            mastery_level_hint="understand",
+            tags_json={"tags": ["范围"]},
+            summary_text="只应在选中范围内进入生成提示词。",
+            sort_order=99,
+        )
+        session.add(point)
+        session.commit()
+        return chapter.id, point.id
+    finally:
+        session.close()
+
+
+def add_many_extra_knowledge_points(seeded_session_factory, knowledge_version_id: int, *, count: int = 35) -> list[int]:
+    """向既有章节追加多个知识点，用于验证课件不再按前 30 个截断。"""
+    session = seeded_session_factory()
+    try:
+        chapter = (
+            session.query(ChapterNode)
+            .filter(ChapterNode.knowledge_version_id == knowledge_version_id)
+            .order_by(ChapterNode.id.asc())
+            .first()
+        )
+        point_ids: list[int] = []
+        for index in range(1, count + 1):
+            point = KnowledgePoint(
+                knowledge_version_id=knowledge_version_id,
+                chapter_node_id=chapter.id,
+                point_code=f"kp_extra_{index}",
+                point_name=f"后置知识点{index}",
+                point_type="knowledge",
+                importance_level=3,
+                difficulty_level=2,
+                mastery_level_hint="understand",
+                tags_json={"tags": ["后置"]},
+                summary_text=f"用于验证课件知识点选择的第 {index} 个后置知识点。",
+                sort_order=100 + index,
+            )
+            session.add(point)
+            session.flush()
+            point_ids.append(point.id)
+        session.commit()
+        return point_ids
+    finally:
+        session.close()
 
 
 @pytest.fixture()
@@ -253,8 +328,9 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
                 questions=questions,
             )
 
-        point_id = int(user_payload["knowledge_points"][0]["id"])
         target_session = user_payload.get("target_lesson_session") or {"session_no": 1, "title": "第1讲 乘法口诀训练"}
+        target_refs = target_session.get("knowledge_point_refs") if isinstance(target_session, dict) else None
+        point_id = int(target_refs[0]) if target_refs else int(user_payload["knowledge_points"][0]["id"])
         session_no = int(target_session["session_no"])
         session_title = target_session.get("title") or f"第{session_no}讲 乘法口诀训练"
         return LessonPlanGenerationResult(
@@ -535,6 +611,250 @@ def test_generation_batch_should_create_curriculum_lesson_plans_and_coverage(cli
     file_url_response = client.get(f"/api/v1/files/{courseware_payload['export_file_id']}/download-url", headers=headers)
     assert file_url_response.status_code == 200
     assert file_url_response.json()["data"]["signed_url"].startswith("https://obs.test.example.com/")
+
+
+def test_curriculum_prompt_should_use_chapter_range_scope(
+    client,
+    seeded_session_factory,
+    generation_test_stubs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """课程大纲提示词应只包含章节范围内的章节和知识点。"""
+    _ = generation_test_stubs
+    captured_curriculum_payloads: list[dict] = []
+    captured_lesson_payloads: list[dict] = []
+    captured_assessment_payloads: list[dict] = []
+    original_generate = OpenAICompatibleLlmService.generate_structured_output
+
+    def capture_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
+        if response_model is CurriculumGenerationResult:
+            captured_curriculum_payloads.append(json.loads(messages[1].content))
+        if response_model is LessonPlanGenerationResult:
+            captured_lesson_payloads.append(json.loads(messages[1].content))
+        if response_model is AssessmentGenerationResult:
+            captured_assessment_payloads.append(json.loads(messages[1].content))
+        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature)
+
+    monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", capture_generate)
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    knowledge_version_id = create_knowledge_version(client, headers, project_id)
+    learner_profile_version_id = create_learner_profile_version(client, headers, project_id)
+    scoped_chapter_id, scoped_point_id = add_extra_chapter_with_point(seeded_session_factory, knowledge_version_id)
+
+    response = client.post(
+        "/api/v1/generation-batches",
+        headers=headers,
+        json={
+            "project_id": project_id,
+            "knowledge_version_id": knowledge_version_id,
+            "learner_profile_version_id": learner_profile_version_id,
+            "chapter_range_json": {"chapter_node_ids": [scoped_chapter_id]},
+            "course_count": 1,
+            "session_duration_minutes": 90,
+        },
+    )
+
+    assert response.status_code == 201
+    curriculum_payload = captured_curriculum_payloads[0]
+    assert [item["id"] for item in curriculum_payload["knowledge_version"]["chapters"]] == [scoped_chapter_id]
+    assert [item["id"] for item in curriculum_payload["knowledge_version"]["knowledge_points"]] == [scoped_point_id]
+    assert curriculum_payload["knowledge_version"]["chapter_range_scope"]["is_scoped"] is True
+    assert curriculum_payload["knowledge_version"]["chapter_range_scope"]["requested_chapter_ids"] == [scoped_chapter_id]
+    assert [item["id"] for item in captured_lesson_payloads[0]["knowledge_points"]] == [scoped_point_id]
+
+    batch_payload = response.json()["data"]
+    coverage_response = client.get(
+        f"/api/v1/coverage-reports?generation_batch_id={batch_payload['id']}",
+        headers=headers,
+    )
+    assert coverage_response.status_code == 200
+    coverage_payload = coverage_response.json()["data"]["items"][0]
+    knowledge_scope = coverage_payload["coverage_summary_json"]["knowledge_scope"]
+    assert coverage_payload["report_json"]["total_knowledge_point_count"] == 1
+    assert coverage_payload["report_json"]["uncovered_knowledge_point_ids"] == []
+    assert knowledge_scope["chapter_range_scoped"] is True
+    assert knowledge_scope["requested_chapter_ids"] == [scoped_chapter_id]
+    assert knowledge_scope["effective_chapter_ids"] == [scoped_chapter_id]
+    assert knowledge_scope["total_knowledge_version_point_count"] == 2
+    assert knowledge_scope["scoped_knowledge_point_count"] == 1
+
+    assessment_task_response = client.post(
+        f"/api/v1/curriculum-plans/{batch_payload['curriculum_plan_id']}/assessment-tasks",
+        headers=headers,
+        json={},
+    )
+    assert assessment_task_response.status_code == 201
+    assert [item["id"] for item in captured_assessment_payloads[0]["knowledge_points"]] == [scoped_point_id]
+
+
+def test_lesson_plan_generation_result_should_reject_empty_skeleton() -> None:
+    """教案生成 Schema 应拒绝空骨架内容。"""
+    valid_payload = {
+        "lesson_title": "第1讲 教案",
+        "summary_text": "围绕核心知识开展教学。",
+        "course_overview": {"lesson_type": "提升课"},
+        "material_list": ["教材片段"],
+        "core_knowledge": ["核心知识"],
+        "teaching_flow": [
+            {
+                "step_no": 1,
+                "stage_name": "导入",
+                "duration_minutes": 10,
+                "teacher_actions": ["提出情境问题"],
+                "student_activities": ["回答问题"],
+                "knowledge_point_refs": [1],
+            }
+        ],
+        "session_plans": [
+            {
+                "session_no": 1,
+                "title": "第1讲",
+                "objectives": ["掌握核心知识"],
+                "teaching_focus": ["核心知识"],
+                "teaching_steps": [
+                    {
+                        "step_no": 1,
+                        "stage_name": "讲解",
+                        "duration_minutes": 30,
+                        "teacher_actions": ["讲解概念"],
+                        "student_activities": ["完成练习"],
+                        "knowledge_point_refs": [1],
+                    }
+                ],
+                "homework": ["完成练习"],
+                "knowledge_point_refs": [1],
+            }
+        ],
+        "after_class_plan": {"homework": ["完成练习"]},
+        "learner_adjustments": ["增加示例"],
+        "knowledge_point_refs": [1],
+    }
+    LessonPlanGenerationResult(**valid_payload)
+
+    for field_name, empty_value in [
+        ("course_overview", {}),
+        ("teaching_flow", []),
+        ("session_plans", []),
+    ]:
+        invalid_payload = {**valid_payload, field_name: empty_value}
+        with pytest.raises(ValidationError):
+            LessonPlanGenerationResult(**invalid_payload)
+
+    invalid_step_payload = {
+        **valid_payload,
+        "teaching_flow": [
+            {
+                "step_no": 1,
+                "stage_name": "导入",
+                "duration_minutes": 10,
+                "teacher_actions": [],
+                "student_activities": ["回答问题"],
+                "knowledge_point_refs": [1],
+            }
+        ],
+    }
+    with pytest.raises(ValidationError):
+        LessonPlanGenerationResult(**invalid_step_payload)
+
+
+def test_courseware_prompt_should_prefer_current_lesson_knowledge_refs(
+    client,
+    seeded_session_factory,
+    generation_test_stubs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """课件提示词应优先使用当前教案引用的知识点，而不是前 30 个知识点。"""
+    _ = generation_test_stubs
+    captured_prompts: list[str] = []
+
+    def capture_create_job(self, *, prompt: str, role: str, scene: str, audience: str):  # noqa: ANN001
+        _ = (self, role, scene, audience)
+        captured_prompts.append(prompt)
+        return RaccoonPptJobState(
+            job_id="ppt-job-selected-kp",
+            status="succeeded",
+            download_url="https://raccoon.test.example.com/courseware.pptx",
+            raw_payload={"data": {"job_id": "ppt-job-selected-kp", "status": "succeeded"}},
+        )
+
+    monkeypatch.setattr(RaccoonPptService, "create_job_and_short_poll", capture_create_job)
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    knowledge_version_id = create_knowledge_version(client, headers, project_id)
+    learner_profile_version_id = create_learner_profile_version(client, headers, project_id)
+    target_point_ids = add_many_extra_knowledge_points(seeded_session_factory, knowledge_version_id, count=35)
+
+    response = client.post(
+        "/api/v1/generation-batches",
+        headers=headers,
+        json={
+            "project_id": project_id,
+            "knowledge_version_id": knowledge_version_id,
+            "learner_profile_version_id": learner_profile_version_id,
+            "course_count": 1,
+            "session_duration_minutes": 90,
+        },
+    )
+    assert response.status_code == 201
+    batch_payload = response.json()["data"]
+    lesson_plan_id = batch_payload["lesson_plan_id"]
+
+    session = seeded_session_factory()
+    try:
+        lesson_plan = session.query(LessonPlan).filter(LessonPlan.id == lesson_plan_id).one()
+        lesson_plan.content_json = {
+            **lesson_plan.content_json,
+            "target_lesson_session": {
+                "session_no": 1,
+                "title": "后置知识点课次",
+                "knowledge_point_refs": target_point_ids,
+            },
+            "knowledge_point_refs": target_point_ids,
+            "teaching_flow": [
+                {
+                    "step_no": 1,
+                    "stage_name": "讲解",
+                    "teacher_actions": ["讲解后置知识点"],
+                    "student_activities": ["完成后置练习"],
+                    "knowledge_point_refs": target_point_ids,
+                }
+            ],
+            "session_plans": [
+                {
+                    "session_no": 1,
+                    "title": "后置知识点课次",
+                    "objectives": ["掌握后置知识点"],
+                    "teaching_focus": ["后置知识点"],
+                    "teaching_steps": [
+                        {
+                            "step_no": 1,
+                            "stage_name": "讲解",
+                            "teacher_actions": ["讲解后置知识点"],
+                            "student_activities": ["完成后置练习"],
+                            "knowledge_point_refs": target_point_ids,
+                        }
+                    ],
+                    "homework": ["完成后置练习"],
+                    "knowledge_point_refs": target_point_ids,
+                }
+            ],
+        }
+        session.commit()
+    finally:
+        session.close()
+
+    courseware_task_response = client.post(f"/api/v1/lesson-plans/{lesson_plan_id}/courseware-tasks", headers=headers)
+
+    assert courseware_task_response.status_code == 201
+    prompt_payload = json.loads(captured_prompts[0].split("\n\n", 1)[1])
+    assert prompt_payload["知识点选择"]["source"] == "lesson_plan"
+    assert prompt_payload["知识点选择"]["limit"] == 30
+    assert prompt_payload["知识点选择"]["original_count"] == 35
+    assert prompt_payload["知识点选择"]["selected_count"] == 30
+    assert prompt_payload["知识点选择"]["truncated_count"] == 5
+    assert prompt_payload["知识点选择"]["is_truncated"] is True
+    assert [item["id"] for item in prompt_payload["知识点"]] == target_point_ids[:30]
 
 
 def test_generation_batch_should_reject_foreign_baseline(client, generation_test_stubs) -> None:
@@ -914,15 +1234,28 @@ def test_generation_batch_should_mark_failure_when_llm_invalid(
 
 def test_generation_batch_should_mark_failure_when_lesson_plan_has_invalid_knowledge_ref(
     client,
+    seeded_session_factory,
     generation_test_stubs,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """教案引用不存在的知识点时应写入失败批次与失败任务。"""
+    """教案引用章节范围外知识点时应写入失败批次与失败任务。"""
     _ = generation_test_stubs
     headers = build_auth_headers(client)
     project_id = create_project(client, headers)
     knowledge_version_id = create_knowledge_version(client, headers, project_id)
     learner_profile_version_id = create_learner_profile_version(client, headers, project_id)
+    scoped_chapter_id, scoped_point_id = add_extra_chapter_with_point(seeded_session_factory, knowledge_version_id)
+    session = seeded_session_factory()
+    try:
+        outside_point_id = (
+            session.query(KnowledgePoint)
+            .filter(KnowledgePoint.knowledge_version_id == knowledge_version_id, KnowledgePoint.id != scoped_point_id)
+            .order_by(KnowledgePoint.id.asc())
+            .first()
+            .id
+        )
+    finally:
+        session.close()
 
     original_generate = OpenAICompatibleLlmService.generate_structured_output
 
@@ -941,13 +1274,32 @@ def test_generation_batch_should_mark_failure_when_lesson_plan_has_invalid_knowl
                         "duration_minutes": 10,
                         "teacher_actions": ["导入"],
                         "student_activities": ["练习"],
-                        "knowledge_point_refs": [999999],
+                        "knowledge_point_refs": [outside_point_id],
                     }
                 ],
-                session_plans=[],
-                after_class_plan={},
-                learner_adjustments=[],
-                knowledge_point_refs=[999999],
+                session_plans=[
+                    {
+                        "session_no": 1,
+                        "title": "非法知识点教案",
+                        "objectives": ["验证非法引用"],
+                        "teaching_focus": ["非法引用"],
+                        "teaching_steps": [
+                            {
+                                "step_no": 1,
+                                "stage_name": "讲解",
+                                "duration_minutes": 30,
+                                "teacher_actions": ["讲解"],
+                                "student_activities": ["练习"],
+                                "knowledge_point_refs": [outside_point_id],
+                            }
+                        ],
+                        "homework": ["完成练习"],
+                        "knowledge_point_refs": [outside_point_id],
+                    }
+                ],
+                after_class_plan={"homework": ["完成练习"]},
+                learner_adjustments=["增加讲解"],
+                knowledge_point_refs=[outside_point_id],
             )
         return original_generate(self, messages=messages, response_model=response_model, temperature=temperature)
 
@@ -959,7 +1311,8 @@ def test_generation_batch_should_mark_failure_when_lesson_plan_has_invalid_knowl
             "project_id": project_id,
             "knowledge_version_id": knowledge_version_id,
             "learner_profile_version_id": learner_profile_version_id,
-            "course_count": 2,
+            "chapter_range_json": {"chapter_node_ids": [scoped_chapter_id]},
+            "course_count": 1,
             "session_duration_minutes": 90,
         },
     )

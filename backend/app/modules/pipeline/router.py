@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-26
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 生成编排模块路由
 """
@@ -32,7 +32,7 @@ def get_pipeline_service(session: Annotated[Session, Depends(get_db_session)]) -
 @router.post(
     "/generation-batches",
     summary="创建生成批次",
-    description="冻结知识版本与学情版本基线，创建生成批次并自动发起课程大纲与教案生成任务。",
+    description="冻结知识版本与学情版本基线，创建生成批次并自动发起课程大纲与教案生成任务。chapter_range_json 缺省或 chapter_node_ids 为空表示全量，非空时仅围绕选中章节及其子章节生成。",
     operation_id="pipeline_generation_batch_create",
     response_model=ApiResponse[GenerationBatchDetailResponse],
     status_code=status.HTTP_201_CREATED,

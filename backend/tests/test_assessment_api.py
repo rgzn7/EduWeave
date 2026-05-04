@@ -1,17 +1,29 @@
 """
-@Date: 2026-04-29
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 测评接口测试
 """
 
+import json
+
 import pytest
 
-from app.core.exceptions import BusinessErrorCode
+from app.core.constants import (
+    ASSESSMENT_GENERATE_TASK_TYPE,
+    ASSESSMENT_MODULE_CODE,
+    GENERATION_QUEUE_NAME,
+    TASK_STATUS_PENDING,
+)
+from app.core.exceptions import AppException, BusinessErrorCode
 from app.core.security import hash_password
 from app.modules.assessment.schemas import AssessmentGenerationResult
+from app.modules.assessment.tasks import run_generate_assessment_task
 from app.modules.auth.models import SysUser
+from app.modules.p0_models import GenerationBatch, KnowledgePoint, LessonPlan
+from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import OpenAICompatibleLlmService
 from test_pipeline_curriculum_api import (
+    add_extra_chapter_with_point,
     build_auth_headers,
     create_knowledge_version,
     create_learner_profile_version,
@@ -47,18 +59,29 @@ def build_other_auth_headers(client, seeded_session_factory) -> dict[str, str]:
     return {"Authorization": f"Bearer {access_token}"}
 
 
-def create_generation_batch(client, headers, project_id: int, knowledge_version_id: int, learner_profile_version_id: int) -> dict:
+def create_generation_batch(
+    client,
+    headers,
+    project_id: int,
+    knowledge_version_id: int,
+    learner_profile_version_id: int,
+    *,
+    chapter_range_json: dict | None = None,
+) -> dict:
     """创建完整生成批次。"""
+    request_json = {
+        "project_id": project_id,
+        "knowledge_version_id": knowledge_version_id,
+        "learner_profile_version_id": learner_profile_version_id,
+        "course_count": 2,
+        "session_duration_minutes": 90,
+    }
+    if chapter_range_json is not None:
+        request_json["chapter_range_json"] = chapter_range_json
     response = client.post(
         "/api/v1/generation-batches",
         headers=headers,
-        json={
-            "project_id": project_id,
-            "knowledge_version_id": knowledge_version_id,
-            "learner_profile_version_id": learner_profile_version_id,
-            "course_count": 2,
-            "session_duration_minutes": 90,
-        },
+        json=request_json,
     )
     assert response.status_code == 201
     return response.json()["data"]
@@ -132,16 +155,148 @@ def test_assessment_apis_should_query_results_and_protect_owner(
     assert forbidden_paper_response.json()["errors"][0]["code"] == "PAPER_RESULT_NOT_FOUND"
 
 
-def test_generation_batch_should_mark_failure_when_assessment_has_invalid_knowledge_ref(
+def test_assessment_prompt_should_follow_custom_scene_type(
     client,
     generation_test_stubs,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """按需测评引用不存在的知识点时不应把基础批次改成失败。"""
+    """测评提示词应按策略场景生成，而不是固定单元测试。"""
+    _ = generation_test_stubs
+    captured_system_prompts: list[str] = []
+    captured_user_payloads: list[dict] = []
+    original_generate = OpenAICompatibleLlmService.generate_structured_output
+
+    def capture_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
+        if response_model is AssessmentGenerationResult:
+            captured_system_prompts.append(messages[0].content)
+            captured_user_payloads.append(json.loads(messages[1].content))
+        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature)
+
+    monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", capture_generate)
+    headers = build_auth_headers(client)
+    project_id, knowledge_version_id, learner_profile_version_id = create_generation_baseline(client, headers)
+    batch_payload = create_generation_batch(client, headers, project_id, knowledge_version_id, learner_profile_version_id)
+
+    response = client.post(
+        f"/api/v1/curriculum-plans/{batch_payload['curriculum_plan_id']}/assessment-tasks",
+        headers=headers,
+        json={
+            "assessment_strategy_json": {
+                "scenario_type": "homework",
+                "scene_type": "homework",
+                "question_count": 6,
+                "question_types": ["single_choice", "fill_blank", "short_answer"],
+                "difficulty_range": [1, 5],
+            }
+        },
+    )
+
+    assert response.status_code == 201
+    assert "scene_type=homework" in captured_system_prompts[0]
+    assert "不得固定写成单元测试" in captured_system_prompts[0]
+    assert captured_user_payloads[0]["assessment_strategy"]["scene_type"] == "homework"
+    paper_id = response.json()["data"]["result_json"]["paper_result_id"]
+    paper_detail_response = client.get(f"/api/v1/paper-results/{paper_id}", headers=headers)
+    assert paper_detail_response.json()["data"]["scene_type"] == "homework"
+
+
+def test_assessment_should_reject_inconsistent_distribution(
+    client,
+    generation_test_stubs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """测评题目明细可信但分布统计漂移时应拒绝结果。"""
     _ = generation_test_stubs
     headers = build_auth_headers(client)
     project_id, knowledge_version_id, learner_profile_version_id = create_generation_baseline(client, headers)
     batch_payload = create_generation_batch(client, headers, project_id, knowledge_version_id, learner_profile_version_id)
+    original_generate = OpenAICompatibleLlmService.generate_structured_output
+
+    def mixed_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
+        if response_model is AssessmentGenerationResult:
+            user_payload = json.loads(messages[1].content)
+            point_id = int(user_payload["knowledge_points"][0]["id"])
+            question_types = ["single_choice", "fill_blank", "short_answer"]
+            questions = []
+            difficulty_distribution: dict[str, int] = {}
+            for question_no in range(1, 11):
+                question_type = question_types[(question_no - 1) % len(question_types)]
+                difficulty_level = 3
+                difficulty_distribution[str(difficulty_level)] = difficulty_distribution.get(str(difficulty_level), 0) + 1
+                questions.append(
+                    {
+                        "question_no": question_no,
+                        "knowledge_point_id": point_id,
+                        "question_type": question_type,
+                        "difficulty_level": difficulty_level,
+                        "score_value": 10,
+                        "stem_text": f"第{question_no}题：围绕乘法口诀完成练习。",
+                        "options_json": {"A": "2", "B": "4"} if question_type == "single_choice" else None,
+                        "answer_text": "参考答案",
+                        "analysis_text": "考查乘法口诀。",
+                        "source_trace_json": {"knowledge_point_ids": [point_id]},
+                    }
+                )
+            return AssessmentGenerationResult(
+                blueprint_name="统计漂移测评蓝图",
+                paper_title="统计漂移测评",
+                strategy_summary={"scene_type": "unit_test", "question_count": 10},
+                knowledge_weights=[
+                    {
+                        "knowledge_point_id": point_id,
+                        "weight_percent": 100,
+                        "suggested_question_count": 10,
+                        "question_types": question_types,
+                        "difficulty_range": [1, 5],
+                    }
+                ],
+                question_type_distribution={"single_choice": 10},
+                difficulty_distribution=difficulty_distribution,
+                questions=questions,
+            )
+        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature)
+
+    monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", mixed_generate)
+    response = client.post(
+        f"/api/v1/curriculum-plans/{batch_payload['curriculum_plan_id']}/assessment-tasks",
+        headers=headers,
+        json={},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["errors"][0]["code"] == BusinessErrorCode.LLM_RESULT_INVALID.value
+
+
+def test_generation_batch_should_mark_failure_when_assessment_has_invalid_knowledge_ref(
+    client,
+    seeded_session_factory,
+    generation_test_stubs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """按需测评引用章节范围外知识点时不应把基础批次改成失败。"""
+    _ = generation_test_stubs
+    headers = build_auth_headers(client)
+    project_id, knowledge_version_id, learner_profile_version_id = create_generation_baseline(client, headers)
+    scoped_chapter_id, scoped_point_id = add_extra_chapter_with_point(seeded_session_factory, knowledge_version_id)
+    session = seeded_session_factory()
+    try:
+        outside_point_id = (
+            session.query(KnowledgePoint)
+            .filter(KnowledgePoint.knowledge_version_id == knowledge_version_id, KnowledgePoint.id != scoped_point_id)
+            .order_by(KnowledgePoint.id.asc())
+            .first()
+            .id
+        )
+    finally:
+        session.close()
+    batch_payload = create_generation_batch(
+        client,
+        headers,
+        project_id,
+        knowledge_version_id,
+        learner_profile_version_id,
+        chapter_range_json={"chapter_node_ids": [scoped_chapter_id]},
+    )
     original_generate = OpenAICompatibleLlmService.generate_structured_output
 
     def mixed_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
@@ -152,7 +307,7 @@ def test_generation_batch_should_mark_failure_when_assessment_has_invalid_knowle
                 strategy_summary={"scene_type": "unit_test", "question_count": 10},
                 knowledge_weights=[
                     {
-                        "knowledge_point_id": 999999,
+                        "knowledge_point_id": outside_point_id,
                         "weight_percent": 100,
                         "suggested_question_count": 10,
                         "question_types": ["single_choice", "fill_blank", "short_answer"],
@@ -164,7 +319,7 @@ def test_generation_batch_should_mark_failure_when_assessment_has_invalid_knowle
                 questions=[
                     {
                         "question_no": question_no,
-                        "knowledge_point_id": 999999,
+                        "knowledge_point_id": outside_point_id,
                         "question_type": "single_choice" if question_no <= 4 else "fill_blank" if question_no <= 7 else "short_answer",
                         "difficulty_level": 3,
                         "score_value": 10,
@@ -172,7 +327,7 @@ def test_generation_batch_should_mark_failure_when_assessment_has_invalid_knowle
                         "options_json": {"A": "1", "B": "2"} if question_no <= 4 else None,
                         "answer_text": "参考答案",
                         "analysis_text": "用于验证非法知识点引用。",
-                        "source_trace_json": {"knowledge_point_ids": [999999]},
+                        "source_trace_json": {"knowledge_point_ids": [outside_point_id]},
                     }
                     for question_no in range(1, 11)
                 ],
@@ -209,3 +364,95 @@ def test_generation_batch_should_mark_failure_when_assessment_has_invalid_knowle
     assert tasks[2]["task_status"] == "success"
     assert tasks[3]["task_status"] == "failure"
     assert tasks[3]["last_error_code"] == BusinessErrorCode.LLM_RESULT_INVALID.value
+
+
+def test_assessment_should_require_existing_lesson_plan(
+    client,
+    seeded_session_factory,
+    generation_test_stubs,
+) -> None:
+    """按需测评在服务层和任务层都应要求批次已有教案。"""
+    _ = generation_test_stubs
+    headers = build_auth_headers(client)
+    project_id, knowledge_version_id, learner_profile_version_id = create_generation_baseline(client, headers)
+    batch_payload = create_generation_batch(client, headers, project_id, knowledge_version_id, learner_profile_version_id)
+
+    session = seeded_session_factory()
+    try:
+        batch = session.query(GenerationBatch).filter(GenerationBatch.id == batch_payload["id"]).one()
+        batch.lesson_plan_id = None
+        for lesson_plan in session.query(LessonPlan).filter(LessonPlan.generation_batch_id == batch.id).all():
+            session.delete(lesson_plan)
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.post(
+        f"/api/v1/curriculum-plans/{batch_payload['curriculum_plan_id']}/assessment-tasks",
+        headers=headers,
+        json={},
+    )
+    assert response.status_code == 422
+    assert response.json()["errors"][0]["code"] == BusinessErrorCode.GENERATION_BASELINE_INVALID.value
+
+    session = seeded_session_factory()
+    try:
+        task_repository = TaskCenterRepository(session)
+        task = task_repository.create_task(
+            project_id=project_id,
+            generation_batch_id=batch_payload["id"],
+            module_code=ASSESSMENT_MODULE_CODE,
+            task_type=ASSESSMENT_GENERATE_TASK_TYPE,
+            task_status=TASK_STATUS_PENDING,
+            queue_name=GENERATION_QUEUE_NAME,
+            biz_key=f"generation_batch:{batch_payload['id']}:assessment:unit_test",
+            operator_user_id=None,
+            payload_json={
+                "generation_batch_id": batch_payload["id"],
+                "curriculum_plan_id": batch_payload["curriculum_plan_id"],
+                "assessment_strategy_json": None,
+            },
+            request_id=None,
+        )
+        for step_order, (step_code, step_name) in enumerate(
+            [
+                ("prepare_assessment_baseline", "准备测评生成基线"),
+                ("invoke_llm_assessment", "调用 LLM 生成测评"),
+                ("persist_assessment_result", "落库测评蓝图与试卷"),
+                ("finalize_assessment_task", "完成测评任务"),
+            ],
+            start=1,
+        ):
+            task_repository.create_task_step(
+                task_record_id=task.id,
+                step_code=step_code,
+                step_name=step_name,
+                step_order=step_order,
+                step_status=TASK_STATUS_PENDING,
+            )
+        database_url = session.get_bind().url.render_as_string(hide_password=False)
+        session.commit()
+        task_id = task.id
+    finally:
+        session.close()
+
+    with pytest.raises(AppException) as exc_info:
+        run_generate_assessment_task(
+            {
+                "task_record_id": task_id,
+                "generation_batch_id": batch_payload["id"],
+                "curriculum_plan_id": batch_payload["curriculum_plan_id"],
+                "assessment_strategy_json": None,
+                "operator_user_id": None,
+                "database_url": database_url,
+            }
+        )
+    assert exc_info.value.code == BusinessErrorCode.GENERATION_BASELINE_INVALID
+
+    session = seeded_session_factory()
+    try:
+        failed_task = TaskCenterRepository(session).get_task_by_id(task_id)
+        assert failed_task.task_status == "failure"
+        assert failed_task.last_error_code == BusinessErrorCode.GENERATION_BASELINE_INVALID.value
+    finally:
+        session.close()

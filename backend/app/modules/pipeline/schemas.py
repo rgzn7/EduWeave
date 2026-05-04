@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-26
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 生成编排模块请求与响应模型
 """
@@ -22,7 +22,7 @@ class GenerationBatchCreateRequest(BaseSchema):
     batch_name: str | None = Field(default=None, description="批次名称", max_length=255, examples=["第一轮课程规划"])
     chapter_range_json: dict[str, Any] | None = Field(
         default=None,
-        description="章节范围快照",
+        description="章节范围快照；缺省或 chapter_node_ids 为空表示全量，非空 chapter_node_ids 表示选中章节及其子章节",
         examples=[{"chapter_node_ids": [1, 2]}],
     )
     course_count: int = Field(description="总课次", ge=1, le=120, examples=[12])

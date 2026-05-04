@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-26
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 教案模块请求与响应模型
 """
@@ -7,9 +7,16 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from app.schemas.base import BaseSchema
+
+
+def _validate_non_blank_string_list(values: list[str]) -> list[str]:
+    """校验字符串列表不包含空内容。"""
+    if any(not item.strip() for item in values):
+        raise ValueError("列表内容不能为空")
+    return values
 
 
 class LessonPlanListItemResponse(BaseSchema):
@@ -41,9 +48,15 @@ class LessonPlanTeachingStepDraft(BaseSchema):
     step_no: int = Field(description="步骤序号", ge=1, examples=[1])
     stage_name: str = Field(description="教学环节名称", min_length=1, max_length=128, examples=["导入"])
     duration_minutes: int | None = Field(default=None, description="环节时长", ge=1, examples=[10])
-    teacher_actions: list[str] = Field(default_factory=list, description="教师动作")
-    student_activities: list[str] = Field(default_factory=list, description="学生活动")
-    knowledge_point_refs: list[int] = Field(default_factory=list, description="关联知识点主键列表")
+    teacher_actions: list[str] = Field(description="教师动作", min_length=1)
+    student_activities: list[str] = Field(description="学生活动", min_length=1)
+    knowledge_point_refs: list[int] = Field(description="关联知识点主键列表", min_length=1)
+
+    @field_validator("teacher_actions", "student_activities")
+    @classmethod
+    def validate_non_blank_string_items(cls, value: list[str]) -> list[str]:
+        """校验教学动作不为空字符串。"""
+        return _validate_non_blank_string_list(value)
 
 
 class LessonPlanSessionDraft(BaseSchema):
@@ -51,11 +64,17 @@ class LessonPlanSessionDraft(BaseSchema):
 
     session_no: int = Field(description="课次序号", ge=1, examples=[1])
     title: str = Field(description="课次标题", min_length=1, max_length=255, examples=["第1讲 乘法口诀训练"])
-    objectives: list[str] = Field(default_factory=list, description="课次目标")
-    teaching_focus: list[str] = Field(default_factory=list, description="教学重点")
-    teaching_steps: list[LessonPlanTeachingStepDraft] = Field(default_factory=list, description="教学步骤")
-    homework: list[str] = Field(default_factory=list, description="课后任务")
-    knowledge_point_refs: list[int] = Field(default_factory=list, description="关联知识点主键列表")
+    objectives: list[str] = Field(description="课次目标", min_length=1)
+    teaching_focus: list[str] = Field(description="教学重点", min_length=1)
+    teaching_steps: list[LessonPlanTeachingStepDraft] = Field(description="教学步骤", min_length=1)
+    homework: list[str] = Field(description="课后任务", min_length=1)
+    knowledge_point_refs: list[int] = Field(description="关联知识点主键列表", min_length=1)
+
+    @field_validator("objectives", "teaching_focus", "homework")
+    @classmethod
+    def validate_non_blank_string_items(cls, value: list[str]) -> list[str]:
+        """校验课次文本列表不为空字符串。"""
+        return _validate_non_blank_string_list(value)
 
 
 class LessonPlanGenerationResult(BaseSchema):
@@ -63,14 +82,20 @@ class LessonPlanGenerationResult(BaseSchema):
 
     lesson_title: str = Field(description="教案标题", min_length=1, max_length=255)
     summary_text: str | None = Field(default=None, description="教案摘要")
-    course_overview: dict[str, Any] = Field(default_factory=dict, description="课程概述")
-    material_list: list[str] = Field(default_factory=list, description="物料清单")
-    core_knowledge: list[str] = Field(default_factory=list, description="核心知识")
-    teaching_flow: list[LessonPlanTeachingStepDraft] = Field(default_factory=list, description="标准行课流程")
-    session_plans: list[LessonPlanSessionDraft] = Field(default_factory=list, description="课次讲解安排")
-    after_class_plan: dict[str, Any] = Field(default_factory=dict, description="课后安排")
-    learner_adjustments: list[str] = Field(default_factory=list, description="学情适配策略")
-    knowledge_point_refs: list[int] = Field(default_factory=list, description="教案整体关联知识点主键列表")
+    course_overview: dict[str, Any] = Field(description="课程概述", min_length=1)
+    material_list: list[str] = Field(description="物料清单", min_length=1)
+    core_knowledge: list[str] = Field(description="核心知识", min_length=1)
+    teaching_flow: list[LessonPlanTeachingStepDraft] = Field(description="标准行课流程", min_length=1)
+    session_plans: list[LessonPlanSessionDraft] = Field(description="课次讲解安排", min_length=1)
+    after_class_plan: dict[str, Any] = Field(description="课后安排", min_length=1)
+    learner_adjustments: list[str] = Field(description="学情适配策略", min_length=1)
+    knowledge_point_refs: list[int] = Field(description="教案整体关联知识点主键列表", min_length=1)
+
+    @field_validator("material_list", "core_knowledge", "learner_adjustments")
+    @classmethod
+    def validate_non_blank_string_items(cls, value: list[str]) -> list[str]:
+        """校验教案文本列表不为空字符串。"""
+        return _validate_non_blank_string_list(value)
 
     @model_validator(mode="after")
     def validate_session_no_unique(self) -> "LessonPlanGenerationResult":

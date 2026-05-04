@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-26
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 教案模块任务执行能力
 """
@@ -27,6 +27,7 @@ from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
 from app.shared.queue import dispatch_task
 from app.shared.utils import DateTimeUtil
+from app.shared.utils.chapter_range_util import build_chapter_range_selection, filter_knowledge_points_by_chapter_selection
 
 
 def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
@@ -71,13 +72,22 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "课程大纲版本不可用")
         project = repository.get_project(curriculum_plan.project_id)
         profile_version = repository.get_learner_profile_version(curriculum_plan.learner_profile_version_id)
-        knowledge_points = repository.list_knowledge_points(curriculum_plan.knowledge_version_id)
+        all_knowledge_points = repository.list_knowledge_points(generation_batch.knowledge_version_id)
+        chapters = repository.list_chapter_nodes(generation_batch.knowledge_version_id)
+        chapter_selection = build_chapter_range_selection(
+            chapters=chapters,
+            chapter_range_json=generation_batch.chapter_range_json,
+        )
+        knowledge_points = filter_knowledge_points_by_chapter_selection(
+            knowledge_points=all_knowledge_points,
+            selection=chapter_selection,
+        )
         profile_records = repository.list_profile_records(curriculum_plan.learner_profile_version_id)
         if project is None:
             raise AppException(BusinessErrorCode.PROJECT_NOT_FOUND, "项目不存在")
         if profile_version is None:
             raise AppException(BusinessErrorCode.LEARNER_PROFILE_NOT_FOUND, "学情版本不存在")
-        if not knowledge_points:
+        if not all_knowledge_points:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "课程大纲绑定的知识版本缺少知识点")
         if not profile_records:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "课程大纲绑定的学情版本缺少画像记录")
@@ -91,6 +101,10 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
                 "curriculum_plan_id": curriculum_plan.id,
                 "knowledge_version_id": curriculum_plan.knowledge_version_id,
                 "learner_profile_version_id": curriculum_plan.learner_profile_version_id,
+                "chapter_range_scoped": chapter_selection.is_scoped,
+                "requested_chapter_ids": chapter_selection.requested_chapter_ids,
+                "effective_chapter_ids": chapter_selection.effective_chapter_ids,
+                "total_knowledge_version_point_count": len(all_knowledge_points),
                 "knowledge_point_count": len(knowledge_points),
                 "profile_record_count": len(profile_records),
                 "lesson_session_count": len(lesson_sessions),
@@ -330,6 +344,7 @@ def _build_lesson_plan_messages(
         "其 session_no 必须等于 target_lesson_session.session_no。"
         "teaching_flow 和 session_plans 中的 knowledge_point_refs 必须只引用输入中的知识点 id。"
         "教案需覆盖课程概述、物料清单、核心知识、导入、讲解、练习、总结和课后安排。"
+        "不得返回空数组或空对象骨架；教师动作、学生活动、课次目标、教学重点、课后任务和学情适配都必须有可执行内容。"
         "不要输出 Markdown、解释文字或代码块。"
     )
     return [

@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-29
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 测评模块业务服务
 """
@@ -59,6 +59,8 @@ class AssessmentService:
         generation_batch = self.repository.get_generation_batch_by_curriculum_plan(curriculum_plan.id)
         if generation_batch is None:
             raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "课程大纲未关联生成批次")
+        if not self.repository.list_lesson_plans_by_batch(generation_batch.id):
+            raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "测评生成前必须先完成至少一份教案")
 
         strategy = _normalize_assessment_strategy(
             request.assessment_strategy_json or generation_batch.assessment_strategy_json

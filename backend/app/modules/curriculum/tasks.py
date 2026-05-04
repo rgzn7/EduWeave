@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-26
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 课程大纲模块任务执行能力
 """
@@ -29,6 +29,7 @@ from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
 from app.shared.queue import dispatch_task
 from app.shared.utils import DateTimeUtil
+from app.shared.utils.chapter_range_util import build_chapter_range_selection, filter_knowledge_points_by_chapter_selection
 
 
 def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
@@ -85,6 +86,15 @@ def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "知识版本缺少章节或知识点")
         if not profile_records:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "学情版本缺少画像记录")
+        chapter_selection = build_chapter_range_selection(
+            chapters=chapters,
+            chapter_range_json=generation_batch.chapter_range_json,
+        )
+        scoped_chapters = chapter_selection.chapters
+        scoped_knowledge_points = filter_knowledge_points_by_chapter_selection(
+            knowledge_points=knowledge_points,
+            selection=chapter_selection,
+        )
 
         _mark_step(
             step_map["prepare_generation_baseline"],
@@ -93,8 +103,11 @@ def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
             detail_json={
                 "knowledge_version_id": knowledge_version.id,
                 "learner_profile_version_id": profile_version.id,
-                "chapter_count": len(chapters),
-                "knowledge_point_count": len(knowledge_points),
+                "chapter_count": len(scoped_chapters),
+                "knowledge_point_count": len(scoped_knowledge_points),
+                "chapter_range_scoped": chapter_selection.is_scoped,
+                "requested_chapter_ids": chapter_selection.requested_chapter_ids,
+                "effective_chapter_ids": chapter_selection.effective_chapter_ids,
                 "profile_record_count": len(profile_records),
             },
             finished_at=DateTimeUtil.now_utc(),
@@ -111,9 +124,14 @@ def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
             generation_batch=generation_batch,
             knowledge_version=knowledge_version,
             profile_version=profile_version,
-            chapters=chapters,
-            knowledge_points=knowledge_points,
+            chapters=scoped_chapters,
+            knowledge_points=scoped_knowledge_points,
             profile_records=profile_records,
+            chapter_range_scope={
+                "is_scoped": chapter_selection.is_scoped,
+                "requested_chapter_ids": chapter_selection.requested_chapter_ids,
+                "effective_chapter_ids": chapter_selection.effective_chapter_ids,
+            },
         )
         generation_result = llm_service.generate_structured_output(
             messages=llm_messages,
@@ -122,7 +140,7 @@ def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
         _validate_curriculum_result(
             generation_result,
             course_count=int(generation_batch.course_count or 0),
-            knowledge_point_ids={point.id for point in knowledge_points},
+            knowledge_point_ids={point.id for point in scoped_knowledge_points},
         )
 
         _mark_step(
@@ -258,6 +276,7 @@ def _build_curriculum_messages(
     chapters: list,
     knowledge_points: list,
     profile_records: list,
+    chapter_range_scope: dict[str, Any],
 ) -> list[ChatMessage]:
     """构造课程大纲生成提示词。"""
     chapter_payload = [
@@ -321,6 +340,7 @@ def _build_curriculum_messages(
         "knowledge_version": {
             "id": knowledge_version.id,
             "summary_json": knowledge_version.summary_json,
+            "chapter_range_scope": chapter_range_scope,
             "chapters": chapter_payload,
             "knowledge_points": point_payload,
         },
@@ -334,6 +354,8 @@ def _build_curriculum_messages(
     }
     system_prompt = (
         "你是课程大纲生成助手。请基于教材知识结构和学生学情生成中文课程大纲。"
+        "若 generation_batch.chapter_range_json 指定了章节范围，输入的教材章节和知识点已经被收敛到该范围，"
+        "必须只围绕该局部范围规划课程。"
         "必须严格输出 JSON 对象，字段包含 plan_title、summary_text、course_overview、stage_goals、"
         "lesson_sessions、key_points、difficult_points、learner_adjustments、coverage_knowledge_points。"
         "lesson_sessions 数量必须等于 course_count，session_no 必须从 1 连续递增。"

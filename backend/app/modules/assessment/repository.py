@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-29
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 测评模块数据访问层
 """
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.constants import ASSESSMENT_GENERATE_TASK_TYPE, ASSESSMENT_MODULE_CODE, TASK_STATUS_SUCCESS
 from app.modules.p0_models import (
     AssessmentBlueprint,
+    ChapterNode,
     CurriculumPlan,
     GenerationBatch,
     KnowledgePoint,
@@ -71,6 +72,15 @@ class AssessmentRepository:
             select(KnowledgePoint)
             .where(KnowledgePoint.knowledge_version_id == knowledge_version_id)
             .order_by(KnowledgePoint.sort_order.asc(), KnowledgePoint.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
+    def list_chapter_nodes(self, knowledge_version_id: int) -> list[ChapterNode]:
+        """查询知识版本下章节节点。"""
+        statement = (
+            select(ChapterNode)
+            .where(ChapterNode.knowledge_version_id == knowledge_version_id)
+            .order_by(ChapterNode.node_path.asc(), ChapterNode.id.asc())
         )
         return list(self.session.scalars(statement))
 

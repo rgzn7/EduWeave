@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-03
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 课件模块业务服务
 """
@@ -33,6 +33,7 @@ from app.shared.ppt import RaccoonPptJobState, RaccoonPptService
 from app.shared.queue import dispatch_task
 from app.shared.storage import ObsStorageClient
 from app.shared.utils import DateTimeUtil
+from app.shared.utils.chapter_range_util import build_chapter_range_selection, filter_knowledge_points_by_chapter_selection
 
 PPTX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 RACCOON_TEMPLATE_CODE = "raccoon_default"
@@ -40,6 +41,7 @@ RACCOON_TEMPLATE_VERSION = "openapi_v2"
 RACCOON_ROLE = "教师"
 RACCOON_SCENE = "培训教学"
 RACCOON_AUDIENCE = "学生"
+COURSEWARE_KNOWLEDGE_POINT_LIMIT = 30
 
 
 class CoursewareService:
@@ -333,6 +335,27 @@ class CoursewareService:
         if profile_version is None:
             raise AppException(BusinessErrorCode.LEARNER_PROFILE_NOT_FOUND, "学情版本不存在")
 
+        chapters = self.repository.list_chapter_nodes(generation_batch.knowledge_version_id)
+        knowledge_points = self.repository.list_knowledge_points(generation_batch.knowledge_version_id)
+        chapter_selection = build_chapter_range_selection(
+            chapters=chapters,
+            chapter_range_json=generation_batch.chapter_range_json,
+        )
+        range_knowledge_points = filter_knowledge_points_by_chapter_selection(
+            knowledge_points=knowledge_points,
+            selection=chapter_selection,
+            raise_when_empty=False,
+        )
+        selected_knowledge_points, knowledge_point_selection = _select_courseware_knowledge_points(
+            knowledge_points=knowledge_points,
+            range_knowledge_points=range_knowledge_points,
+            curriculum_plan=curriculum_plan,
+            lesson_plan=lesson_plan,
+            chapter_selection=chapter_selection,
+        )
+        if not selected_knowledge_points:
+            raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "课件生成缺少可用知识点上下文")
+
         return {
             "project": project,
             "generation_batch": generation_batch,
@@ -340,7 +363,8 @@ class CoursewareService:
             "lesson_plan": lesson_plan,
             "profile_version": profile_version,
             "profile_records": self.repository.list_profile_records(profile_version.id),
-            "knowledge_points": self.repository.list_knowledge_points(generation_batch.knowledge_version_id),
+            "knowledge_points": selected_knowledge_points,
+            "knowledge_point_selection": knowledge_point_selection,
             "paper_result": self.repository.get_paper_result_by_batch(generation_batch.id),
         }
 
@@ -355,6 +379,7 @@ class CoursewareService:
         knowledge_points = context["knowledge_points"]
         profile_records = context["profile_records"]
         paper_result = context["paper_result"]
+        knowledge_point_selection = context["knowledge_point_selection"]
 
         payload = {
             "项目": {
@@ -404,8 +429,9 @@ class CoursewareService:
                     "难度": point.difficulty_level,
                     "摘要": point.summary_text,
                 }
-                for point in knowledge_points[:30]
+                for point in knowledge_points
             ],
+            "知识点选择": knowledge_point_selection,
             "测评": {"试卷": paper_result.paper_json if paper_result is not None else None},
         }
         return (
@@ -597,3 +623,149 @@ class CoursewareService:
         if not job_id:
             raise AppException(BusinessErrorCode.RACCOON_RESULT_INVALID, "课件结果缺少 Raccoon 任务ID")
         return str(job_id)
+
+
+def _select_courseware_knowledge_points(
+    *,
+    knowledge_points: list,
+    range_knowledge_points: list,
+    curriculum_plan,
+    lesson_plan,
+    chapter_selection,
+) -> tuple[list, dict[str, Any]]:
+    """按教案、课次、章节范围优先级选择课件知识点上下文。"""
+    lesson_ref_ids = _collect_knowledge_point_refs(lesson_plan.content_json or {})
+    if lesson_ref_ids:
+        selected_points = _pick_knowledge_points_by_ids(knowledge_points, lesson_ref_ids, preserve_ref_order=True)
+        return _build_courseware_knowledge_point_selection(
+            source="lesson_plan",
+            selected_points=selected_points,
+            ref_ids=lesson_ref_ids,
+            chapter_selection=chapter_selection,
+        )
+
+    curriculum_session = _find_curriculum_lesson_session(curriculum_plan, lesson_plan.class_session_no)
+    curriculum_ref_ids = _collect_knowledge_point_refs(curriculum_session or {})
+    if curriculum_ref_ids:
+        selected_points = _pick_knowledge_points_by_ids(knowledge_points, curriculum_ref_ids, preserve_ref_order=True)
+        return _build_courseware_knowledge_point_selection(
+            source="curriculum_lesson_session",
+            selected_points=selected_points,
+            ref_ids=curriculum_ref_ids,
+            chapter_selection=chapter_selection,
+        )
+
+    fallback_source = "chapter_range" if chapter_selection.is_scoped else "knowledge_version"
+    return _build_courseware_knowledge_point_selection(
+        source=fallback_source,
+        selected_points=range_knowledge_points,
+        ref_ids=[],
+        chapter_selection=chapter_selection,
+    )
+
+
+def _collect_knowledge_point_refs(payload: Any) -> list[int]:
+    """递归收集结构化内容中的知识点引用。"""
+    ref_ids: list[int] = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key == "knowledge_point_refs" and isinstance(value, list):
+                ref_ids.extend(_normalize_ref_ids(value))
+                continue
+            ref_ids.extend(_collect_knowledge_point_refs(value))
+    elif isinstance(payload, list):
+        for item in payload:
+            ref_ids.extend(_collect_knowledge_point_refs(item))
+    return _deduplicate_ids(ref_ids)
+
+
+def _normalize_ref_ids(values: list) -> list[int]:
+    """归一化知识点引用主键。"""
+    ref_ids: list[int] = []
+    for value in values:
+        try:
+            ref_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if ref_id > 0:
+            ref_ids.append(ref_id)
+    return ref_ids
+
+
+def _deduplicate_ids(values: list[int]) -> list[int]:
+    """按出现顺序去重。"""
+    deduplicated_values: list[int] = []
+    for value in values:
+        if value not in deduplicated_values:
+            deduplicated_values.append(value)
+    return deduplicated_values
+
+
+def _pick_knowledge_points_by_ids(knowledge_points: list, ref_ids: list[int], *, preserve_ref_order: bool) -> list:
+    """按引用顺序或知识点原始排序返回命中的知识点。"""
+    if preserve_ref_order:
+        point_map = {int(point.id): point for point in knowledge_points}
+        return [point_map[ref_id] for ref_id in ref_ids if ref_id in point_map]
+    ref_id_set = set(ref_ids)
+    return [point for point in knowledge_points if int(point.id) in ref_id_set]
+
+
+def _find_curriculum_lesson_session(curriculum_plan, class_session_no: int | None) -> dict[str, Any] | None:
+    """查找当前课次对应的课程大纲课次安排。"""
+    if class_session_no is None:
+        return None
+    content_json = curriculum_plan.content_json or {}
+    lesson_sessions = content_json.get("lesson_sessions") if isinstance(content_json, dict) else None
+    if not isinstance(lesson_sessions, list):
+        return None
+    for lesson_session in lesson_sessions:
+        if not isinstance(lesson_session, dict):
+            continue
+        if int(lesson_session.get("session_no") or 0) == int(class_session_no):
+            return lesson_session
+    return None
+
+
+def _build_courseware_knowledge_point_selection(
+    *,
+    source: str,
+    selected_points: list,
+    ref_ids: list[int],
+    chapter_selection,
+) -> tuple[list, dict[str, Any]]:
+    """限制课件知识点体量并返回选择摘要。"""
+    original_count = len(selected_points)
+    limited_points = selected_points[:COURSEWARE_KNOWLEDGE_POINT_LIMIT]
+    meta = _build_knowledge_point_selection_meta(
+        source=source,
+        selected_points=limited_points,
+        ref_ids=ref_ids,
+        chapter_selection=chapter_selection,
+        original_count=original_count,
+    )
+    return limited_points, meta
+
+
+def _build_knowledge_point_selection_meta(
+    *,
+    source: str,
+    selected_points: list,
+    ref_ids: list[int],
+    chapter_selection,
+    original_count: int,
+) -> dict[str, Any]:
+    """构造课件知识点选择摘要。"""
+    truncated_count = max(original_count - len(selected_points), 0)
+    return {
+        "source": source,
+        "ref_ids": ref_ids,
+        "knowledge_point_ids": [int(point.id) for point in selected_points],
+        "limit": COURSEWARE_KNOWLEDGE_POINT_LIMIT,
+        "original_count": original_count,
+        "selected_count": len(selected_points),
+        "truncated_count": truncated_count,
+        "is_truncated": truncated_count > 0,
+        "chapter_range_scoped": chapter_selection.is_scoped,
+        "requested_chapter_ids": chapter_selection.requested_chapter_ids,
+        "effective_chapter_ids": chapter_selection.effective_chapter_ids,
+    }

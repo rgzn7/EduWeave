@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-03
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 测评模块任务执行能力
 """
@@ -24,6 +24,7 @@ from app.modules.p0_models import AssessmentBlueprint, PaperResult, QuestionItem
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
 from app.shared.utils import DateTimeUtil
+from app.shared.utils.chapter_range_util import build_chapter_range_selection, filter_knowledge_points_by_chapter_selection
 
 DEFAULT_ASSESSMENT_STRATEGY = {
     "scenario_type": "unit_test",
@@ -73,12 +74,23 @@ def run_generate_assessment_task(payload: dict) -> dict[str, int | str]:
         if curriculum_plan.version_status != VERSION_STATUS_READY:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "课程大纲版本不可用")
         project = repository.get_project(curriculum_plan.project_id)
-        knowledge_points = repository.list_knowledge_points(curriculum_plan.knowledge_version_id)
+        all_knowledge_points = repository.list_knowledge_points(generation_batch.knowledge_version_id)
+        chapters = repository.list_chapter_nodes(generation_batch.knowledge_version_id)
+        chapter_selection = build_chapter_range_selection(
+            chapters=chapters,
+            chapter_range_json=generation_batch.chapter_range_json,
+        )
+        knowledge_points = filter_knowledge_points_by_chapter_selection(
+            knowledge_points=all_knowledge_points,
+            selection=chapter_selection,
+        )
         lesson_plans = repository.list_lesson_plans_by_batch(generation_batch.id)
         if project is None:
             raise AppException(BusinessErrorCode.PROJECT_NOT_FOUND, "项目不存在")
-        if not knowledge_points:
+        if not all_knowledge_points:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "课程大纲绑定的知识版本缺少知识点")
+        if not lesson_plans:
+            raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "测评生成前必须先完成至少一份教案")
 
         strategy = _normalize_assessment_strategy(
             payload.get("assessment_strategy_json") or generation_batch.assessment_strategy_json
@@ -90,6 +102,10 @@ def run_generate_assessment_task(payload: dict) -> dict[str, int | str]:
             detail_json={
                 "curriculum_plan_id": curriculum_plan.id,
                 "knowledge_version_id": curriculum_plan.knowledge_version_id,
+                "chapter_range_scoped": chapter_selection.is_scoped,
+                "requested_chapter_ids": chapter_selection.requested_chapter_ids,
+                "effective_chapter_ids": chapter_selection.effective_chapter_ids,
+                "total_knowledge_version_point_count": len(all_knowledge_points),
                 "knowledge_point_count": len(knowledge_points),
                 "lesson_plan_count": len(lesson_plans),
                 "assessment_strategy": strategy,
@@ -307,8 +323,13 @@ def _build_assessment_messages(
         "knowledge_points": point_payload,
         "assessment_strategy": strategy,
     }
+    scene_type = str(strategy["scene_type"])
+    scenario_type = str(strategy["scenario_type"])
     system_prompt = (
-        "你是测评蓝图和试卷生成助手。请基于课程大纲、批次内教案和知识点生成中文单元测试蓝图与题目。"
+        "你是测评蓝图和题目生成助手。"
+        f"当前策略场景为 scene_type={scene_type}、scenario_type={scenario_type}，"
+        "请基于课程大纲、批次内教案和知识点生成与该场景一致的中文测评蓝图与题目，"
+        "不得固定写成单元测试；blueprint_name、paper_title、strategy_summary 和题目语境必须体现当前场景。"
         "必须严格输出 JSON 对象，字段包含 blueprint_name、paper_title、strategy_summary、"
         "knowledge_weights、question_type_distribution、difficulty_distribution、questions。"
         "questions 数量必须等于 assessment_strategy.question_count，question_no 必须从 1 连续递增。"
@@ -376,6 +397,104 @@ def _validate_assessment_result(
             "LLM 返回了不符合策略的难度等级",
             {"difficulty_levels": sorted(set(invalid_difficulties))},
         )
+    _validate_distribution_consistency(
+        field_name="question_type_distribution",
+        actual_distribution=_build_question_type_distribution(result),
+        reported_distribution=result.question_type_distribution,
+    )
+    _validate_distribution_consistency(
+        field_name="difficulty_distribution",
+        actual_distribution=_build_question_difficulty_distribution(result),
+        reported_distribution=result.difficulty_distribution,
+    )
+    _validate_knowledge_weight_consistency(result, expected_question_count=expected_question_count)
+
+
+def _validate_distribution_consistency(
+    *,
+    field_name: str,
+    actual_distribution: dict[str, int],
+    reported_distribution: dict[str, int],
+) -> None:
+    """校验 LLM 汇总分布与题目明细统计一致。"""
+    normalized_distribution = {str(key): int(value) for key, value in reported_distribution.items()}
+    if normalized_distribution != actual_distribution:
+        raise AppException(
+            BusinessErrorCode.LLM_RESULT_INVALID,
+            f"LLM 返回的{field_name}与题目明细不一致",
+            {
+                "expected_distribution": actual_distribution,
+                "actual_distribution": normalized_distribution,
+            },
+        )
+
+
+def _validate_knowledge_weight_consistency(
+    result: AssessmentGenerationResult,
+    *,
+    expected_question_count: int,
+) -> None:
+    """校验知识点权重摘要与题目明细一致。"""
+    actual_counts: dict[int, int] = {}
+    for question in result.questions:
+        actual_counts[question.knowledge_point_id] = actual_counts.get(question.knowledge_point_id, 0) + 1
+
+    weight_ids = [item.knowledge_point_id for item in result.knowledge_weights]
+    if len(set(weight_ids)) != len(weight_ids):
+        raise AppException(
+            BusinessErrorCode.LLM_RESULT_INVALID,
+            "LLM 返回的知识点权重包含重复知识点",
+            {"knowledge_point_ids": weight_ids},
+        )
+    reported_counts = {item.knowledge_point_id: int(item.suggested_question_count) for item in result.knowledge_weights}
+    if reported_counts != actual_counts:
+        raise AppException(
+            BusinessErrorCode.LLM_RESULT_INVALID,
+            "LLM 返回的知识点建议题量与题目明细不一致",
+            {"expected_knowledge_counts": actual_counts, "actual_knowledge_counts": reported_counts},
+        )
+
+    if sum(reported_counts.values()) != expected_question_count:
+        raise AppException(
+            BusinessErrorCode.LLM_RESULT_INVALID,
+            "LLM 返回的知识点建议题量汇总与总题量不一致",
+            {"expected_question_count": expected_question_count, "actual_question_count": sum(reported_counts.values())},
+        )
+
+    missing_weight_ids = [item.knowledge_point_id for item in result.knowledge_weights if item.weight_percent is None]
+    if missing_weight_ids:
+        raise AppException(
+            BusinessErrorCode.LLM_RESULT_INVALID,
+            "LLM 返回的知识点权重百分比不能为空",
+            {"knowledge_point_ids": missing_weight_ids},
+        )
+
+    total_weight_percent = sum(float(item.weight_percent or 0) for item in result.knowledge_weights)
+    if abs(total_weight_percent - 100.0) > 1.0:
+        raise AppException(
+            BusinessErrorCode.LLM_RESULT_INVALID,
+            "LLM 返回的知识点权重百分比汇总不为 100",
+            {"expected_weight_percent": 100.0, "actual_weight_percent": total_weight_percent, "tolerance": 1.0},
+        )
+
+    invalid_weight_percents = []
+    for item in result.knowledge_weights:
+        expected_percent = actual_counts[item.knowledge_point_id] / expected_question_count * 100
+        actual_percent = float(item.weight_percent or 0)
+        if abs(actual_percent - expected_percent) > 1.0:
+            invalid_weight_percents.append(
+                {
+                    "knowledge_point_id": item.knowledge_point_id,
+                    "expected_weight_percent": expected_percent,
+                    "actual_weight_percent": actual_percent,
+                }
+            )
+    if invalid_weight_percents:
+        raise AppException(
+            BusinessErrorCode.LLM_RESULT_INVALID,
+            "LLM 返回的知识点权重百分比与题目明细不一致",
+            {"items": invalid_weight_percents, "tolerance": 1.0},
+        )
 
 
 def _build_blueprint_content_json(result: AssessmentGenerationResult) -> dict[str, Any]:
@@ -386,6 +505,24 @@ def _build_blueprint_content_json(result: AssessmentGenerationResult) -> dict[st
         "question_type_distribution": result.question_type_distribution,
         "difficulty_distribution": result.difficulty_distribution,
     }
+
+
+def _build_question_type_distribution(result: AssessmentGenerationResult) -> dict[str, int]:
+    """根据题目明细统计题型分布。"""
+    stats: dict[str, int] = {}
+    for question in result.questions:
+        key = str(question.question_type)
+        stats[key] = stats.get(key, 0) + 1
+    return stats
+
+
+def _build_question_difficulty_distribution(result: AssessmentGenerationResult) -> dict[str, int]:
+    """根据题目明细统计难度分布。"""
+    stats: dict[str, int] = {}
+    for question in result.questions:
+        key = str(question.difficulty_level)
+        stats[key] = stats.get(key, 0) + 1
+    return stats
 
 
 def _build_paper_json(result: AssessmentGenerationResult, *, strategy: dict[str, Any]) -> dict[str, Any]:
@@ -401,13 +538,7 @@ def _build_paper_json(result: AssessmentGenerationResult, *, strategy: dict[str,
 
 def _build_difficulty_stats(result: AssessmentGenerationResult) -> dict[str, Any]:
     """构造难度统计。"""
-    if result.difficulty_distribution:
-        return result.difficulty_distribution
-    stats: dict[str, int] = {}
-    for question in result.questions:
-        key = str(question.difficulty_level)
-        stats[key] = stats.get(key, 0) + 1
-    return stats
+    return _build_question_difficulty_distribution(result)
 
 
 def _mark_task(task, *, task_status: str, current_stage: str, progress_percent: int, started_at=None, finished_at=None, result_json: dict | None = None) -> None:

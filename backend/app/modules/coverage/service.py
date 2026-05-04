@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-03
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 覆盖率分析模块业务服务
 """
@@ -23,6 +23,7 @@ from app.modules.p0_models import CoverageReport, GenerationTrace
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.queue import dispatch_task
 from app.shared.utils import DateTimeUtil
+from app.shared.utils.chapter_range_util import build_chapter_range_selection, filter_knowledge_points_by_chapter_selection
 
 COVERAGE_REFERENCE_KEYS = {
     "knowledge_point_id",
@@ -129,9 +130,25 @@ class CoverageService:
         if generation_batch is None:
             raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "生成批次不存在")
 
-        knowledge_points = self.repository.list_knowledge_points(generation_batch.knowledge_version_id)
-        if not knowledge_points:
+        all_knowledge_points = self.repository.list_knowledge_points(generation_batch.knowledge_version_id)
+        if not all_knowledge_points:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "知识版本缺少知识点，无法分析覆盖率")
+        chapters = self.repository.list_chapter_nodes(generation_batch.knowledge_version_id)
+        chapter_selection = build_chapter_range_selection(
+            chapters=chapters,
+            chapter_range_json=generation_batch.chapter_range_json,
+        )
+        knowledge_points = filter_knowledge_points_by_chapter_selection(
+            knowledge_points=all_knowledge_points,
+            selection=chapter_selection,
+        )
+        knowledge_scope = {
+            "chapter_range_scoped": chapter_selection.is_scoped,
+            "requested_chapter_ids": chapter_selection.requested_chapter_ids,
+            "effective_chapter_ids": chapter_selection.effective_chapter_ids,
+            "total_knowledge_version_point_count": len(all_knowledge_points),
+            "scoped_knowledge_point_count": len(knowledge_points),
+        }
 
         knowledge_point_map = {point.id: point for point in knowledge_points}
         valid_ids = set(knowledge_point_map)
@@ -157,7 +174,7 @@ class CoverageService:
                 warnings.append(
                     {
                         "code": "INVALID_KNOWLEDGE_POINT_REF",
-                        "message": "成果物包含不属于当前知识版本的知识点引用",
+                        "message": "成果物包含不属于当前覆盖范围或知识版本的知识点引用",
                         "artifact_type": artifact["artifact_type"],
                         "artifact_id": artifact["artifact_id"],
                         "knowledge_point_ids": invalid_refs,
@@ -211,6 +228,7 @@ class CoverageService:
             "duplicate_knowledge_point_ids": duplicate_ids,
             "important_knowledge_point_coverage": important_coverage,
             "artifact_coverage": artifact_coverage,
+            "knowledge_scope": knowledge_scope,
             "warnings": warnings,
             "generated_at": generated_at,
         }
@@ -223,6 +241,7 @@ class CoverageService:
             "important_total_count": len(important_ids),
             "important_covered_count": len(important_covered_ids),
             "important_coverage_rate": important_rate,
+            "knowledge_scope": knowledge_scope,
         }
         trace_metadata = {
             point_id: {

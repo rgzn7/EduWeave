@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-26
+@Date: 2026-05-04
 @Author: xisy
 @Discription: 教案模块数据访问层
 """
@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.modules.p0_models import (
+    ChapterNode,
     CurriculumPlan,
     GenerationBatch,
     KnowledgePoint,
@@ -50,6 +51,15 @@ class LessonPlanRepository:
             select(KnowledgePoint)
             .where(KnowledgePoint.knowledge_version_id == knowledge_version_id)
             .order_by(KnowledgePoint.sort_order.asc(), KnowledgePoint.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
+    def list_chapter_nodes(self, knowledge_version_id: int) -> list[ChapterNode]:
+        """查询知识版本下章节节点。"""
+        statement = (
+            select(ChapterNode)
+            .where(ChapterNode.knowledge_version_id == knowledge_version_id)
+            .order_by(ChapterNode.node_path.asc(), ChapterNode.id.asc())
         )
         return list(self.session.scalars(statement))
 
