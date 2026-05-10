@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db_session
 from app.core.security import get_current_user
 from app.modules.auth.models import SysUser
+from app.modules.file_asset.schemas import FileDownloadUrlResponse
 from app.modules.lesson_plan.repository import LessonPlanRepository
 from app.modules.lesson_plan.schemas import LessonPlanDetailResponse, LessonPlanListItemResponse
 from app.modules.lesson_plan.service import LessonPlanService
@@ -73,3 +74,20 @@ def get_lesson_plan_detail(
     detail = service.get_lesson_plan_detail(owner_user_id=current_user.id, lesson_plan_id=lesson_plan_id)
     return ResponseFactory.success(detail.model_dump(mode="json"), "获取教案详情成功")
 
+
+@router.post(
+    "/lesson-plans/{lesson_plan_id}/export-docx",
+    summary="导出教案 DOCX",
+    description="将当前教师可见的教案结构化内容同步导出为 DOCX 文件，并返回签名下载地址。",
+    operation_id="lesson_plan_export_docx",
+    response_model=ApiResponse[FileDownloadUrlResponse],
+    status_code=status.HTTP_200_OK,
+)
+def export_lesson_plan_docx(
+    lesson_plan_id: int = Path(..., description="教案主键", examples=[1]),
+    service: Annotated[LessonPlanService, Depends(get_lesson_plan_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """导出教案 DOCX。"""
+    result = service.export_lesson_plan_docx(owner_user_id=current_user.id, lesson_plan_id=lesson_plan_id)
+    return ResponseFactory.success(result.model_dump(mode="json"), "导出教案 DOCX 成功")

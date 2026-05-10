@@ -15,6 +15,7 @@ from app.modules.auth.models import SysUser
 from app.modules.curriculum.repository import CurriculumRepository
 from app.modules.curriculum.schemas import CurriculumPlanDetailResponse, CurriculumPlanListItemResponse
 from app.modules.curriculum.service import CurriculumService
+from app.modules.file_asset.schemas import FileDownloadUrlResponse
 from app.schemas.response import ApiResponse, PaginatedData, ResponseFactory
 
 router = APIRouter(tags=["课程大纲"])
@@ -77,3 +78,24 @@ def get_curriculum_plan_detail(
         curriculum_plan_id=curriculum_plan_id,
     )
     return ResponseFactory.success(detail.model_dump(mode="json"), "获取课程大纲详情成功")
+
+
+@router.post(
+    "/curriculum-plans/{curriculum_plan_id}/export-docx",
+    summary="导出课程大纲 DOCX",
+    description="将当前教师可见的课程大纲结构化内容同步导出为 DOCX 文件，并返回签名下载地址。",
+    operation_id="curriculum_plan_export_docx",
+    response_model=ApiResponse[FileDownloadUrlResponse],
+    status_code=status.HTTP_200_OK,
+)
+def export_curriculum_plan_docx(
+    curriculum_plan_id: int = Path(..., description="课程大纲主键", examples=[1]),
+    service: Annotated[CurriculumService, Depends(get_curriculum_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """导出课程大纲 DOCX。"""
+    result = service.export_curriculum_plan_docx(
+        owner_user_id=current_user.id,
+        curriculum_plan_id=curriculum_plan_id,
+    )
+    return ResponseFactory.success(result.model_dump(mode="json"), "导出课程大纲 DOCX 成功")

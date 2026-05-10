@@ -7,6 +7,9 @@
 TEXTBOOK_SOURCE_BIZ_TYPE = "textbook_source"
 LEARNER_PROFILE_SOURCE_BIZ_TYPE = "learner_profile_source"
 COURSEWARE_EXPORT_BIZ_TYPE = "courseware_export"
+CURRICULUM_EXPORT_BIZ_TYPE = "curriculum_export"
+LESSON_PLAN_EXPORT_BIZ_TYPE = "lesson_plan_export"
+PAPER_EXPORT_BIZ_TYPE = "paper_export"
 
 PROJECT_MODULE_CODE = "project"
 TEXTBOOK_MODULE_CODE = "textbook"

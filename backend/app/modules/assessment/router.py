@@ -21,6 +21,7 @@ from app.modules.assessment.schemas import (
 )
 from app.modules.assessment.service import AssessmentService
 from app.modules.auth.models import SysUser
+from app.modules.file_asset.schemas import FileDownloadUrlResponse
 from app.modules.task_center.schemas import TaskListItemResponse
 from app.schemas.response import ApiResponse, PaginatedData, ResponseFactory
 
@@ -158,3 +159,21 @@ def get_paper_result_detail(
     """获取试卷结果详情。"""
     detail = service.get_paper_result_detail(owner_user_id=current_user.id, paper_result_id=paper_result_id)
     return ResponseFactory.success(detail.model_dump(mode="json"), "获取试卷结果详情成功")
+
+
+@router.post(
+    "/paper-results/{paper_result_id}/export-docx",
+    summary="导出试卷结果 DOCX",
+    description="将当前教师可见的试卷结构化内容和题目明细同步导出为 DOCX 文件，并返回签名下载地址。",
+    operation_id="paper_result_export_docx",
+    response_model=ApiResponse[FileDownloadUrlResponse],
+    status_code=status.HTTP_200_OK,
+)
+def export_paper_result_docx(
+    paper_result_id: int = Path(..., description="试卷结果主键", examples=[1]),
+    service: Annotated[AssessmentService, Depends(get_assessment_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """导出试卷结果 DOCX。"""
+    result = service.export_paper_result_docx(owner_user_id=current_user.id, paper_result_id=paper_result_id)
+    return ResponseFactory.success(result.model_dump(mode="json"), "导出试卷结果 DOCX 成功")

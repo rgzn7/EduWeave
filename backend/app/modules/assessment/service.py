@@ -10,6 +10,7 @@ from app.core.constants import (
     ASSESSMENT_GENERATE_TASK_TYPE,
     ASSESSMENT_MODULE_CODE,
     GENERATION_QUEUE_NAME,
+    PAPER_EXPORT_BIZ_TYPE,
     TASK_STATUS_PENDING,
 )
 from app.core.exceptions import AppException, BusinessErrorCode
@@ -23,9 +24,11 @@ from app.modules.assessment.schemas import (
     PaperResultListItemResponse,
     QuestionItemResponse,
 )
+from app.modules.file_asset.schemas import FileDownloadUrlResponse
 from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.schemas import TaskListItemResponse
 from app.modules.task_center.service import TaskCenterService
+from app.shared.document import DocumentExportService
 from app.shared.queue import dispatch_task
 
 DEFAULT_ASSESSMENT_STRATEGY = {
@@ -44,6 +47,7 @@ class AssessmentService:
         self.session = session
         self.repository = repository or AssessmentRepository(session)
         self.task_repository = TaskCenterRepository(session)
+        self.document_export_service = DocumentExportService(session)
 
     def create_assessment_task(
         self,
@@ -177,6 +181,32 @@ class AssessmentService:
         return PaperResultDetailResponse(
             **self.build_paper_result_response(paper_result).model_dump(),
             questions=questions,
+        )
+
+    def export_paper_result_docx(self, *, owner_user_id: int, paper_result_id: int) -> FileDownloadUrlResponse:
+        """导出试卷结果 DOCX。"""
+        paper_result = self.repository.get_paper_result_for_owner(paper_result_id, owner_user_id)
+        if paper_result is None:
+            raise AppException(BusinessErrorCode.PAPER_RESULT_NOT_FOUND, "试卷结果不存在")
+        generation_batch = self.repository.get_generation_batch(paper_result.generation_batch_id)
+        if generation_batch is None:
+            raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "生成批次不存在")
+        questions = self.repository.list_question_items(paper_result.id)
+        content = self.document_export_service.render_service.render_paper_result(paper_result, questions)
+        return self.document_export_service.archive_docx(
+            project_id=generation_batch.project_id,
+            owner_user_id=owner_user_id,
+            biz_type=PAPER_EXPORT_BIZ_TYPE,
+            object_segments=(str(generation_batch.project_id), "exports", "paper-results", str(paper_result.id)),
+            filename="paper.docx",
+            content=content,
+            metadata_json={
+                "paper_result_id": paper_result.id,
+                "generation_batch_id": paper_result.generation_batch_id,
+                "assessment_blueprint_id": paper_result.assessment_blueprint_id,
+                "scene_type": paper_result.scene_type,
+            },
+            target=paper_result,
         )
 
     @staticmethod
