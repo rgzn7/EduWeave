@@ -1,16 +1,21 @@
 """
-@Date: 2026-05-04
+@Date: 2026-05-16
 @Author: xisy
-@Discription: LLM 服务配置行为测试
+@Discription: LLM 服务配置、重试、流式与解析-修复行为测试
 """
 
+import json
+import time
 from typing import Any
 
+import httpx
+import pytest
 from pydantic import BaseModel, Field
 
 from app.core.config import Settings
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.shared.llm import ChatMessage
+from app.shared.llm.client import OpenAICompatibleLlmClient
 from app.shared.llm.service import OpenAICompatibleLlmService
 
 
@@ -26,6 +31,7 @@ class CaptureLlmClient:
     def __init__(self) -> None:
         self.payload: dict[str, Any] | None = None
         self.called_method: str | None = None
+        self.call_count: int = 0
         self.chat_completion_payload: dict[str, Any] = {"choices": [{"message": {"content": "{\"ok\": true}"}}]}
         self.response_payload: dict[str, Any] = {
             "output": [{"type": "message", "content": [{"type": "output_text", "text": "{\"ok\": true}"}]}]
@@ -34,15 +40,24 @@ class CaptureLlmClient:
     def create_chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.payload = payload
         self.called_method = "chat"
+        self.call_count += 1
         return self.chat_completion_payload
 
-    def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def create_response_stream(self, payload: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
         self.payload = payload
         self.called_method = "response"
-        return self.response_payload
+        self.call_count += 1
+        return None, self.response_payload
 
 
-def build_settings(reasoning_effort: str | None, llm_api_format: str = "response") -> Settings:
+def build_settings(
+    reasoning_effort: str | None,
+    llm_api_format: str = "response",
+    *,
+    llm_max_retries: int = 2,
+    llm_retry_base_seconds: int = 1,
+    llm_parse_repair_max_attempts: int = 2,
+) -> Settings:
     """构造测试配置。"""
     return Settings(
         app_load_dotenv=False,
@@ -55,12 +70,26 @@ def build_settings(reasoning_effort: str | None, llm_api_format: str = "response
         obs_ak="test-ak",
         obs_sk="test-sk",
         obs_bucket="test-bucket",
+        llm_api_key="test-key",
         llm_model="test-model",
         llm_api_format=llm_api_format,
         llm_reasoning_effort=reasoning_effort,
+        llm_max_retries=llm_max_retries,
+        llm_retry_base_seconds=llm_retry_base_seconds,
+        llm_parse_repair_max_attempts=llm_parse_repair_max_attempts,
         milvus_uri="http://127.0.0.1:19530",
         milvus_embedding_dim=4,
     )
+
+
+def _build_real_client(handler: Any, settings: Settings) -> OpenAICompatibleLlmClient:
+    """用 httpx.MockTransport 构造可控的真实客户端。"""
+    transport = httpx.MockTransport(handler)
+    return OpenAICompatibleLlmClient(settings=settings, http_client=httpx.Client(transport=transport, timeout=5))
+
+
+def _sse_event(event: str, data_obj: Any) -> bytes:
+    return f"event: {event}\ndata: {json.dumps(data_obj)}\n\n".encode()
 
 
 def test_structured_output_should_skip_reasoning_effort_when_not_configured() -> None:
@@ -190,21 +219,188 @@ def test_structured_output_should_extract_json_from_markdown_text() -> None:
 
 
 def test_structured_output_should_raise_when_schema_validation_failed() -> None:
-    """当 Responses 输出无法通过 Pydantic 校验时应抛业务异常。"""
+    """当输出无法通过 Pydantic 校验且无修复机会时应抛业务异常。"""
     client = CaptureLlmClient()
     client.response_payload = {
         "output": [{"type": "message", "content": [{"type": "output_text", "text": "{\"ok\": null}"}]}]
     }
-    service = OpenAICompatibleLlmService(client=client, settings=build_settings(None))
+    service = OpenAICompatibleLlmService(
+        client=client,
+        settings=build_settings(None, llm_parse_repair_max_attempts=0),
+    )
 
-    try:
+    with pytest.raises(AppException) as exc_info:
         service.generate_structured_output(
             messages=[ChatMessage(role="user", content="返回 ok")],
             response_model=DemoStructuredResponse,
         )
-    except AppException as exc:
-        assert exc.code == BusinessErrorCode.LLM_RESULT_INVALID
-        assert exc.details is not None
-        assert "errors" in exc.details
-    else:
-        raise AssertionError("结构化输出校验失败时应抛出 AppException")
+
+    assert exc_info.value.code == BusinessErrorCode.LLM_RESULT_INVALID
+    assert exc_info.value.details is not None
+    assert "errors" in exc_info.value.details
+
+
+def test_chat_completion_retries_transient_5xx(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Chat Completions 遇到 503 应重试并最终成功。"""
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(503, json={"error": "busy"})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{\"ok\": true}"}}]})
+
+    settings = build_settings(None, llm_api_format="chat", llm_max_retries=2)
+    service = OpenAICompatibleLlmService(client=_build_real_client(handler, settings), settings=settings)
+
+    result = service.generate_structured_output(
+        messages=[ChatMessage(role="user", content="返回 json ok")],
+        response_model=DemoStructuredResponse,
+    )
+
+    assert result.ok is True
+    assert calls["n"] == 2
+
+
+def test_chat_completion_raises_after_retry_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """传输层重试耗尽后应抛 LLM_REQUEST_FAILED。"""
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("connect timeout")
+
+    settings = build_settings(None, llm_api_format="chat", llm_max_retries=1)
+    service = OpenAICompatibleLlmService(client=_build_real_client(handler, settings), settings=settings)
+
+    with pytest.raises(AppException) as exc_info:
+        service.generate_structured_output(
+            messages=[ChatMessage(role="user", content="返回 json ok")],
+            response_model=DemoStructuredResponse,
+        )
+
+    assert exc_info.value.code == BusinessErrorCode.LLM_REQUEST_FAILED
+
+
+def test_structured_output_retries_when_text_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """LLM 成功返回但无文本时应重发原始调用。"""
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+
+    class MissingTextClient:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def create_response_stream(self, payload: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+            self.call_count += 1
+            if self.call_count == 1:
+                return None, {"status": "incomplete", "output": []}
+            return None, {"output_text": "{\"ok\": true}"}
+
+    client = MissingTextClient()
+    service = OpenAICompatibleLlmService(client=client, settings=build_settings(None, llm_max_retries=2))
+
+    result = service.generate_structured_output(
+        messages=[ChatMessage(role="user", content="返回 ok")],
+        response_model=DemoStructuredResponse,
+    )
+
+    assert result.ok is True
+    assert client.call_count == 2
+
+
+def test_structured_output_repairs_invalid_json_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """首次返回非法 JSON，触发修复循环并在第二次成功。"""
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+
+    class RepairClient:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def create_chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
+            self.call_count += 1
+            if self.call_count == 1:
+                return {"choices": [{"message": {"content": "这不是 JSON"}}]}
+            return {"choices": [{"message": {"content": "{\"ok\": true}"}}]}
+
+    client = RepairClient()
+    service = OpenAICompatibleLlmService(
+        client=client,
+        settings=build_settings(None, llm_api_format="chat", llm_parse_repair_max_attempts=2),
+    )
+
+    result = service.generate_structured_output(
+        messages=[ChatMessage(role="user", content="返回 json ok")],
+        response_model=DemoStructuredResponse,
+    )
+
+    assert result.ok is True
+    assert client.call_count == 2
+
+
+def test_structured_output_raises_after_repair_exhausted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """修复次数耗尽后仍非法应抛 LLM_RESULT_INVALID。"""
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+
+    class AlwaysInvalidClient:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def create_chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
+            self.call_count += 1
+            return {"choices": [{"message": {"content": "仍然不是 JSON"}}]}
+
+    client = AlwaysInvalidClient()
+    service = OpenAICompatibleLlmService(
+        client=client,
+        settings=build_settings(None, llm_api_format="chat", llm_parse_repair_max_attempts=1),
+    )
+
+    with pytest.raises(AppException) as exc_info:
+        service.generate_structured_output(
+            messages=[ChatMessage(role="user", content="返回 json ok")],
+            response_model=DemoStructuredResponse,
+        )
+
+    assert exc_info.value.code == BusinessErrorCode.LLM_RESULT_INVALID
+    assert client.call_count == 2
+
+
+def test_response_stream_accumulates_delta() -> None:
+    """Responses 流式应累积 output_text.delta 并在 [DONE] 结束。"""
+    sse = (
+        _sse_event("response.output_text.delta", {"delta": "{\"ok\": "})
+        + _sse_event("response.output_text.delta", {"delta": "true}"})
+        + b"data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+
+    settings = build_settings(None)
+    service = OpenAICompatibleLlmService(client=_build_real_client(handler, settings), settings=settings)
+
+    result = service.generate_structured_output(
+        messages=[ChatMessage(role="user", content="返回 ok")],
+        response_model=DemoStructuredResponse,
+    )
+
+    assert result.ok is True
+
+
+def test_response_stream_raises_on_error_event() -> None:
+    """Responses 流式错误事件应转换为业务异常。"""
+    sse = _sse_event("response.failed", {"error": {"message": "boom"}})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+
+    settings = build_settings(None, llm_max_retries=0)
+    service = OpenAICompatibleLlmService(client=_build_real_client(handler, settings), settings=settings)
+
+    with pytest.raises(AppException) as exc_info:
+        service.generate_structured_output(
+            messages=[ChatMessage(role="user", content="返回 ok")],
+            response_model=DemoStructuredResponse,
+        )
+
+    assert exc_info.value.code == BusinessErrorCode.LLM_REQUEST_FAILED

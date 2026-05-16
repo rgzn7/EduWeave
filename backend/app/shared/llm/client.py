@@ -1,15 +1,55 @@
 """
-@Date: 2026-05-04
+@Date: 2026-05-16
 @Author: xisy
-@Discription: OpenAI 兼容接口底层客户端
+@Discription: OpenAI 兼容接口底层客户端（含瞬时错误重试与 Responses 流式读取）
 """
 
+import json
+import time
+from collections.abc import Iterator
 from typing import Any
 
 import httpx
 
 from app.core.config import Settings, get_settings
 from app.core.exceptions import AppException, BusinessErrorCode
+
+_SSE_ERROR_EVENT_TYPES = {"error", "response.failed", "response.incomplete"}
+
+
+def _should_retry_http_error(exc: httpx.HTTPError, attempt: int, max_retries: int) -> bool:
+    """判断 LLM/Embedding HTTP 错误是否应该重试。"""
+    if attempt >= max_retries:
+        return False
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        return status_code == 429 or 500 <= status_code < 600
+    return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
+
+
+def _sleep_before_retry(attempt: int, base_seconds: int) -> None:
+    """按指数退避等待下一次重试。"""
+    time.sleep(base_seconds * (2**attempt))
+
+
+def _build_http_error_details(exc: httpx.HTTPError) -> dict[str, Any]:
+    """构造不包含敏感信息的上游 HTTP 错误详情。"""
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return {"error": str(exc)}
+    response = exc.response
+    body_text: str | None
+    try:
+        body_text = response.text
+    except httpx.ResponseNotRead:
+        body_text = None
+    if body_text:
+        try:
+            payload: Any = json.loads(body_text)
+        except ValueError:
+            payload = body_text[:1000]
+    else:
+        payload = None
+    return {"status_code": response.status_code, "payload": payload}
 
 
 class OpenAICompatibleLlmClient:
@@ -19,7 +59,7 @@ class OpenAICompatibleLlmClient:
         self.settings = settings or get_settings()
         self.http_client = http_client or httpx.Client(timeout=float(self.settings.llm_timeout_seconds))
 
-    def _build_headers(self) -> dict[str, str]:
+    def _build_headers(self, *, stream: bool = False) -> dict[str, str]:
         api_key = self.settings.llm_api_key
         if not api_key:
             raise AppException(
@@ -29,43 +69,201 @@ class OpenAICompatibleLlmClient:
         return {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "text/event-stream" if stream else "application/json",
         }
 
     def _build_url(self, path: str) -> str:
         normalized_path = path if path.startswith("/") else f"/{path}"
         return f"{self.settings.llm_api_base_url}{normalized_path}"
 
-    def create_chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """调用 OpenAI 兼容聊天补全接口。"""
+    def _require_model(self) -> None:
         if not self.settings.llm_model:
             raise AppException(
                 BusinessErrorCode.SYSTEM_CONFIG_INVALID,
                 "LLM_MODEL 未配置",
             )
-        response = self.http_client.post(
-            self._build_url("/chat/completions"),
-            headers=self._build_headers(),
-            json=payload,
-        )
-        return self._ensure_success(response)
 
-    def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """调用 OpenAI Responses 接口。"""
-        if not self.settings.llm_model:
-            raise AppException(
-                BusinessErrorCode.SYSTEM_CONFIG_INVALID,
-                "LLM_MODEL 未配置",
-            )
-        response = self.http_client.post(
-            self._build_url("/responses"),
-            headers=self._build_headers(),
-            json=payload,
-        )
-        return self._ensure_success(response)
+    def create_chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """调用 OpenAI 兼容聊天补全接口，瞬时错误最多重试 llm_max_retries 次。"""
+        self._require_model()
+        url = self._build_url("/chat/completions")
+        headers = self._build_headers()
+        max_retries = self.settings.llm_max_retries
+        for attempt in range(max_retries + 1):
+            try:
+                response = self.http_client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                return self._finalize_json(response)
+            except httpx.HTTPError as exc:
+                if not _should_retry_http_error(exc, attempt, max_retries):
+                    raise AppException(
+                        BusinessErrorCode.LLM_REQUEST_FAILED,
+                        "LLM 接口调用失败",
+                        _build_http_error_details(exc),
+                    ) from exc
+                _sleep_before_retry(attempt, self.settings.llm_retry_base_seconds)
+        raise AppException(BusinessErrorCode.LLM_REQUEST_FAILED, "LLM 接口调用失败")
+
+    def create_response_stream(self, payload: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
+        """以流式方式调用 OpenAI Responses 接口。
+
+        返回 (拼接文本或 None, 最终响应体)。非流式 /responses 在推理模型/代理下易返回空 output
+        或超时，固定使用 stream 模式并在传输层重试瞬时错误。
+        """
+        self._require_model()
+        url = self._build_url("/responses")
+        headers = self._build_headers(stream=True)
+        stream_payload = {**payload, "stream": True}
+        max_retries = self.settings.llm_max_retries
+        for attempt in range(max_retries + 1):
+            try:
+                return self._read_responses_stream(url, headers, stream_payload)
+            except httpx.HTTPError as exc:
+                if not _should_retry_http_error(exc, attempt, max_retries):
+                    raise AppException(
+                        BusinessErrorCode.LLM_REQUEST_FAILED,
+                        "LLM 接口调用失败",
+                        _build_http_error_details(exc),
+                    ) from exc
+                _sleep_before_retry(attempt, self.settings.llm_retry_base_seconds)
+        raise AppException(BusinessErrorCode.LLM_REQUEST_FAILED, "LLM 接口调用失败")
+
+    def _read_responses_stream(
+        self,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+    ) -> tuple[str | None, dict[str, Any]]:
+        """读取 Responses SSE 事件，拼接 output_text.delta 并合并 output_item。"""
+        text_parts: list[str] = []
+        done_text: str | None = None
+        final_response: dict[str, Any] | None = None
+        stream_output_items: list[dict[str, Any]] = []
+
+        with self.http_client.stream("POST", url, headers=headers, json=payload) as response:
+            if response.is_error:
+                response.read()
+            response.raise_for_status()
+            for event_type, data_text in self._iter_sse_events(response):
+                if data_text == "[DONE]":
+                    break
+                data = self._parse_sse_json_data(data_text, event_type)
+                resolved_event_type = event_type or self._get_sse_event_type(data)
+                self._raise_for_sse_error(resolved_event_type, data)
+
+                if resolved_event_type == "response.output_text.delta" and isinstance(data.get("delta"), str):
+                    text_parts.append(data["delta"])
+                elif resolved_event_type == "response.output_text.done" and isinstance(data.get("text"), str):
+                    done_text = data["text"]
+                    break
+                elif resolved_event_type == "response.output_item.done" and isinstance(data.get("item"), dict):
+                    stream_output_items.append(data["item"])
+                elif resolved_event_type == "response.completed" and isinstance(data.get("response"), dict):
+                    final_response = data["response"]
+                    break
+
+        merged_response = self._merge_stream_output(final_response, stream_output_items)
+        text = "".join(text_parts) or done_text
+        return (text or None), merged_response
 
     @staticmethod
-    def _ensure_success(response: httpx.Response) -> dict[str, Any]:
+    def _merge_stream_output(
+        final_response: dict[str, Any] | None,
+        stream_output_items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """把流式 output_item 合并进最终响应，去重已有 id。"""
+        if not stream_output_items:
+            return final_response or {}
+        if final_response is None:
+            return {"output": stream_output_items}
+        output = final_response.get("output")
+        if not isinstance(output, list) or not output:
+            return {**final_response, "output": stream_output_items}
+        seen_output_ids = {
+            item.get("id") for item in output if isinstance(item, dict) and isinstance(item.get("id"), str)
+        }
+        merged_output = list(output)
+        for item in stream_output_items:
+            item_id = item.get("id")
+            if isinstance(item_id, str) and item_id in seen_output_ids:
+                continue
+            merged_output.append(item)
+        return {**final_response, "output": merged_output}
+
+    @staticmethod
+    def _iter_sse_events(response: httpx.Response) -> Iterator[tuple[str | None, str]]:
+        """按 SSE 块解析 event 与 data 行。"""
+        event_type: str | None = None
+        data_lines: list[str] = []
+        for line in response.iter_lines():
+            if line == "":
+                if data_lines:
+                    yield event_type, "\n".join(data_lines)
+                event_type = None
+                data_lines = []
+                continue
+            if line.startswith(":"):
+                continue
+            field, separator, value = line.partition(":")
+            if not separator:
+                continue
+            if value.startswith(" "):
+                value = value[1:]
+            if field == "event":
+                event_type = value
+            elif field == "data":
+                data_lines.append(value)
+        if data_lines:
+            yield event_type, "\n".join(data_lines)
+
+    @staticmethod
+    def _parse_sse_json_data(data_text: str, event_type: str | None) -> dict[str, Any]:
+        """解析 SSE data JSON。"""
+        try:
+            data = json.loads(data_text)
+        except json.JSONDecodeError as exc:
+            raise AppException(
+                BusinessErrorCode.LLM_REQUEST_FAILED,
+                "LLM 流式返回格式不正确",
+                {"api_format": "responses", "transport": "stream", "event_type": event_type},
+            ) from exc
+        if isinstance(data, dict):
+            return data
+        raise AppException(
+            BusinessErrorCode.LLM_REQUEST_FAILED,
+            "LLM 流式返回格式不正确",
+            {
+                "api_format": "responses",
+                "transport": "stream",
+                "event_type": event_type,
+                "data_type": type(data).__name__,
+            },
+        )
+
+    @staticmethod
+    def _get_sse_event_type(data: dict[str, Any]) -> str | None:
+        """从 SSE data 中推断事件类型。"""
+        event_type = data.get("type")
+        return event_type if isinstance(event_type, str) else None
+
+    @staticmethod
+    def _raise_for_sse_error(event_type: str | None, data: dict[str, Any]) -> None:
+        """把 Responses 流式错误事件转换为业务异常。"""
+        if event_type not in _SSE_ERROR_EVENT_TYPES:
+            return
+        response_data = data.get("response")
+        error_data = data.get("error")
+        if isinstance(response_data, dict) and error_data is None:
+            error_data = response_data.get("error") or response_data.get("incomplete_details")
+        raise AppException(
+            BusinessErrorCode.LLM_REQUEST_FAILED,
+            "LLM 流式调用失败",
+            {"api_format": "responses", "transport": "stream", "event_type": event_type, "error": error_data},
+        )
+
+    @staticmethod
+    def _finalize_json(response: httpx.Response) -> dict[str, Any]:
+        """解析成功响应体，并兼容部分网关 200 + error 字段的情况。"""
         try:
             payload = response.json()
         except Exception as exc:  # noqa: BLE001
@@ -74,13 +272,6 @@ class OpenAICompatibleLlmClient:
                 "LLM 接口返回了非 JSON 响应",
                 {"status_code": response.status_code, "body": response.text},
             ) from exc
-
-        if response.status_code >= 400:
-            raise AppException(
-                BusinessErrorCode.LLM_REQUEST_FAILED,
-                "LLM 接口调用失败",
-                {"status_code": response.status_code, "payload": payload},
-            )
         if payload.get("error"):
             raise AppException(
                 BusinessErrorCode.LLM_REQUEST_FAILED,
@@ -115,21 +306,33 @@ class OpenAICompatibleEmbeddingClient:
         return f"{self.settings.embedding_api_base_url}{normalized_path}"
 
     def create_embeddings(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """调用 OpenAI 兼容 Embedding 接口。"""
+        """调用 OpenAI 兼容 Embedding 接口，瞬时错误最多重试 llm_max_retries 次。"""
         if not self.settings.embedding_model:
             raise AppException(
                 BusinessErrorCode.SYSTEM_CONFIG_INVALID,
                 "EMBEDDING_MODEL 未配置",
             )
-        response = self.http_client.post(
-            self._build_url("/embeddings"),
-            headers=self._build_headers(),
-            json=payload,
-        )
-        return self._ensure_success(response)
+        url = self._build_url("/embeddings")
+        headers = self._build_headers()
+        max_retries = self.settings.llm_max_retries
+        for attempt in range(max_retries + 1):
+            try:
+                response = self.http_client.post(url, headers=headers, json=payload)
+                response.raise_for_status()
+                return self._finalize_json(response)
+            except httpx.HTTPError as exc:
+                if not _should_retry_http_error(exc, attempt, max_retries):
+                    raise AppException(
+                        BusinessErrorCode.LLM_REQUEST_FAILED,
+                        "Embedding 接口调用失败",
+                        _build_http_error_details(exc),
+                    ) from exc
+                _sleep_before_retry(attempt, self.settings.llm_retry_base_seconds)
+        raise AppException(BusinessErrorCode.LLM_REQUEST_FAILED, "Embedding 接口调用失败")
 
     @staticmethod
-    def _ensure_success(response: httpx.Response) -> dict[str, Any]:
+    def _finalize_json(response: httpx.Response) -> dict[str, Any]:
+        """解析成功响应体，并兼容部分网关 200 + error 字段的情况。"""
         try:
             payload = response.json()
         except Exception as exc:  # noqa: BLE001
@@ -138,13 +341,6 @@ class OpenAICompatibleEmbeddingClient:
                 "Embedding 接口返回了非 JSON 响应",
                 {"status_code": response.status_code, "body": response.text},
             ) from exc
-
-        if response.status_code >= 400:
-            raise AppException(
-                BusinessErrorCode.LLM_REQUEST_FAILED,
-                "Embedding 接口调用失败",
-                {"status_code": response.status_code, "payload": payload},
-            )
         if payload.get("error"):
             raise AppException(
                 BusinessErrorCode.LLM_REQUEST_FAILED,

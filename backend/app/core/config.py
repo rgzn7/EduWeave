@@ -59,6 +59,9 @@ class Settings(BaseSettings):
     llm_api_format: str = "response"
     llm_reasoning_effort: str | None = None
     llm_timeout_seconds: int = 60
+    llm_max_retries: int = 2
+    llm_retry_base_seconds: int = 1
+    llm_parse_repair_max_attempts: int = 2
 
     embedding_api_base_url: str = "https://api.openai.com/v1"
     embedding_api_key: str | None = None
@@ -242,6 +245,22 @@ class Settings(BaseSettings):
         """校验外部接口超时时间。"""
         if value <= 0:
             raise ValueError("外部接口超时时间必须大于 0")
+        return value
+
+    @field_validator("llm_max_retries", "llm_parse_repair_max_attempts")
+    @classmethod
+    def validate_llm_retry_count(cls, value: int) -> int:
+        """校验 LLM 重试与修复次数，允许为 0 表示不重试。"""
+        if value < 0:
+            raise ValueError("LLM 重试与修复次数不能为负数")
+        return value
+
+    @field_validator("llm_retry_base_seconds")
+    @classmethod
+    def validate_llm_retry_base_seconds(cls, value: int) -> int:
+        """校验 LLM 重试退避基数。"""
+        if value <= 0:
+            raise ValueError("LLM 重试退避基数必须大于 0")
         return value
 
     @field_validator("raccoon_poll_interval_seconds", "raccoon_short_poll_timeout_seconds")

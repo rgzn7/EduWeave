@@ -1,18 +1,30 @@
 """
-@Date: 2026-05-04
+@Date: 2026-05-16
 @Author: xisy
-@Discription: OpenAI 兼容 LLM 业务封装
+@Discription: OpenAI 兼容 LLM 业务封装（含缺文本重试与 JSON 解析-修复循环）
 """
 
 import json
+import re
+import time
 from typing import Any
 
+import structlog
 from pydantic import BaseModel, ValidationError
 
 from app.core.config import Settings, get_settings
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.shared.llm.client import OpenAICompatibleEmbeddingClient, OpenAICompatibleLlmClient
 from app.shared.llm.schemas import ChatMessage, EmbeddingUsage, LlmUsage
+
+logger = structlog.get_logger(__name__)
+
+LLM_REPAIR_PROMPT_CONTEXT_MAX_CHARS = 12000
+LLM_REPAIR_SCHEMA_MAX_CHARS = 20000
+LLM_REPAIR_ERROR_MAX_CHARS = 8000
+LLM_REPAIR_RAW_OUTPUT_MAX_CHARS = 20000
+
+_LLM_JSON_REPAIR_SYSTEM_PROMPT = "你是严谨的结构化输出修复助手，只输出合法 JSON 对象。Return valid json only."
 
 
 class OpenAICompatibleLlmService:
@@ -33,17 +45,109 @@ class OpenAICompatibleLlmService:
         response_model: type[BaseModel],
         temperature: float = 0.2,
     ) -> BaseModel:
-        """生成结构化 JSON 输出并解析为指定模型。"""
-        if self.settings.llm_api_format == "chat":
-            payload = self._build_chat_completion_payload(messages=messages, temperature=temperature)
-            result = self.client.create_chat_completion(payload)
-            content = self._extract_chat_completion_content(result)
-            return self._validate_structured_payload(content=content, response_model=response_model)
+        """生成结构化 JSON 输出并解析为指定模型。
 
-        payload = self._build_response_payload(messages=messages, response_model=response_model, temperature=temperature)
-        result = self.client.create_response(payload)
-        content = self._extract_response_content(result)
-        return self._validate_structured_payload(content=content, response_model=response_model)
+        三层健壮性：传输层瞬时错误重试（client）、缺文本重试（重发原始调用）、
+        解析/校验失败时回调 LLM 自修复 JSON。
+        """
+        raw_text = self._invoke_raw_text(
+            messages=messages, response_model=response_model, temperature=temperature
+        )
+        return self._parse_or_repair(
+            original_messages=messages,
+            response_model=response_model,
+            temperature=temperature,
+            raw_text=raw_text,
+        )
+
+    def _invoke_raw_text(
+        self,
+        *,
+        messages: list[ChatMessage],
+        response_model: type[BaseModel],
+        temperature: float,
+    ) -> str:
+        """按配置格式调用 LLM 并提取文本；返回成功但无文本时重发原始调用。"""
+        api_format = self.settings.llm_api_format
+        max_retries = self.settings.llm_max_retries
+        for attempt in range(max_retries + 1):
+            if api_format == "chat":
+                payload = self._build_chat_completion_payload(messages=messages, temperature=temperature)
+                result = self.client.create_chat_completion(payload)
+                text = self._extract_response_text(result)
+                details_source = result
+            else:
+                payload = self._build_response_payload(
+                    messages=messages, response_model=response_model, temperature=temperature
+                )
+                streamed_text, final_payload = self.client.create_response_stream(payload)
+                text = streamed_text or self._extract_response_text(final_payload)
+                details_source = final_payload
+
+            if text and text.strip():
+                return text.strip()
+
+            details = self._build_missing_text_details(details_source, api_format)
+            if attempt >= max_retries:
+                raise AppException(
+                    BusinessErrorCode.LLM_REQUEST_FAILED,
+                    "LLM 返回结果缺少文本内容",
+                    details,
+                )
+            logger.warning(
+                "llm_missing_text_retrying",
+                api_format=api_format,
+                schema=response_model.__name__,
+                attempt=attempt + 1,
+                max_retries=max_retries,
+                reason=details.get("reason"),
+            )
+            self._sleep_before_retry(attempt)
+        raise AppException(BusinessErrorCode.LLM_REQUEST_FAILED, "LLM 返回结果缺少文本内容")
+
+    def _parse_or_repair(
+        self,
+        *,
+        original_messages: list[ChatMessage],
+        response_model: type[BaseModel],
+        temperature: float,
+        raw_text: str,
+    ) -> BaseModel:
+        """解析结构化输出；失败时回调 LLM 修复 JSON 后重试。"""
+        current_text = raw_text
+        last_error: AppException | None = None
+        max_attempts = self.settings.llm_parse_repair_max_attempts
+        for attempt in range(max_attempts + 1):
+            try:
+                return self._parse_structured(content=current_text, response_model=response_model)
+            except AppException as exc:
+                if exc.code != BusinessErrorCode.LLM_RESULT_INVALID:
+                    raise
+                last_error = exc
+                if attempt >= max_attempts:
+                    raise
+                logger.warning(
+                    "llm_structured_parse_failed_repairing",
+                    schema=response_model.__name__,
+                    repair_attempt=attempt + 1,
+                    max_repair_attempts=max_attempts,
+                    error_message=exc.message,
+                )
+                repair_messages = self._build_repair_messages(
+                    original_messages=original_messages,
+                    response_model=response_model,
+                    invalid_text=current_text,
+                    parse_error=exc,
+                    repair_attempt=attempt + 1,
+                )
+                current_text = self._invoke_raw_text(
+                    messages=repair_messages,
+                    response_model=response_model,
+                    temperature=temperature,
+                )
+        if last_error is not None:
+            raise last_error
+        raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 生成结果结构不正确")
 
     def _build_response_payload(
         self,
@@ -100,8 +204,59 @@ class OpenAICompatibleLlmService:
             payload["temperature"] = temperature
         return payload
 
+    def _build_repair_messages(
+        self,
+        *,
+        original_messages: list[ChatMessage],
+        response_model: type[BaseModel],
+        invalid_text: str,
+        parse_error: AppException,
+        repair_attempt: int,
+    ) -> list[ChatMessage]:
+        """构造 JSON 修复消息：原始上下文 + 目标 Schema + 校验错误 + 上次坏输出。"""
+        schema_text = self._dump_prompt_json(
+            response_model.model_json_schema(), LLM_REPAIR_SCHEMA_MAX_CHARS
+        )
+        error_text = self._dump_prompt_json(
+            {"message": parse_error.message, "details": parse_error.details},
+            LLM_REPAIR_ERROR_MAX_CHARS,
+        )
+        original_context = "\n\n".join(
+            f"[{message.role}]\n{message.content}" for message in original_messages
+        )
+        context_text = self._clip_text(original_context, LLM_REPAIR_PROMPT_CONTEXT_MAX_CHARS)
+        output_text = self._clip_text(invalid_text, LLM_REPAIR_RAW_OUTPUT_MAX_CHARS)
+        repair_body = f"""你需要修复上一次 LLM 输出，使其严格符合 {response_model.__name__} 的 JSON Schema。这是第 {repair_attempt} 次修复尝试。
+
+硬性要求：
+1. 只输出一个合法 JSON 对象，不要 Markdown、代码块、解释文字或多余前后缀。
+2. 只修复 JSON 结构、字段名、字段类型、字段数量、安全校验和缺失字段问题。
+3. 不要新增原始任务未提供的事实或数据；信息不足时填写"原文未明确说明"。
+4. 若原输出中有可用内容，优先保留并整理为合规结构；无法保留的字段按原任务要求补齐为合规内容。
+5. 输出必须能直接被服务端 JSON 解析和 Schema 校验通过。
+
+原始任务消息（可能已截断）：
+{context_text}
+
+目标 JSON Schema（可能已截断）：
+{schema_text}
+
+服务端校验错误：
+{error_text}
+
+上一次不合格输出（可能已截断）：
+{output_text}""".strip()
+        return [
+            ChatMessage(role="system", content=_LLM_JSON_REPAIR_SYSTEM_PROMPT),
+            ChatMessage(role="user", content=repair_body),
+        ]
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        """按指数退避等待下一次重试。"""
+        time.sleep(self.settings.llm_retry_base_seconds * (2**attempt))
+
     @staticmethod
-    def _validate_structured_payload(*, content: str, response_model: type[BaseModel]) -> BaseModel:
+    def _parse_structured(*, content: str, response_model: type[BaseModel]) -> BaseModel:
         """解析 JSON 文本并通过响应模型校验。"""
         parsed_json = OpenAICompatibleLlmService._extract_json_payload(content)
         try:
@@ -114,80 +269,94 @@ class OpenAICompatibleLlmService:
             ) from exc
 
     @staticmethod
-    def _extract_response_content(payload: dict[str, Any]) -> str:
+    def _extract_response_text(payload: dict[str, Any] | None) -> str | None:
+        """兼容 Responses / Chat Completions 及部分代理返回格式提取文本。"""
+        if not isinstance(payload, dict):
+            return None
+
         output_text = payload.get("output_text")
         if isinstance(output_text, str) and output_text.strip():
-            return output_text.strip()
+            return output_text
 
-        text_parts: list[str] = []
-        for output_item in payload.get("output") or []:
-            if not isinstance(output_item, dict):
-                continue
-            content = output_item.get("content")
-            if isinstance(content, str) and content.strip():
-                text_parts.append(content.strip())
-                continue
-            if not isinstance(content, list):
-                continue
-            for content_item in content:
-                if not isinstance(content_item, dict):
+        texts: list[str] = []
+        output = payload.get("output")
+        if isinstance(output, list):
+            for item in output:
+                if not isinstance(item, dict):
                     continue
-                text = content_item.get("text")
-                if not isinstance(text, str):
-                    text = content_item.get("output_text")
-                if isinstance(text, str) and text.strip():
-                    text_parts.append(text.strip())
+                direct_text = item.get("text")
+                if isinstance(direct_text, str):
+                    texts.append(direct_text)
+                content_list = item.get("content")
+                if not isinstance(content_list, list):
+                    continue
+                for content in content_list:
+                    if not isinstance(content, dict):
+                        continue
+                    text = content.get("text")
+                    if not isinstance(text, str):
+                        text = content.get("output_text")
+                    if not isinstance(text, str):
+                        text = content.get("content")
+                    if isinstance(text, str):
+                        texts.append(text)
+        if texts:
+            joined = "\n".join(part for part in texts if part)
+            if joined.strip():
+                return joined
 
-        content = "\n".join(text_parts).strip()
-        if not content:
-            raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 返回结果缺少文本内容")
-        return content
+        choices = payload.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                message = choice.get("message")
+                if isinstance(message, dict) and isinstance(message.get("content"), str):
+                    if message["content"].strip():
+                        return message["content"]
+                if isinstance(message, dict) and isinstance(message.get("content"), list):
+                    for content in message["content"]:
+                        if not isinstance(content, dict):
+                            continue
+                        text = content.get("text") or content.get("content")
+                        if isinstance(text, str):
+                            texts.append(text)
+                if isinstance(choice.get("text"), str):
+                    return choice["text"]
+        if texts:
+            joined = "\n".join(part for part in texts if part)
+            if joined.strip():
+                return joined
+        return None
 
     @staticmethod
-    def _extract_chat_completion_content(payload: dict[str, Any]) -> str:
-        """从 Chat Completions 响应中提取文本内容。"""
-        choices = payload.get("choices") or []
-        if not choices:
-            raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 返回结果缺少 choices")
-        message = choices[0].get("message") or {}
-        content = message.get("content")
-        if isinstance(content, list):
-            text_parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    text_parts.append(str(item.get("text") or ""))
-            content = "\n".join(item for item in text_parts if item)
-        if not isinstance(content, str) or not content.strip():
-            raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 返回结果缺少文本内容")
-        return content.strip()
+    def _strip_code_fence(text: str) -> str:
+        """移除可能出现的代码块包裹，必要时回退到首尾花括号截取。"""
+        stripped = text.strip()
+        matched = re.match(r"^```(?:json)?\s*(.*?)\s*```$", stripped, re.DOTALL)
+        if matched:
+            return matched.group(1).strip()
+        try:
+            json.loads(stripped)
+            return stripped
+        except json.JSONDecodeError:
+            start = stripped.find("{")
+            end = stripped.rfind("}")
+            if start >= 0 and end > start:
+                return stripped[start : end + 1]
+            return stripped
 
     @staticmethod
     def _extract_json_payload(content: str) -> dict[str, Any]:
-        normalized_content = content.strip()
-        if normalized_content.startswith("```"):
-            normalized_content = normalized_content.strip("`")
-            if normalized_content.startswith("json"):
-                normalized_content = normalized_content[4:].strip()
+        normalized_content = OpenAICompatibleLlmService._strip_code_fence(content)
         try:
             parsed_payload = json.loads(normalized_content)
-        except json.JSONDecodeError:
-            start_index = normalized_content.find("{")
-            end_index = normalized_content.rfind("}")
-            if start_index < 0 or end_index <= start_index:
-                raise AppException(
-                    BusinessErrorCode.LLM_RESULT_INVALID,
-                    "LLM 返回结果不是合法 JSON",
-                    {"content": content},
-                )
-            try:
-                parsed_payload = json.loads(normalized_content[start_index : end_index + 1])
-            except json.JSONDecodeError as exc:
-                raise AppException(
-                    BusinessErrorCode.LLM_RESULT_INVALID,
-                    "LLM 返回结果不是合法 JSON",
-                    {"content": content},
-                ) from exc
-
+        except json.JSONDecodeError as exc:
+            raise AppException(
+                BusinessErrorCode.LLM_RESULT_INVALID,
+                "LLM 返回结果不是合法 JSON",
+                {"content": content},
+            ) from exc
         if not isinstance(parsed_payload, dict):
             raise AppException(
                 BusinessErrorCode.LLM_RESULT_INVALID,
@@ -195,6 +364,45 @@ class OpenAICompatibleLlmService:
                 {"payload_type": type(parsed_payload).__name__},
             )
         return parsed_payload
+
+    @staticmethod
+    def _build_missing_text_details(payload: dict[str, Any] | None, api_format: str) -> dict[str, Any]:
+        """构造不包含原文内容的 LLM 空文本诊断信息。"""
+        data = payload if isinstance(payload, dict) else {}
+        output = data.get("output")
+        choices = data.get("choices")
+        usage = data.get("usage")
+        return {
+            "api_format": api_format,
+            "reason": "missing_text",
+            "response_keys": sorted(str(key) for key in data.keys()),
+            "status": data.get("status"),
+            "error": data.get("error"),
+            "incomplete_details": data.get("incomplete_details"),
+            "output_count": len(output) if isinstance(output, list) else None,
+            "choice_count": len(choices) if isinstance(choices, list) else None,
+            "usage": usage if isinstance(usage, dict) else None,
+        }
+
+    @staticmethod
+    def _clip_text(text: str, max_chars: int) -> str:
+        """将文本裁剪到指定字符数，空间足够时追加省略标记。"""
+        if max_chars <= 0:
+            return ""
+        if len(text) <= max_chars:
+            return text
+        if max_chars <= 3:
+            return text[:max_chars]
+        return f"{text[: max_chars - 3].rstrip()}..."
+
+    @staticmethod
+    def _dump_prompt_json(value: Any, max_chars: int) -> str:
+        """把诊断对象序列化为适合放进提示词的 JSON 文本。"""
+        try:
+            text = json.dumps(value, ensure_ascii=False, indent=2, default=str)
+        except TypeError:
+            text = str(value)
+        return OpenAICompatibleLlmService._clip_text(text, max_chars)
 
     @staticmethod
     def build_usage(payload: dict[str, Any]) -> LlmUsage:
