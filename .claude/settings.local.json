@@ -8,7 +8,8 @@
       "Bash(tee /tmp/resume_run3.log)",
       "Bash(grep -nA1 \"ValidationError|pydantic.dev\" /tmp/resume_run6.log)",
       "Bash(tee /tmp/resume_run7.log)",
-      "Bash(mysql -uroot -pboss1114 eduweave -e \"SELECT TABLE_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='eduweave' AND COLUMN_NAME='project_id' ORDER BY TABLE_NAME\")"
+      "Bash(mysql -uroot -pboss1114 eduweave -e \"SELECT TABLE_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='eduweave' AND COLUMN_NAME='project_id' ORDER BY TABLE_NAME\")",
+      "Bash(cd /Users/xisy/Personal/Projects/thesis-viva/backend/app/modules/generation && grep -n \"def _raise_for_sse_error\\\\|def _build_stream_text_details\\\\|def _build_stream_missing_text_details\\\\|def _clip_text\\\\|def _dump_prompt_json\\\\|^import\\\\|^from\\\\|LLM_RETRY_BASE_SECONDS\\\\|_SSE_ERROR\" llm_service.py | head -40)"
     ]
   }
 }
