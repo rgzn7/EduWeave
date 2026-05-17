@@ -92,6 +92,19 @@ def _sse_event(event: str, data_obj: Any) -> bytes:
     return f"event: {event}\ndata: {json.dumps(data_obj)}\n\n".encode()
 
 
+def _sse_data(data_obj: Any) -> bytes:
+    """构造仅含 data 行的 SSE 块（PackyAPI chat 流式无 event 行）。"""
+    return f"data: {json.dumps(data_obj)}\n\n".encode()
+
+
+def _chat_chunk(content: str) -> dict[str, Any]:
+    """构造 chat.completion.chunk 形态的单帧。"""
+    return {
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {"role": "assistant", "content": content}, "finish_reason": None}],
+    }
+
+
 def test_structured_output_should_skip_reasoning_effort_when_not_configured() -> None:
     """未配置推理强度时不应传 reasoning。"""
     client = CaptureLlmClient()
@@ -404,3 +417,83 @@ def test_response_stream_raises_on_error_event() -> None:
         )
 
     assert exc_info.value.code == BusinessErrorCode.LLM_REQUEST_FAILED
+
+
+def test_chat_completion_stream_accumulates_delta() -> None:
+    """Chat Completions 流式 chunk 应累积 delta.content 并在 [DONE] 结束。"""
+    sse = (
+        _sse_data(_chat_chunk("{\"ok\": "))
+        + _sse_data(_chat_chunk("true}"))
+        + b"data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+
+    settings = build_settings(None, llm_api_format="chat")
+    service = OpenAICompatibleLlmService(client=_build_real_client(handler, settings), settings=settings)
+
+    result = service.generate_structured_output(
+        messages=[ChatMessage(role="user", content="返回 json ok")],
+        response_model=DemoStructuredResponse,
+    )
+
+    assert result.ok is True
+
+
+def test_chat_completion_stream_raises_on_error_event() -> None:
+    """Chat Completions 流式 200+error 体应转换为业务异常。"""
+    sse = _sse_data({"error": {"message": "boom"}})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+
+    settings = build_settings(None, llm_api_format="chat", llm_max_retries=0)
+    service = OpenAICompatibleLlmService(client=_build_real_client(handler, settings), settings=settings)
+
+    with pytest.raises(AppException) as exc_info:
+        service.generate_structured_output(
+            messages=[ChatMessage(role="user", content="返回 json ok")],
+            response_model=DemoStructuredResponse,
+        )
+
+    assert exc_info.value.code == BusinessErrorCode.LLM_REQUEST_FAILED
+
+
+def test_chat_completion_non_stream_json_fallback() -> None:
+    """网关忽略 stream 仍返回非流式 JSON 时应双模回退解析。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{\"ok\": true}"}}]})
+
+    settings = build_settings(None, llm_api_format="chat")
+    service = OpenAICompatibleLlmService(client=_build_real_client(handler, settings), settings=settings)
+
+    result = service.generate_structured_output(
+        messages=[ChatMessage(role="user", content="返回 json ok")],
+        response_model=DemoStructuredResponse,
+    )
+
+    assert result.ok is True
+
+
+def test_response_stream_accepts_chat_style_chunks() -> None:
+    """LLM_API_FORMAT=response 下 PackyAPI 中继回 chat chunk 也应能拼出文本。"""
+    sse = (
+        _sse_data(_chat_chunk("{\"ok\": "))
+        + _sse_data(_chat_chunk("true}"))
+        + b"data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+
+    settings = build_settings(None)
+    service = OpenAICompatibleLlmService(client=_build_real_client(handler, settings), settings=settings)
+
+    result = service.generate_structured_output(
+        messages=[ChatMessage(role="user", content="返回 ok")],
+        response_model=DemoStructuredResponse,
+    )
+
+    assert result.ok is True

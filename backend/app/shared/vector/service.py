@@ -1,15 +1,18 @@
 """
-@Date: 2026-04-30
+@Date: 2026-05-17
 @Author: xisy
 @Discription: Milvus 向量服务封装
 """
 
+import json
 from typing import Any
 
 from app.core.config import Settings, get_settings
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.shared.vector.client import MilvusVectorClient
 from app.shared.vector.schemas import VectorRecord, VectorSearchHit
+
+MILVUS_JSON_FIELD_MAX_UTF8_BYTES = 65536
 
 
 class MilvusVectorService:
@@ -51,11 +54,67 @@ class MilvusVectorService:
                 details={"collection_name": collection_name, "missing_fields": missing_fields},
             )
 
+    def _get_varchar_field_limits(self, collection_name: str) -> dict[str, int]:
+        """读取集合全部 VARCHAR 字段的字节上限。"""
+        field_limits: dict[str, int] = {}
+        for field_definition in self.client.COLLECTION_SCHEMA_DEFINITIONS.get(collection_name, ()):
+            if field_definition["datatype"] == "VARCHAR":
+                max_length = field_definition.get("max_length")
+                if max_length is not None:
+                    field_limits[field_definition["field_name"]] = int(max_length)
+        return field_limits
+
+    def _get_json_field_names(self, collection_name: str) -> set[str]:
+        """读取集合全部 JSON 字段名称。"""
+        return {
+            field_definition["field_name"]
+            for field_definition in self.client.COLLECTION_SCHEMA_DEFINITIONS.get(collection_name, ())
+            if field_definition["datatype"] == "JSON"
+        }
+
+    def _ensure_record_within_schema_limits(self, collection_name: str, normalized_record: dict[str, Any]) -> None:
+        """按 Milvus schema 统一校验写入记录字段长度。"""
+        for field_name, max_length in self._get_varchar_field_limits(collection_name).items():
+            value = normalized_record.get(field_name)
+            if value is None:
+                continue
+            value_bytes = str(value).encode("utf-8")
+            if len(value_bytes) <= max_length:
+                continue
+            raise AppException(
+                BusinessErrorCode.EXTERNAL_SERVICE_ERROR,
+                "向量记录字段超过 Milvus VARCHAR 上限，请在写入前处理文本",
+                details={
+                    "collection_name": collection_name,
+                    "field_name": field_name,
+                    "max_utf8_bytes": max_length,
+                    "actual_utf8_bytes": len(value_bytes),
+                },
+            )
+
+        for field_name in self._get_json_field_names(collection_name):
+            value = normalized_record.get(field_name)
+            if value is None:
+                continue
+            value_bytes = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if len(value_bytes) <= MILVUS_JSON_FIELD_MAX_UTF8_BYTES:
+                continue
+            raise AppException(
+                BusinessErrorCode.EXTERNAL_SERVICE_ERROR,
+                "向量记录字段超过 Milvus JSON 字段上限，请在写入前精简元数据",
+                details={
+                    "collection_name": collection_name,
+                    "field_name": field_name,
+                    "max_utf8_bytes": MILVUS_JSON_FIELD_MAX_UTF8_BYTES,
+                    "actual_utf8_bytes": len(value_bytes),
+                },
+            )
+
     def _normalize_record(self, collection_name: str, record: VectorRecord) -> dict[str, Any]:
         """按集合结构归一化写入记录。"""
         self._ensure_required_fields(collection_name, record)
         if collection_name == "semantic_chunk_vector":
-            return {
+            normalized_record = {
                 "id": record.id,
                 "semantic_chunk_id": record.semantic_chunk_id,
                 "project_id": record.project_id,
@@ -71,8 +130,10 @@ class MilvusVectorService:
                 "metadata": record.metadata,
                 "embedding": record.embedding,
             }
+            self._ensure_record_within_schema_limits(collection_name, normalized_record)
+            return normalized_record
         if collection_name == "knowledge_point_vector":
-            return {
+            normalized_record = {
                 "id": record.id,
                 "project_id": record.project_id,
                 "knowledge_version_id": record.knowledge_version_id,
@@ -84,6 +145,8 @@ class MilvusVectorService:
                 "metadata": record.metadata,
                 "embedding": record.embedding,
             }
+            self._ensure_record_within_schema_limits(collection_name, normalized_record)
+            return normalized_record
         raise AppException(
             BusinessErrorCode.EXTERNAL_SERVICE_ERROR,
             f"Milvus 集合 {collection_name} 暂未实现归一化写入逻辑",

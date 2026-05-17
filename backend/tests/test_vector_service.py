@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-30
+@Date: 2026-05-17
 @Author: xisy
 @Discription: Milvus 向量服务测试
 """
@@ -85,6 +85,9 @@ class FakeMilvusServiceClient:
 
     COLLECTION_SCHEMA_DEFINITIONS = MilvusVectorClient.COLLECTION_SCHEMA_DEFINITIONS
 
+    def __init__(self) -> None:
+        self.upsert_calls: list[dict[str, Any]] = []
+
     def health_check(self):
         return {"status": "ok", "detail": "Milvus 连接正常"}
 
@@ -92,6 +95,7 @@ class FakeMilvusServiceClient:
         return []
 
     def upsert(self, collection_name, data):
+        self.upsert_calls.append({"collection_name": collection_name, "data": data})
         return {"collection_name": collection_name, "upsert_count": len(data)}
 
     def delete(self, collection_name, ids):
@@ -190,6 +194,102 @@ def test_vector_service_upsert_delete_search_contract() -> None:
     assert search_result[0].collection_name == "knowledge_point_vector"
     assert search_result[0].knowledge_version_id == 88
     assert search_result[0].difficulty_level == 3
+
+
+def test_vector_service_should_reject_content_over_utf8_max_length() -> None:
+    """向量 content 超过 VARCHAR 字节上限时应拒绝写入。"""
+    settings = get_settings()
+    fake_client = FakeMilvusServiceClient()
+    service = MilvusVectorService(client=fake_client, settings=settings)
+    records = [
+        VectorRecord(
+            id="semantic_chunk:1",
+            semantic_chunk_id=1,
+            project_id=99,
+            textbook_version_id=77,
+            parse_version_id=66,
+            knowledge_version_id=88,
+            embedding_model="text-embedding-3-large",
+            content="汉" * 3000,
+            metadata={"chunk_no": 1},
+            embedding=[0.1, 0.2, 0.3, 0.4],
+        )
+    ]
+
+    with pytest.raises(AppException) as exc_info:
+        service.upsert_vectors("semantic_chunk_vector", records)
+
+    assert exc_info.value.code == BusinessErrorCode.EXTERNAL_SERVICE_ERROR
+    assert "超过 Milvus VARCHAR 上限" in exc_info.value.message
+    assert exc_info.value.details == {
+        "collection_name": "semantic_chunk_vector",
+        "field_name": "content",
+        "max_utf8_bytes": 8192,
+        "actual_utf8_bytes": 9000,
+    }
+    assert fake_client.upsert_calls == []
+
+
+def test_vector_service_should_reject_metadata_over_json_max_length() -> None:
+    """向量 metadata 超过 JSON 字段上限时应拒绝写入。"""
+    settings = get_settings()
+    fake_client = FakeMilvusServiceClient()
+    service = MilvusVectorService(client=fake_client, settings=settings)
+    records = [
+        VectorRecord(
+            id="semantic_chunk:2",
+            semantic_chunk_id=2,
+            project_id=99,
+            textbook_version_id=77,
+            parse_version_id=66,
+            knowledge_version_id=88,
+            embedding_model="text-embedding-3-large",
+            content="正文",
+            metadata={"source_block_refs_json": "引用" * 30000},
+            embedding=[0.1, 0.2, 0.3, 0.4],
+        )
+    ]
+
+    with pytest.raises(AppException) as exc_info:
+        service.upsert_vectors("semantic_chunk_vector", records)
+
+    assert exc_info.value.code == BusinessErrorCode.EXTERNAL_SERVICE_ERROR
+    assert "超过 Milvus JSON 字段上限" in exc_info.value.message
+    assert exc_info.value.details["collection_name"] == "semantic_chunk_vector"
+    assert exc_info.value.details["field_name"] == "metadata"
+    assert exc_info.value.details["max_utf8_bytes"] == 65536
+    assert exc_info.value.details["actual_utf8_bytes"] > 65536
+    assert fake_client.upsert_calls == []
+
+
+def test_vector_service_should_reject_any_varchar_field_over_max_length() -> None:
+    """任意 VARCHAR 字段超过 Milvus 上限时都应拒绝写入。"""
+    settings = get_settings()
+    fake_client = FakeMilvusServiceClient()
+    service = MilvusVectorService(client=fake_client, settings=settings)
+    records = [
+        VectorRecord(
+            id="semantic_chunk:3",
+            semantic_chunk_id=3,
+            project_id=99,
+            textbook_version_id=77,
+            parse_version_id=66,
+            knowledge_version_id=88,
+            embedding_model="model-" + "x" * 200,
+            content="正文",
+            metadata={"chunk_no": 3},
+            embedding=[0.1, 0.2, 0.3, 0.4],
+        )
+    ]
+
+    with pytest.raises(AppException) as exc_info:
+        service.upsert_vectors("semantic_chunk_vector", records)
+
+    assert exc_info.value.code == BusinessErrorCode.EXTERNAL_SERVICE_ERROR
+    assert exc_info.value.details["field_name"] == "embedding_model"
+    assert exc_info.value.details["max_utf8_bytes"] == 128
+    assert exc_info.value.details["actual_utf8_bytes"] > 128
+    assert fake_client.upsert_calls == []
 
 
 def test_vector_service_dimension_mismatch_should_fail() -> None:
