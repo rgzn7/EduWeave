@@ -152,7 +152,7 @@ export const api = {
     return request<Task>(`/api/v1/textbook-versions/${textbookVersionId}/parse-tasks`, {
       method: "POST",
       body: JSON.stringify({
-        strategy_code: "vlm",
+        strategy_code: "mineru_vlm_default",
         set_as_current_on_success: true,
       }),
     });
@@ -204,10 +204,10 @@ export const api = {
       { page: 1, page_size: 20 },
     );
   },
-  createKnowledgeTask(parseVersionId: number) {
+  createKnowledgeTask(parseVersionId: number, payload: { force_regenerate?: boolean } = {}) {
     return request<Task>(`/api/v1/parse-versions/${parseVersionId}/knowledge-tasks`, {
       method: "POST",
-      body: JSON.stringify({ force_regenerate: false }),
+      body: JSON.stringify({ force_regenerate: payload.force_regenerate ?? false }),
     });
   },
   listKnowledgeVersions(parseVersionId: number) {
