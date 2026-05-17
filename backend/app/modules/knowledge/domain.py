@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-30
+@Date: 2026-05-17
 @Author: xisy
 @Discription: 知识结构化模块领域辅助函数
 """
@@ -26,6 +26,8 @@ from app.modules.p0_models import (
     SemanticChunk,
 )
 from app.shared.vector import VectorRecord
+
+SEMANTIC_CHUNK_TARGET_MAX_UTF8_BYTES = 7000
 
 
 @dataclass(slots=True)
@@ -109,6 +111,16 @@ class PersistedKnowledgeSnapshot:
     semantic_chunks: list[SemanticChunk]
     points: list[KnowledgePoint]
     evidences_by_point_id: dict[int, list[KnowledgeEvidence]]
+
+
+@dataclass(slots=True)
+class SemanticChunkVectorSegment:
+    """语义块向量写入片段。"""
+
+    chunk: SemanticChunk
+    content: str
+    segment_index: int
+    segment_count: int
 
 
 @dataclass(slots=True)
@@ -419,6 +431,7 @@ def build_semantic_chunk_drafts_from_markdown_index(
     parse_blocks: list[ParseBlock],
     chapter_drafts: list[ChapterDraft],
     line_index: MarkdownLineIndex,
+    max_chunk_utf8_bytes: int = SEMANTIC_CHUNK_TARGET_MAX_UTF8_BYTES,
 ) -> list[SemanticChunkDraft]:
     """按章节行号范围切出语义块。"""
     page_by_no = {page.page_no: page for page in parse_pages}
@@ -427,35 +440,46 @@ def build_semantic_chunk_drafts_from_markdown_index(
     for chapter in sorted(chapter_drafts, key=lambda item: item.sort_order):
         if chapter.line_start is None or chapter.line_end is None:
             continue
-        chunk_text = line_index.slice_content(chapter.line_start, chapter.line_end)
-        if not chunk_text:
-            continue
-        page_start, page_end = line_index.resolve_page_range(chapter.line_start, chapter.line_end)
-        if page_start is None or page_end is None:
-            continue
-        page_numbers = [page_no for page_no in sorted(page_by_no) if page_start <= page_no <= page_end]
-        source_refs = _build_source_block_refs(page_numbers, page_by_no, blocks_by_page_id, page_id_to_no)
-        drafts.append(
-            SemanticChunkDraft(
-                draft_id=len(drafts) + 1,
-                chapter_ref_id=chapter.draft_id,
-                chunk_no=len(drafts) + 1,
-                chunk_title=chapter.title,
-                page_start=page_start,
-                page_end=page_end,
-                line_start=chapter.line_start,
-                line_end=chapter.line_end,
-                source_block_refs_json=source_refs,
-                source_text_hash=_hash_text(chunk_text),
-                chunk_text=chunk_text,
-                summary_text=chapter.summary_text,
-                metadata_json={
-                    "source": "chapter_markdown_line_range",
-                    "chapter_path": chapter.node_path,
-                    "chapter_node_type": chapter.node_type,
-                },
-            )
+        text_segments = _split_markdown_range_by_utf8_limit(
+            line_index=line_index,
+            line_start=chapter.line_start,
+            line_end=chapter.line_end,
+            max_bytes=max_chunk_utf8_bytes,
         )
+        if not text_segments:
+            continue
+        for segment_index, (segment_text, segment_line_start, segment_line_end) in enumerate(text_segments, start=1):
+            page_start, page_end = line_index.resolve_page_range(segment_line_start, segment_line_end)
+            if page_start is None or page_end is None:
+                continue
+            page_numbers = [page_no for page_no in sorted(page_by_no) if page_start <= page_no <= page_end]
+            source_refs = _build_source_block_refs(page_numbers, page_by_no, blocks_by_page_id, page_id_to_no)
+            is_split = len(text_segments) > 1
+            drafts.append(
+                SemanticChunkDraft(
+                    draft_id=len(drafts) + 1,
+                    chapter_ref_id=chapter.draft_id,
+                    chunk_no=len(drafts) + 1,
+                    chunk_title=chapter.title if not is_split else f"{chapter.title}（片段{segment_index}）",
+                    page_start=page_start,
+                    page_end=page_end,
+                    line_start=segment_line_start,
+                    line_end=segment_line_end,
+                    source_block_refs_json=source_refs,
+                    source_text_hash=_hash_text(segment_text),
+                    chunk_text=segment_text,
+                    summary_text=chapter.summary_text,
+                    metadata_json={
+                        "source": "chapter_markdown_line_range",
+                        "chapter_path": chapter.node_path,
+                        "chapter_node_type": chapter.node_type,
+                        "is_split": is_split,
+                        "segment_index": segment_index,
+                        "segment_count": len(text_segments),
+                        "max_chunk_utf8_bytes": max_chunk_utf8_bytes,
+                    },
+                )
+            )
     return drafts
 
 
@@ -689,12 +713,12 @@ def resolve_semantic_chunk_for_page(page_no: int | None, semantic_chunks: list[S
     return matched_chunks[0]
 
 
-def build_semantic_chunk_embedding_text(chunk: SemanticChunk) -> str:
+def build_semantic_chunk_embedding_text(chunk: SemanticChunk, content: str | None = None) -> str:
     """构造教材语义块向量文本。"""
     parts = [f"语义块：{chunk.chunk_title or f'第{chunk.chunk_no}块'}"]
     if chunk.summary_text:
         parts.append(f"摘要：{chunk.summary_text}")
-    parts.append(f"内容：{chunk.chunk_text}")
+    parts.append(f"内容：{content if content is not None else chunk.chunk_text}")
     return "\n".join(parts).strip()
 
 
@@ -719,7 +743,7 @@ def build_semantic_chunk_vector_records(
     project_id: int,
     textbook_version_id: int,
     parse_version: ParseVersion,
-    semantic_chunks: list[SemanticChunk],
+    semantic_chunk_segments: list[SemanticChunkVectorSegment],
     chapters: list[ChapterNode],
     embeddings: list[list[float]],
     embedding_model: str,
@@ -727,11 +751,16 @@ def build_semantic_chunk_vector_records(
     """构造教材语义块向量写入记录。"""
     chapter_map = {chapter.id: chapter for chapter in chapters}
     records: list[VectorRecord] = []
-    for chunk, embedding in zip(semantic_chunks, embeddings, strict=True):
+    for segment, embedding in zip(semantic_chunk_segments, embeddings, strict=True):
+        chunk = segment.chunk
         chapter = chapter_map.get(chunk.chapter_node_id) if chunk.chapter_node_id is not None else None
+        record_id = f"semantic_chunk:{chunk.id}"
+        if segment.segment_count > 1:
+            record_id = f"{record_id}:segment:{segment.segment_index}"
+        source_block_refs = (chunk.source_block_refs_json or {}).get("blocks") or []
         records.append(
             VectorRecord(
-                id=f"semantic_chunk:{chunk.id}",
+                id=record_id,
                 semantic_chunk_id=chunk.id,
                 project_id=project_id,
                 textbook_version_id=textbook_version_id,
@@ -742,11 +771,14 @@ def build_semantic_chunk_vector_records(
                 page_end=chunk.page_end,
                 chunk_type=chunk.chunk_type,
                 embedding_model=embedding_model,
-                content=chunk.chunk_text.strip()[:8192],
+                content=segment.content,
                 metadata={
                     "semantic_chunk_id": chunk.id,
                     "chunk_no": chunk.chunk_no,
                     "chunk_title": chunk.chunk_title,
+                    "segment_index": segment.segment_index,
+                    "segment_count": segment.segment_count,
+                    "content_utf8_bytes": len(segment.content.encode("utf-8")),
                     "page_start": chunk.page_start,
                     "page_end": chunk.page_end,
                     "line_start": chunk.line_start,
@@ -755,12 +787,34 @@ def build_semantic_chunk_vector_records(
                     "knowledge_version_parse_version_id": parse_version.id,
                     "chapter_title": chapter.title if chapter is not None else None,
                     "chapter_path": chapter.node_path if chapter is not None else None,
-                    "source_block_refs_json": chunk.source_block_refs_json,
+                    "source_block_ref_count": len(source_block_refs),
                 },
                 embedding=embedding,
             )
         )
     return records
+
+
+def build_semantic_chunk_vector_segments(
+    semantic_chunks: list[SemanticChunk],
+    *,
+    max_content_utf8_bytes: int = SEMANTIC_CHUNK_TARGET_MAX_UTF8_BYTES,
+) -> list[SemanticChunkVectorSegment]:
+    """将语义块正文展开为不丢内容的向量写入片段。"""
+    vector_segments: list[SemanticChunkVectorSegment] = []
+    for chunk in semantic_chunks:
+        content = (chunk.chunk_text or "").strip()
+        content_segments = _split_plain_text_by_utf8_limit(content, max_content_utf8_bytes)
+        for segment_index, segment_content in enumerate(content_segments, start=1):
+            vector_segments.append(
+                SemanticChunkVectorSegment(
+                    chunk=chunk,
+                    content=segment_content,
+                    segment_index=segment_index,
+                    segment_count=len(content_segments),
+                )
+            )
+    return vector_segments
 
 
 def _resolve_boundary_start_line(boundary: KnowledgeChapterBoundaryItem, line_index: MarkdownLineIndex) -> int:
@@ -829,6 +883,86 @@ def _build_block_lookup(
         if block.is_deleted == 0:
             blocks_by_page_id.setdefault(block.parse_page_id, []).append(block)
     return blocks_by_page_id, page_id_to_no
+
+
+def _split_markdown_range_by_utf8_limit(
+    *,
+    line_index: MarkdownLineIndex,
+    line_start: int,
+    line_end: int,
+    max_bytes: int,
+) -> list[tuple[str, int, int]]:
+    """按 UTF-8 字节上限拆分 Markdown 行区间，避免语义块过长。"""
+    selected_lines = [
+        line
+        for line in line_index.lines
+        if line_start <= line.line_no <= line_end and not line.is_page_marker
+    ]
+    if not selected_lines:
+        return []
+
+    segments: list[tuple[str, int, int]] = []
+    current_lines: list[str] = []
+    current_start: int | None = None
+    current_end: int | None = None
+    current_bytes = 0
+    safe_max_bytes = max(1, max_bytes)
+
+    def flush_current() -> None:
+        nonlocal current_lines, current_start, current_end, current_bytes
+        if current_lines and current_start is not None and current_end is not None:
+            segments.append(("\n".join(current_lines).strip(), current_start, current_end))
+        current_lines = []
+        current_start = None
+        current_end = None
+        current_bytes = 0
+
+    for line in selected_lines:
+        line_text = line.text
+        line_bytes = len(line_text.encode("utf-8"))
+        separator_bytes = 1 if current_lines else 0
+        if current_lines and current_bytes + separator_bytes + line_bytes > safe_max_bytes:
+            flush_current()
+
+        if line_bytes > safe_max_bytes:
+            flush_current()
+            for line_part in _split_text_by_utf8_limit(line_text, safe_max_bytes):
+                segments.append((line_part, line.line_no, line.line_no))
+            continue
+
+        current_lines.append(line_text)
+        current_start = line.line_no if current_start is None else current_start
+        current_end = line.line_no
+        current_bytes += separator_bytes + line_bytes
+
+    flush_current()
+    return [segment for segment in segments if segment[0]]
+
+
+def _split_text_by_utf8_limit(text: str, max_bytes: int) -> list[str]:
+    """按 UTF-8 字节上限拆分单行文本。"""
+    safe_max_bytes = max(1, max_bytes)
+    parts: list[str] = []
+    current_chars: list[str] = []
+    current_bytes = 0
+    for char in text:
+        char_bytes = len(char.encode("utf-8"))
+        if current_chars and current_bytes + char_bytes > safe_max_bytes:
+            parts.append("".join(current_chars))
+            current_chars = []
+            current_bytes = 0
+        current_chars.append(char)
+        current_bytes += char_bytes
+    if current_chars:
+        parts.append("".join(current_chars))
+    return parts
+
+
+def _split_plain_text_by_utf8_limit(text: str, max_bytes: int) -> list[str]:
+    """按 UTF-8 字节上限拆分正文，保留所有字符内容。"""
+    if not text:
+        return []
+    return [part for part in _split_text_by_utf8_limit(text, max_bytes) if part]
 
 
 def _resolve_leaf_chapter_drafts(chapter_drafts: list[ChapterDraft]) -> list[ChapterDraft]:

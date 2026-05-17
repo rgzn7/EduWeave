@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-30
+@Date: 2026-05-17
 @Author: xisy
 @Discription: 知识结构化模块业务服务
 """
@@ -22,6 +22,7 @@ from app.modules.knowledge.domain import (
     build_semantic_chunk_drafts_from_parse_content,
     build_semantic_chunk_embedding_text,
     build_semantic_chunk_vector_records,
+    build_semantic_chunk_vector_segments,
     parent_node_path,
     persist_knowledge_snapshot,
     sort_node_path,
@@ -707,19 +708,24 @@ def upsert_vectors_for_knowledge_version(
     semantic_chunks = repository.list_semantic_chunks(knowledge_version.id)
     chunk_vector_count = 0
     if semantic_chunks:
-        chunk_texts = [build_semantic_chunk_embedding_text(chunk) for chunk in semantic_chunks]
-        chunk_embeddings = embedding_service.embed_texts(chunk_texts)
-        chunk_records = build_semantic_chunk_vector_records(
-            project_id=knowledge_version.project_id,
-            textbook_version_id=textbook_version.id,
-            parse_version=parse_version,
-            semantic_chunks=semantic_chunks,
-            chapters=snapshot.chapters,
-            embeddings=chunk_embeddings,
-            embedding_model=embedding_service.settings.embedding_model or "unknown",
-        )
-        vector_service.upsert_vectors("semantic_chunk_vector", chunk_records)
-        chunk_vector_count = len(chunk_records)
+        chunk_segments = build_semantic_chunk_vector_segments(semantic_chunks)
+        if chunk_segments:
+            chunk_texts = [
+                build_semantic_chunk_embedding_text(segment.chunk, segment.content)
+                for segment in chunk_segments
+            ]
+            chunk_embeddings = embedding_service.embed_texts(chunk_texts)
+            chunk_records = build_semantic_chunk_vector_records(
+                project_id=knowledge_version.project_id,
+                textbook_version_id=textbook_version.id,
+                parse_version=parse_version,
+                semantic_chunk_segments=chunk_segments,
+                chapters=snapshot.chapters,
+                embeddings=chunk_embeddings,
+                embedding_model=embedding_service.settings.embedding_model or "unknown",
+            )
+            vector_service.upsert_vectors("semantic_chunk_vector", chunk_records)
+            chunk_vector_count = len(chunk_records)
 
     knowledge_point_vector_count = 0
     if snapshot.points:
