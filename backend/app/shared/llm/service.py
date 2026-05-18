@@ -149,6 +149,47 @@ class OpenAICompatibleLlmService:
             raise last_error
         raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 生成结果结构不正确")
 
+    @staticmethod
+    def _translate_message(message: ChatMessage, api_format: str) -> dict[str, Any]:
+        """把中性消息翻译为指定 API 格式的请求消息。
+
+        content 为 str 时保持 model_dump 原样输出（零行为变化）；为中性 part
+        列表时按 chat / responses 翻译为对应厂商结构。
+        """
+        if isinstance(message.content, str):
+            return message.model_dump()
+        translated_parts: list[dict[str, Any]] = []
+        for part in message.content:
+            part_type = part.get("type")
+            if part_type == "text":
+                text_value = str(part.get("text") or "")
+                if api_format == "responses":
+                    translated_parts.append({"type": "input_text", "text": text_value})
+                else:
+                    translated_parts.append({"type": "text", "text": text_value})
+            elif part_type == "image":
+                data_url = str(part.get("data_url") or "")
+                if api_format == "responses":
+                    translated_parts.append(
+                        {"type": "input_image", "image_url": data_url, "detail": "auto"}
+                    )
+                else:
+                    translated_parts.append(
+                        {"type": "image_url", "image_url": {"url": data_url, "detail": "auto"}}
+                    )
+        return {"role": message.role, "content": translated_parts}
+
+    @staticmethod
+    def _message_text(message: ChatMessage) -> str:
+        """提取消息的纯文本内容（list 形态仅取 text part，丢弃图片）。"""
+        if isinstance(message.content, str):
+            return message.content
+        return "\n".join(
+            str(part.get("text") or "")
+            for part in message.content
+            if part.get("type") == "text"
+        )
+
     def _build_response_payload(
         self,
         *,
@@ -161,7 +202,7 @@ class OpenAICompatibleLlmService:
         # 若配置中显式给出 reasoning_effort，则忽略 temperature 以避免上游 400。
         payload: dict[str, Any] = {
             "model": self.settings.llm_model,
-            "input": [message.model_dump() for message in messages],
+            "input": [self._translate_message(message, "responses") for message in messages],
             "text": {
                 "format": {
                     "type": "json_schema",
@@ -185,12 +226,13 @@ class OpenAICompatibleLlmService:
     ) -> dict[str, Any]:
         """构造 Chat Completions 兼容结构化请求。"""
         # reasoning 类模型（如 gpt-5 系列）不接受 temperature，仅接受 reasoning_effort
-        message_payloads = [message.model_dump() for message in messages]
+        message_payloads = [self._translate_message(message, "chat") for message in messages]
         # OpenAI 在使用 response_format=json_object 时要求 user 消息中出现 "json" 字样，
         # 否则会以 invalid_request_error 拒绝；此处兜底追加提示，避免上游 prompt 漏写。
+        # 多模态 list 形态下 str(content) 不可靠，改为只扫描原始消息的 text 内容。
         if not any(
-            item.get("role") == "user" and "json" in str(item.get("content") or "").lower()
-            for item in message_payloads
+            message.role == "user" and "json" in self._message_text(message).lower()
+            for message in messages
         ):
             message_payloads.append({"role": "user", "content": "请严格以 JSON 对象格式输出最终结果。"})
         payload: dict[str, Any] = {
@@ -222,7 +264,7 @@ class OpenAICompatibleLlmService:
             LLM_REPAIR_ERROR_MAX_CHARS,
         )
         original_context = "\n\n".join(
-            f"[{message.role}]\n{message.content}" for message in original_messages
+            f"[{message.role}]\n{self._message_text(message)}" for message in original_messages
         )
         context_text = self._clip_text(original_context, LLM_REPAIR_PROMPT_CONTEXT_MAX_CHARS)
         output_text = self._clip_text(invalid_text, LLM_REPAIR_RAW_OUTPUT_MAX_CHARS)

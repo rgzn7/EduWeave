@@ -7,9 +7,11 @@
 import json
 from typing import Any
 
+import structlog
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core.config import get_settings
 from app.core.constants import (
     COVERAGE_ANALYZE_TASK_TYPE,
     TASK_STATUS_FAILURE,
@@ -24,10 +26,32 @@ from app.modules.lesson_plan.repository import LessonPlanRepository
 from app.modules.lesson_plan.schemas import LessonPlanGenerationResult
 from app.modules.p0_models import LessonPlan
 from app.modules.task_center.repository import TaskCenterRepository
-from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
+from app.shared.llm import ChatMessage, OpenAICompatibleLlmService, load_evidence_image_data_urls
 from app.shared.queue import dispatch_task
 from app.shared.utils import DateTimeUtil
 from app.shared.utils.chapter_range_util import build_chapter_range_selection, filter_knowledge_points_by_chapter_selection
+
+logger = structlog.get_logger(__name__)
+
+
+def _load_evidence_images(repository: LessonPlanRepository, knowledge_points: list) -> list[str]:
+    """按配置加载知识点证据关联的教材图片（关闭或无图时返回空，零影响）。"""
+    settings = get_settings()
+    if not settings.llm_multimodal_enabled:
+        return []
+    knowledge_point_ids = [point.id for point in knowledge_points]
+    assets = repository.list_evidence_image_assets(knowledge_point_ids)
+    data_urls = load_evidence_image_data_urls(
+        assets=assets,
+        max_images=settings.llm_multimodal_max_images,
+    )
+    logger.info(
+        "lesson_plan_evidence_images_loaded",
+        knowledge_point_count=len(knowledge_point_ids),
+        asset_count=len(assets),
+        loaded_image_count=len(data_urls),
+    )
+    return data_urls
 
 
 def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
@@ -118,6 +142,8 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
             task_repository.save(step)
         session.commit()
 
+        evidence_images = _load_evidence_images(repository, knowledge_points)
+
         lesson_plan_ids: list[int] = []
         next_version_no = repository.get_next_lesson_plan_version_no(curriculum_plan.id)
         for index, lesson_session in enumerate(lesson_sessions, start=1):
@@ -130,6 +156,7 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
                 profile_version=profile_version,
                 knowledge_points=knowledge_points,
                 profile_records=profile_records,
+                evidence_images=evidence_images,
             )
             generation_result = llm_service.generate_structured_output(
                 messages=llm_messages,
@@ -272,8 +299,13 @@ def _build_lesson_plan_messages(
     profile_version,
     knowledge_points: list,
     profile_records: list,
+    evidence_images: list[str] | None = None,
 ) -> list[ChatMessage]:
-    """构造教案生成提示词。"""
+    """构造教案生成提示词。
+
+    evidence_images 非空时，user 消息使用中性多模态 part 列表注入教材证据图片；
+    为空时保持纯文本字符串（与改造前行为完全一致）。
+    """
     point_payload = [
         {
             "id": point.id,
@@ -358,9 +390,21 @@ def _build_lesson_plan_messages(
         "不得返回空数组或空对象骨架；教师动作、学生活动、课次目标、教学重点、课后任务和学情适配都必须有可执行内容。"
         "不要输出 Markdown、解释文字或代码块。"
     )
+    user_text = json.dumps(user_payload, ensure_ascii=False)
+    if evidence_images:
+        user_content: str | list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": "以下提供教材中与本课知识点相关的证据插图，请结合图片内容生成更贴合教材的教案。",
+            },
+            {"type": "text", "text": user_text},
+            *({"type": "image", "data_url": data_url} for data_url in evidence_images),
+        ]
+    else:
+        user_content = user_text
     return [
         ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content=json.dumps(user_payload, ensure_ascii=False)),
+        ChatMessage(role="user", content=user_content),
     ]
 
 

@@ -10,11 +10,14 @@ from sqlalchemy.orm import Session
 from app.modules.p0_models import (
     ChapterNode,
     CurriculumPlan,
+    FileObject,
     GenerationBatch,
+    KnowledgeEvidence,
     KnowledgePoint,
     LearnerProfileRecord,
     LearnerProfileVersion,
     LessonPlan,
+    ParseBlock,
     Project,
 )
 
@@ -71,6 +74,40 @@ class LessonPlanRepository:
             .order_by(LearnerProfileRecord.sort_order.asc(), LearnerProfileRecord.id.asc())
         )
         return list(self.session.scalars(statement))
+
+    def list_evidence_image_assets(
+        self,
+        knowledge_point_ids: list[int],
+    ) -> list[tuple[int, str, str | None, str | None]]:
+        """查询知识点证据关联的图片资产。
+
+        链路：KnowledgeEvidence.parse_block_id -> ParseBlock.asset_file_id ->
+        FileObject，仅保留 mime_type 为 image/* 的资产。返回
+        (file_object_id, object_key, mime_type, file_ext)，按证据知识点与
+        解析块顺序排列，未去重（去重与上限由加载器处理）。
+        """
+        if not knowledge_point_ids:
+            return []
+        statement = (
+            select(
+                FileObject.id,
+                FileObject.object_key,
+                FileObject.mime_type,
+                FileObject.file_ext,
+            )
+            .select_from(KnowledgeEvidence)
+            .join(ParseBlock, ParseBlock.id == KnowledgeEvidence.parse_block_id)
+            .join(FileObject, FileObject.id == ParseBlock.asset_file_id)
+            .where(
+                KnowledgeEvidence.knowledge_point_id.in_(knowledge_point_ids),
+                KnowledgeEvidence.parse_block_id.is_not(None),
+                ParseBlock.asset_file_id.is_not(None),
+                ParseBlock.is_deleted == 0,
+                FileObject.mime_type.like("image/%"),
+            )
+            .order_by(KnowledgeEvidence.knowledge_point_id.asc(), ParseBlock.id.asc())
+        )
+        return [tuple(row) for row in self.session.execute(statement).all()]
 
     def get_next_lesson_plan_version_no(self, curriculum_plan_id: int) -> int:
         """获取课程大纲下一个教案版本号。"""
