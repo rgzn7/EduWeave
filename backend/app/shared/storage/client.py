@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-11
+@Date: 2026-05-18
 @Author: xisy
 @Discription: 华为云 OBS 存储适配器
 """
@@ -100,8 +100,10 @@ class ObsStorageClient:
             objectKey=object_key,
             expires=expires,
         )
-        status = getattr(response, "status", 200)
-        if int(status) >= 400:
+        # createSignedUrl 为本地签名操作，不发起 HTTP 请求，response.status 通常为 None，
+        # 仅在确实返回了状态码时才按 HTTP 错误处理，避免 int(None) 异常
+        status = getattr(response, "status", None)
+        if status is not None and int(status) >= 400:
             error_message = getattr(response, "errorMessage", "OBS 签名下载地址生成失败")
             raise AppException(BusinessErrorCode.EXTERNAL_SERVICE_ERROR, error_message)
 
