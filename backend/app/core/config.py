@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     llm_max_retries: int = 2
     llm_retry_base_seconds: int = 1
     llm_parse_repair_max_attempts: int = 2
+    # 多模态开关：开启前需将 llm_model 配置为具备视觉能力的模型，否则保持关闭零影响。
+    llm_multimodal_enabled: bool = False
+    # 单次教案生成注入的证据图片数量上限，控制 token 与成本。
+    llm_multimodal_max_images: int = 6
 
     embedding_api_base_url: str = "https://api.openai.com/v1"
     embedding_api_key: str | None = None
