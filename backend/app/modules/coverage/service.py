@@ -365,6 +365,7 @@ def dispatch_coverage_task_if_needed(
             "operator_user_id": operator_user_id,
             "database_url": session.get_bind().url.render_as_string(hide_password=False),
         },
+        queue=GENERATION_QUEUE_NAME,
     )
     if dispatch_result.worker_task_id:
         task.worker_task_id = dispatch_result.worker_task_id

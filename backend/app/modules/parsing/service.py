@@ -100,6 +100,7 @@ class ParsingService:
                 "strategy_code": request.strategy_code,
                 "set_as_current_on_success": request.set_as_current_on_success,
             },
+            queue=PARSING_QUEUE_NAME,
         )
         if dispatch_result.worker_task_id:
             parse_task.worker_task_id = dispatch_result.worker_task_id
@@ -148,6 +149,7 @@ class ParsingService:
                 "strategy_code": request.strategy_code,
                 "set_as_current_on_success": request.set_as_current_on_success,
             },
+            queue=PARSING_QUEUE_NAME,
         )
         if dispatch_result.worker_task_id:
             task.worker_task_id = dispatch_result.worker_task_id

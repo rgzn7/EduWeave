@@ -283,6 +283,83 @@ def test_assessment_should_recalculate_inconsistent_distribution(
     assert paper_json["difficulty_distribution"] == expected_difficulty_distribution
 
 
+def test_assessment_should_truncate_excess_questions_to_strategy(
+    client,
+    generation_test_stubs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLM 多返回题目时应按题号截断到策略题量并成功落库。"""
+    _ = generation_test_stubs
+    headers = build_auth_headers(client)
+    project_id, knowledge_version_id, learner_profile_version_id = create_generation_baseline(client, headers)
+    batch_payload = create_generation_batch(client, headers, project_id, knowledge_version_id, learner_profile_version_id)
+    original_generate = OpenAICompatibleLlmService.generate_structured_output
+
+    def overflow_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
+        if response_model is AssessmentGenerationResult:
+            user_payload = json.loads(messages[1].content)
+            point_id = int(user_payload["knowledge_points"][0]["id"])
+            question_types = ["single_choice", "fill_blank", "short_answer"]
+            questions = []
+            for question_no in range(1, 14):
+                question_type = question_types[(question_no - 1) % len(question_types)]
+                questions.append(
+                    {
+                        "question_no": question_no,
+                        "knowledge_point_id": point_id,
+                        "question_type": question_type,
+                        "difficulty_level": 3,
+                        "score_value": 10,
+                        "stem_text": f"第{question_no}题：围绕乘法口诀完成练习。",
+                        "options_json": {"A": "2", "B": "4"} if question_type == "single_choice" else None,
+                        "answer_text": "参考答案",
+                        "analysis_text": "考查乘法口诀。",
+                        "source_trace_json": {"knowledge_point_ids": [point_id]},
+                    }
+                )
+            return AssessmentGenerationResult(
+                blueprint_name="多返回测评蓝图",
+                paper_title="多返回测评",
+                strategy_summary={"scene_type": "unit_test", "question_count": 10},
+                knowledge_weights=[
+                    {
+                        "knowledge_point_id": point_id,
+                        "weight_percent": 100,
+                        "suggested_question_count": 13,
+                        "question_types": question_types,
+                        "difficulty_range": [1, 5],
+                    }
+                ],
+                question_type_distribution={"single_choice": 5, "fill_blank": 4, "short_answer": 4},
+                difficulty_distribution={"3": 13},
+                questions=questions,
+            )
+        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature)
+
+    monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", overflow_generate)
+    response = client.post(
+        f"/api/v1/curriculum-plans/{batch_payload['curriculum_plan_id']}/assessment-tasks",
+        headers=headers,
+        json={},
+    )
+
+    assert response.status_code == 201
+    result_json = response.json()["data"]["result_json"]
+    assert result_json["question_count"] == 10
+
+    paper_response = client.get(f"/api/v1/paper-results/{result_json['paper_result_id']}", headers=headers)
+    assert paper_response.status_code == 200
+    paper_data = paper_response.json()["data"]
+    assert paper_data["question_count"] == 10
+    assert len(paper_data["questions"]) == 10
+    assert [item["question_no"] for item in paper_data["questions"]] == list(range(1, 11))
+    assert paper_data["paper_json"]["question_type_distribution"] == {
+        "single_choice": 4,
+        "fill_blank": 3,
+        "short_answer": 3,
+    }
+
+
 def test_generation_batch_should_mark_failure_when_assessment_has_invalid_knowledge_ref(
     client,
     seeded_session_factory,
