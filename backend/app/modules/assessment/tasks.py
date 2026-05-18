@@ -136,6 +136,7 @@ def run_generate_assessment_task(payload: dict) -> dict[str, int | str]:
             strategy=strategy,
             knowledge_point_ids={point.id for point in knowledge_points},
         )
+        _normalize_assessment_distributions(generation_result)
 
         _mark_step(
             step_map["invoke_llm_assessment"],
@@ -333,6 +334,7 @@ def _build_assessment_messages(
         "必须严格输出 JSON 对象，字段包含 blueprint_name、paper_title、strategy_summary、"
         "knowledge_weights、question_type_distribution、difficulty_distribution、questions。"
         "questions 数量必须等于 assessment_strategy.question_count，question_no 必须从 1 连续递增。"
+        "question_type_distribution 和 difficulty_distribution 必须与 questions 逐题统计完全一致。"
         "每道题必须包含 knowledge_point_id、question_type、difficulty_level、stem_text、answer_text、analysis_text。"
         "所有 knowledge_point_id 必须只引用输入中的知识点 id，题型只能使用输入策略中的 question_types。"
         "不要输出 Markdown、解释文字或代码块。"
@@ -397,36 +399,13 @@ def _validate_assessment_result(
             "LLM 返回了不符合策略的难度等级",
             {"difficulty_levels": sorted(set(invalid_difficulties))},
         )
-    _validate_distribution_consistency(
-        field_name="question_type_distribution",
-        actual_distribution=_build_question_type_distribution(result),
-        reported_distribution=result.question_type_distribution,
-    )
-    _validate_distribution_consistency(
-        field_name="difficulty_distribution",
-        actual_distribution=_build_question_difficulty_distribution(result),
-        reported_distribution=result.difficulty_distribution,
-    )
     _validate_knowledge_weight_consistency(result, expected_question_count=expected_question_count)
 
 
-def _validate_distribution_consistency(
-    *,
-    field_name: str,
-    actual_distribution: dict[str, int],
-    reported_distribution: dict[str, int],
-) -> None:
-    """校验 LLM 汇总分布与题目明细统计一致。"""
-    normalized_distribution = {str(key): int(value) for key, value in reported_distribution.items()}
-    if normalized_distribution != actual_distribution:
-        raise AppException(
-            BusinessErrorCode.LLM_RESULT_INVALID,
-            f"LLM 返回的{field_name}与题目明细不一致",
-            {
-                "expected_distribution": actual_distribution,
-                "actual_distribution": normalized_distribution,
-            },
-        )
+def _normalize_assessment_distributions(result: AssessmentGenerationResult) -> None:
+    """以后端题目明细统计为准修正汇总分布。"""
+    result.question_type_distribution = _build_question_type_distribution(result)
+    result.difficulty_distribution = _build_question_difficulty_distribution(result)
 
 
 def _validate_knowledge_weight_consistency(

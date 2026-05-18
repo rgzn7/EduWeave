@@ -200,12 +200,12 @@ def test_assessment_prompt_should_follow_custom_scene_type(
     assert paper_detail_response.json()["data"]["scene_type"] == "homework"
 
 
-def test_assessment_should_reject_inconsistent_distribution(
+def test_assessment_should_recalculate_inconsistent_distribution(
     client,
     generation_test_stubs,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """测评题目明细可信但分布统计漂移时应拒绝结果。"""
+    """测评题目明细可信但分布统计漂移时应以后端重算结果落库。"""
     _ = generation_test_stubs
     headers = build_auth_headers(client)
     project_id, knowledge_version_id, learner_profile_version_id = create_generation_baseline(client, headers)
@@ -218,11 +218,9 @@ def test_assessment_should_reject_inconsistent_distribution(
             point_id = int(user_payload["knowledge_points"][0]["id"])
             question_types = ["single_choice", "fill_blank", "short_answer"]
             questions = []
-            difficulty_distribution: dict[str, int] = {}
             for question_no in range(1, 11):
                 question_type = question_types[(question_no - 1) % len(question_types)]
                 difficulty_level = 3
-                difficulty_distribution[str(difficulty_level)] = difficulty_distribution.get(str(difficulty_level), 0) + 1
                 questions.append(
                     {
                         "question_no": question_no,
@@ -251,7 +249,7 @@ def test_assessment_should_reject_inconsistent_distribution(
                     }
                 ],
                 question_type_distribution={"single_choice": 10},
-                difficulty_distribution=difficulty_distribution,
+                difficulty_distribution={"1": 10},
                 questions=questions,
             )
         return original_generate(self, messages=messages, response_model=response_model, temperature=temperature)
@@ -263,8 +261,26 @@ def test_assessment_should_reject_inconsistent_distribution(
         json={},
     )
 
-    assert response.status_code == 503
-    assert response.json()["errors"][0]["code"] == BusinessErrorCode.LLM_RESULT_INVALID.value
+    assert response.status_code == 201
+    task_payload = response.json()["data"]
+    result_json = task_payload["result_json"]
+    expected_question_type_distribution = {"single_choice": 4, "fill_blank": 3, "short_answer": 3}
+    expected_difficulty_distribution = {"3": 10}
+
+    blueprint_response = client.get(
+        f"/api/v1/assessment-blueprints/{result_json['assessment_blueprint_id']}",
+        headers=headers,
+    )
+    assert blueprint_response.status_code == 200
+    blueprint_content = blueprint_response.json()["data"]["content_json"]
+    assert blueprint_content["question_type_distribution"] == expected_question_type_distribution
+    assert blueprint_content["difficulty_distribution"] == expected_difficulty_distribution
+
+    paper_response = client.get(f"/api/v1/paper-results/{result_json['paper_result_id']}", headers=headers)
+    assert paper_response.status_code == 200
+    paper_json = paper_response.json()["data"]["paper_json"]
+    assert paper_json["question_type_distribution"] == expected_question_type_distribution
+    assert paper_json["difficulty_distribution"] == expected_difficulty_distribution
 
 
 def test_generation_batch_should_mark_failure_when_assessment_has_invalid_knowledge_ref(
