@@ -234,6 +234,24 @@ export type AssessmentBlueprint = {
   updated_at: string;
 };
 
+export type QuestionItem = {
+  id: number;
+  generation_batch_id: number;
+  paper_result_id: number;
+  knowledge_point_id?: number | null;
+  question_no: number;
+  question_type: string;
+  difficulty_level?: number | null;
+  score_value?: number | null;
+  stem_text: string;
+  options_json?: JsonRecord | null;
+  answer_text?: string | null;
+  analysis_text?: string | null;
+  source_trace_json?: JsonRecord | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type PaperResult = {
   id: number;
   generation_batch_id: number;
@@ -245,7 +263,7 @@ export type PaperResult = {
   difficulty_stats_json?: JsonRecord | null;
   paper_json: JsonRecord | null;
   export_file_id?: number | null;
-  questions?: unknown;
+  questions?: QuestionItem[];
   created_at: string;
   updated_at: string;
 };
