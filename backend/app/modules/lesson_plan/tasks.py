@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import get_settings
 from app.core.constants import (
     COVERAGE_ANALYZE_TASK_TYPE,
+    GENERATION_QUEUE_NAME,
     TASK_STATUS_FAILURE,
     TASK_STATUS_PROCESSING,
     TASK_STATUS_SUCCESS,
@@ -268,6 +269,7 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
                     "operator_user_id": payload.get("operator_user_id"),
                     "database_url": session.get_bind().url.render_as_string(hide_password=False),
                 },
+                queue=GENERATION_QUEUE_NAME,
             )
             if dispatch_result.worker_task_id:
                 coverage_task.worker_task_id = dispatch_result.worker_task_id

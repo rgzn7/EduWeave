@@ -64,17 +64,25 @@ def dispatch_task(
     callable_path: str,
     payload: dict[str, Any],
     *,
+    queue: str | None = None,
     settings: Settings | None = None,
     run_inline: bool | None = None,
 ) -> TaskDispatchResult:
-    """统一派发任务，测试环境允许同步执行。"""
+    """统一派发任务，测试环境允许同步执行。
+
+    queue 用于将任务投递到与任务记录 queue_name 一致的队列，
+    避免 worker 仅监听业务队列时任务滞留在默认 celery 队列。
+    """
     current_settings = settings or get_settings()
     should_run_inline = current_settings.task_eager_mode if run_inline is None else run_inline
     if should_run_inline:
         result = execute_callable_task(callable_path, payload)
         return TaskDispatchResult(worker_task_id=None, executed_inline=True, result=result)
 
-    async_result = execute_callable_task.delay(callable_path, payload)
+    async_result = execute_callable_task.apply_async(
+        args=[callable_path, payload],
+        queue=queue,
+    )
     return TaskDispatchResult(worker_task_id=str(async_result.id), executed_inline=False)
 
 

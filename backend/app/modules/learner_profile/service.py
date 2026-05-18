@@ -174,6 +174,7 @@ class LearnerProfileService:
                     "textbook_version_hint_id": textbook_version_hint_id,
                     "set_as_current": set_as_current,
                 },
+                queue=PROFILE_QUEUE_NAME,
             )
             if dispatch_result.worker_task_id:
                 task.worker_task_id = dispatch_result.worker_task_id

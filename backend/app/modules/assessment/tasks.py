@@ -19,7 +19,7 @@ from app.core.constants import (
 from app.core.database import SessionLocal
 from app.core.exceptions import AppException, BusinessErrorCode, get_task_error_code
 from app.modules.assessment.repository import AssessmentRepository
-from app.modules.assessment.schemas import AssessmentGenerationResult
+from app.modules.assessment.schemas import AssessmentGenerationResult, AssessmentKnowledgeWeightDraft
 from app.modules.p0_models import AssessmentBlueprint, PaperResult, QuestionItem
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
@@ -131,6 +131,7 @@ def run_generate_assessment_task(payload: dict) -> dict[str, int | str]:
             messages=llm_messages,
             response_model=AssessmentGenerationResult,
         )
+        _truncate_questions_to_strategy(generation_result, expected_question_count=int(strategy["question_count"]))
         _validate_assessment_result(
             generation_result,
             strategy=strategy,
@@ -333,7 +334,9 @@ def _build_assessment_messages(
         "不得固定写成单元测试；blueprint_name、paper_title、strategy_summary 和题目语境必须体现当前场景。"
         "必须严格输出 JSON 对象，字段包含 blueprint_name、paper_title、strategy_summary、"
         "knowledge_weights、question_type_distribution、difficulty_distribution、questions。"
-        "questions 数量必须等于 assessment_strategy.question_count，question_no 必须从 1 连续递增。"
+        "questions 数量必须不少于 assessment_strategy.question_count，只能多不能少；"
+        "如不确定可适当多出几道，多余题目会按题号顺序被截断，但绝不允许少于该题量。"
+        "question_no 必须从 1 开始连续递增且不得重复。"
         "question_type_distribution 和 difficulty_distribution 必须与 questions 逐题统计完全一致。"
         "每道题必须包含 knowledge_point_id、question_type、difficulty_level、stem_text、answer_text、analysis_text。"
         "所有 knowledge_point_id 必须只引用输入中的知识点 id，题型只能使用输入策略中的 question_types。"
@@ -345,6 +348,18 @@ def _build_assessment_messages(
     ]
 
 
+def _truncate_questions_to_strategy(
+    result: AssessmentGenerationResult,
+    *,
+    expected_question_count: int,
+) -> None:
+    """LLM 允许多出题目，按题号顺序截断到策略题量；不足时不处理交由校验失败。"""
+    if len(result.questions) <= expected_question_count:
+        return
+    ordered_questions = sorted(result.questions, key=lambda question: question.question_no)
+    result.questions = ordered_questions[:expected_question_count]
+
+
 def _validate_assessment_result(
     result: AssessmentGenerationResult,
     *,
@@ -353,10 +368,10 @@ def _validate_assessment_result(
 ) -> None:
     """校验测评生成结果。"""
     expected_question_count = int(strategy["question_count"])
-    if len(result.questions) != expected_question_count:
+    if len(result.questions) < expected_question_count:
         raise AppException(
             BusinessErrorCode.LLM_RESULT_INVALID,
-            "LLM 返回题量不符合测评策略",
+            "LLM 返回题量不足测评策略要求",
             {"expected_question_count": expected_question_count, "actual_question_count": len(result.questions)},
         )
     allowed_question_types = set(strategy["question_types"])
@@ -399,81 +414,53 @@ def _validate_assessment_result(
             "LLM 返回了不符合策略的难度等级",
             {"difficulty_levels": sorted(set(invalid_difficulties))},
         )
-    _validate_knowledge_weight_consistency(result, expected_question_count=expected_question_count)
 
 
 def _normalize_assessment_distributions(result: AssessmentGenerationResult) -> None:
-    """以后端题目明细统计为准修正汇总分布。"""
+    """以后端题目明细统计为准修正汇总分布与知识点权重。"""
     result.question_type_distribution = _build_question_type_distribution(result)
     result.difficulty_distribution = _build_question_difficulty_distribution(result)
+    result.knowledge_weights = _build_knowledge_weights(result)
 
 
-def _validate_knowledge_weight_consistency(
-    result: AssessmentGenerationResult,
-    *,
-    expected_question_count: int,
-) -> None:
-    """校验知识点权重摘要与题目明细一致。"""
+def _build_knowledge_weights(result: AssessmentGenerationResult) -> list[AssessmentKnowledgeWeightDraft]:
+    """根据题目明细反算知识点建议题量与考查权重，并保留 LLM 的题型/难度建议。"""
+    total_question_count = len(result.questions) or 1
+    ordered_point_ids: list[int] = []
     actual_counts: dict[int, int] = {}
+    question_types_by_point: dict[int, list[str]] = {}
+    difficulties_by_point: dict[int, list[int]] = {}
     for question in result.questions:
-        actual_counts[question.knowledge_point_id] = actual_counts.get(question.knowledge_point_id, 0) + 1
+        point_id = question.knowledge_point_id
+        if point_id not in actual_counts:
+            ordered_point_ids.append(point_id)
+            question_types_by_point[point_id] = []
+            difficulties_by_point[point_id] = []
+        actual_counts[point_id] = actual_counts.get(point_id, 0) + 1
+        if question.question_type not in question_types_by_point[point_id]:
+            question_types_by_point[point_id].append(question.question_type)
+        difficulties_by_point[point_id].append(question.difficulty_level)
 
-    weight_ids = [item.knowledge_point_id for item in result.knowledge_weights]
-    if len(set(weight_ids)) != len(weight_ids):
-        raise AppException(
-            BusinessErrorCode.LLM_RESULT_INVALID,
-            "LLM 返回的知识点权重包含重复知识点",
-            {"knowledge_point_ids": weight_ids},
-        )
-    reported_counts = {item.knowledge_point_id: int(item.suggested_question_count) for item in result.knowledge_weights}
-    if reported_counts != actual_counts:
-        raise AppException(
-            BusinessErrorCode.LLM_RESULT_INVALID,
-            "LLM 返回的知识点建议题量与题目明细不一致",
-            {"expected_knowledge_counts": actual_counts, "actual_knowledge_counts": reported_counts},
-        )
-
-    if sum(reported_counts.values()) != expected_question_count:
-        raise AppException(
-            BusinessErrorCode.LLM_RESULT_INVALID,
-            "LLM 返回的知识点建议题量汇总与总题量不一致",
-            {"expected_question_count": expected_question_count, "actual_question_count": sum(reported_counts.values())},
-        )
-
-    missing_weight_ids = [item.knowledge_point_id for item in result.knowledge_weights if item.weight_percent is None]
-    if missing_weight_ids:
-        raise AppException(
-            BusinessErrorCode.LLM_RESULT_INVALID,
-            "LLM 返回的知识点权重百分比不能为空",
-            {"knowledge_point_ids": missing_weight_ids},
-        )
-
-    total_weight_percent = sum(float(item.weight_percent or 0) for item in result.knowledge_weights)
-    if abs(total_weight_percent - 100.0) > 1.0:
-        raise AppException(
-            BusinessErrorCode.LLM_RESULT_INVALID,
-            "LLM 返回的知识点权重百分比汇总不为 100",
-            {"expected_weight_percent": 100.0, "actual_weight_percent": total_weight_percent, "tolerance": 1.0},
-        )
-
-    invalid_weight_percents = []
-    for item in result.knowledge_weights:
-        expected_percent = actual_counts[item.knowledge_point_id] / expected_question_count * 100
-        actual_percent = float(item.weight_percent or 0)
-        if abs(actual_percent - expected_percent) > 1.0:
-            invalid_weight_percents.append(
-                {
-                    "knowledge_point_id": item.knowledge_point_id,
-                    "expected_weight_percent": expected_percent,
-                    "actual_weight_percent": actual_percent,
-                }
+    llm_hints = {item.knowledge_point_id: item for item in result.knowledge_weights}
+    normalized: list[AssessmentKnowledgeWeightDraft] = []
+    for point_id in ordered_point_ids:
+        count = actual_counts[point_id]
+        hint = llm_hints.get(point_id)
+        difficulties = sorted(difficulties_by_point[point_id])
+        normalized.append(
+            AssessmentKnowledgeWeightDraft(
+                knowledge_point_id=point_id,
+                weight_percent=round(count / total_question_count * 100, 2),
+                suggested_question_count=count,
+                question_types=(
+                    hint.question_types if hint and hint.question_types else question_types_by_point[point_id]
+                ),
+                difficulty_range=(
+                    hint.difficulty_range if hint and hint.difficulty_range else [difficulties[0], difficulties[-1]]
+                ),
             )
-    if invalid_weight_percents:
-        raise AppException(
-            BusinessErrorCode.LLM_RESULT_INVALID,
-            "LLM 返回的知识点权重百分比与题目明细不一致",
-            {"items": invalid_weight_percents, "tolerance": 1.0},
         )
+    return normalized
 
 
 def _build_blueprint_content_json(result: AssessmentGenerationResult) -> dict[str, Any]:
