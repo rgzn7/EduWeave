@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-03
+@Date: 2026-05-19
 @Author: xisy
 @Discription: 课件模块任务执行能力
 """
@@ -59,16 +59,36 @@ def run_generate_courseware_task(payload: dict) -> dict[str, int | str | None]:
             },
             finished_at=DateTimeUtil.now_utc(),
         )
-        _mark_step(step_map["create_raccoon_ppt_job"], TASK_STATUS_PROCESSING, 30, started_at=DateTimeUtil.now_utc())
-        _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="create_raccoon_ppt_job", progress_percent=35)
+        _mark_step(step_map["generate_slide_deck"], TASK_STATUS_PROCESSING, 20, started_at=DateTimeUtil.now_utc())
+        _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="generate_slide_deck", progress_percent=30)
         task_repository.save(task)
         for step in step_map.values():
             task_repository.save(step)
         session.commit()
 
-        courseware_result, state = service.create_remote_courseware_result(
-            generation_batch_id=generation_batch.id,
-            lesson_plan_id=lesson_plan_id,
+        deck = service.generate_slide_deck(context)
+        _mark_step(
+            step_map["generate_slide_deck"],
+            TASK_STATUS_SUCCESS,
+            100,
+            detail_json={"slide_count": len(deck.slides)},
+            finished_at=DateTimeUtil.now_utc(),
+        )
+        _mark_step(step_map["create_raccoon_ppt_job"], TASK_STATUS_PROCESSING, 30, started_at=DateTimeUtil.now_utc())
+        _mark_task(
+            task,
+            task_status=TASK_STATUS_PROCESSING,
+            current_stage="create_raccoon_ppt_job",
+            progress_percent=45,
+        )
+        task_repository.save(task)
+        task_repository.save(step_map["generate_slide_deck"])
+        task_repository.save(step_map["create_raccoon_ppt_job"])
+        session.commit()
+
+        courseware_result, state = service.create_remote_courseware_result_from_deck(
+            context=context,
+            deck=deck,
             operator_user_id=payload.get("operator_user_id"),
         )
         normalized_status = state.status.lower()
@@ -188,6 +208,7 @@ def _get_step_map(task_repository: TaskCenterRepository, task_record_id: int) ->
         step_code: task_repository.get_task_step(task_record_id, step_code)
         for step_code in (
             "prepare_courseware_baseline",
+            "generate_slide_deck",
             "create_raccoon_ppt_job",
             "poll_raccoon_ppt_job",
             "archive_courseware_result",
@@ -251,6 +272,7 @@ def _mark_task_failure(
         task_repository.save(task)
     for step_code in (
         "prepare_courseware_baseline",
+        "generate_slide_deck",
         "create_raccoon_ppt_job",
         "poll_raccoon_ppt_job",
         "archive_courseware_result",
