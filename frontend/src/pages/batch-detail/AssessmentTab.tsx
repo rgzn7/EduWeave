@@ -177,7 +177,7 @@ function PaperDetail({ paper }: { paper?: PaperResult }) {
             ))}
           </div>
         ) : (
-          <EmptyState title="暂无题目明细" />
+          <EmptyState description="试卷结果中没有 questions 明细，仍可展开 paper_json 查看后端原始结构。" title="暂无题目明细" />
         )}
       </SectionBlock>
 
@@ -269,7 +269,7 @@ export function AssessmentTab({
 
   return (
     <div className="space-y-5">
-      <TaskSummaryCard title="测评任务" task={task} />
+      <TaskSummaryCard description="测评是按需生成成果；任务成功后会同时产生蓝图和试卷结果。" title="测评任务" task={task} />
 
       <section className="rounded-md border border-line bg-paper/60 p-5">
         <div className="flex flex-col justify-between gap-4 xl:flex-row xl:items-center">
@@ -293,10 +293,13 @@ export function AssessmentTab({
             <ShieldCheck size={16} />
             测评蓝图
           </div>
-          {blueprintListLoading ? <LoadingBlock text="加载测评蓝图" /> : null}
+          {blueprintListLoading ? <LoadingBlock description="正在读取当前课程方案下的 unit_test 蓝图。" text="加载测评蓝图" /> : null}
           {blueprintListError ? <ErrorNotice title="测评蓝图列表获取失败" message={getErrorMessage(blueprintListError)} /> : null}
           {!blueprintListLoading && !blueprintListError && !blueprints.length ? (
-            <EmptyState title={activeTask ? "测评蓝图生成中" : "暂未产生测评蓝图"} />
+            <EmptyState
+              description={activeTask ? "测评任务仍在运行，蓝图会在后端持久化后出现。" : "当前批次还没有蓝图结果，可在依赖满足后生成单元测评。"}
+              title={activeTask ? "测评蓝图生成中" : "暂未产生测评蓝图"}
+            />
           ) : null}
           {blueprints.length ? (
             <div className="divide-y divide-line rounded-md border border-line">
@@ -328,9 +331,14 @@ export function AssessmentTab({
             <FileQuestion size={16} />
             试卷结果
           </div>
-          {paperListLoading ? <LoadingBlock text="加载试卷结果" /> : null}
+          {paperListLoading ? <LoadingBlock description="正在读取当前批次下的试卷结果和导出状态。" text="加载试卷结果" /> : null}
           {paperListError ? <ErrorNotice title="试卷列表获取失败" message={getErrorMessage(paperListError)} /> : null}
-          {!paperListLoading && !paperListError && !papers.length ? <EmptyState title={activeTask ? "试卷生成中" : "暂未产生试卷"} /> : null}
+          {!paperListLoading && !paperListError && !papers.length ? (
+            <EmptyState
+              description={activeTask ? "试卷会在测评任务完成后出现，页面会随轮询刷新。" : "当前批次还没有单元试卷结果。"}
+              title={activeTask ? "试卷生成中" : "暂未产生试卷"}
+            />
+          ) : null}
           {papers.length ? (
             <div className="divide-y divide-line rounded-md border border-line">
               {papers.map((item) => (
@@ -357,7 +365,7 @@ export function AssessmentTab({
         </section>
       </div>
 
-      {blueprintDetailLoading ? <LoadingBlock text="加载蓝图详情" /> : null}
+      {blueprintDetailLoading ? <LoadingBlock description="正在读取题型、难度和知识点权重。" text="加载蓝图详情" /> : null}
       {blueprintDetailError ? <ErrorNotice title="蓝图详情获取失败" message={getErrorMessage(blueprintDetailError)} /> : null}
       <BlueprintDetail blueprint={blueprint} />
 
@@ -375,7 +383,7 @@ export function AssessmentTab({
         {downloadMutation.error ? <ErrorNotice title="DOCX 下载失败" message={getErrorMessage(downloadMutation.error)} /> : null}
       </section>
 
-      {paperDetailLoading ? <LoadingBlock text="加载试卷详情" /> : null}
+      {paperDetailLoading ? <LoadingBlock description="正在读取题目、答案解析和知识点来源。" text="加载试卷详情" /> : null}
       {paperDetailError ? <ErrorNotice title="试卷详情获取失败" message={getErrorMessage(paperDetailError)} /> : null}
       <PaperDetail paper={paper} />
     </div>

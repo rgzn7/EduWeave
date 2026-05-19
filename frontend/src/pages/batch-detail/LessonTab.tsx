@@ -10,7 +10,7 @@ import { KeyValueGrid, KnowledgeRefs, LoadingBlock, SectionBlock, StatCard, Task
 
 function TeachingSteps({ steps }: { steps: JsonObject[] }) {
   if (!steps.length) {
-    return <EmptyState title="暂无教学流程" />;
+    return <EmptyState description="当前结构化教案未返回 teaching_flow，原始 content_json 仍保留在页面底部。" title="暂无教学流程" />;
   }
   return (
     <div className="space-y-3">
@@ -41,7 +41,7 @@ function TeachingSteps({ steps }: { steps: JsonObject[] }) {
 
 function LessonSessions({ sessions }: { sessions: JsonObject[] }) {
   if (!sessions.length) {
-    return <EmptyState title="暂无课次讲解安排" />;
+    return <EmptyState description="当前教案没有 session_plans 明细，页面会继续展示课堂流程和原始 JSON。" title="暂无课次讲解安排" />;
   }
   return (
     <div className="space-y-3">
@@ -105,12 +105,15 @@ export function LessonTab({
 
   return (
     <div className="space-y-5">
-      <TaskSummaryCard title="教案任务" task={task} />
-      {!batch.curriculum_plan_id ? <EmptyState title="需要先生成课程方案" /> : null}
-      {listLoading ? <LoadingBlock text="加载教案列表" /> : null}
+      <TaskSummaryCard description="教案承接课程方案，并作为测评与课件按需生成的直接输入。" title="教案任务" task={task} />
+      {!batch.curriculum_plan_id ? <EmptyState description="当前批次尚未绑定课程方案，教案列表会保持为空。" title="需要先生成课程方案" /> : null}
+      {listLoading ? <LoadingBlock description="正在读取当前批次下的 ready 教案列表。" text="加载教案列表" /> : null}
       {listError ? <ErrorNotice title="教案列表获取失败" message={getErrorMessage(listError)} /> : null}
       {!listLoading && !listError && batch.curriculum_plan_id && !lessons.length ? (
-        <EmptyState title={isTaskActiveStatus(task?.task_status) ? "教案生成中" : "暂未产生教案"} />
+        <EmptyState
+          description={isTaskActiveStatus(task?.task_status) ? "教案任务仍在运行，页面会随批次轮询更新。" : "当前批次没有可展示的 ready 教案，请从关联任务查看生成结果。"}
+          title={isTaskActiveStatus(task?.task_status) ? "教案生成中" : "暂未产生教案"}
+        />
       ) : null}
       {lessons.length ? (
         <div className="grid gap-5 xl:grid-cols-[300px_1fr]">
@@ -139,7 +142,7 @@ export function LessonTab({
             </div>
           </aside>
           <div className="space-y-5">
-            {detailLoading ? <LoadingBlock text="加载教案详情" /> : null}
+            {detailLoading ? <LoadingBlock description="正在读取选中教案的课堂流程、物料和知识点引用。" text="加载教案详情" /> : null}
             {detailError ? <ErrorNotice title="教案详情获取失败" message={getErrorMessage(detailError)} /> : null}
             {lesson ? (
               <>

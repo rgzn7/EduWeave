@@ -58,6 +58,8 @@ ENV/
 *.pid
 *.tmp
 *.temp
+.playwright-cli/
+output/
 
 # 本地数据库与运行态文件
 *.sqlite3

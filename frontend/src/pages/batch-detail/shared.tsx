@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
-import { AlertTriangle, ArrowRight, Loader2 } from "lucide-react";
+import { AlertTriangle, ArrowRight, Clock3, Loader2 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { ProgressBar } from "../../components/ProgressBar";
 import { StatusBadge } from "../../components/StatusBadge";
 import type { Task } from "../../types";
+import { formatDate } from "../../utils";
 import { displayValue, type JsonObject } from "./helpers";
 
 export function StatCard({ label, value }: { label: string; value?: string | number | null }) {
@@ -24,11 +25,14 @@ export function ResultPlaceholder({ title, description }: { title: string; descr
   );
 }
 
-export function LoadingBlock({ text }: { text: string }) {
+export function LoadingBlock({ text, description }: { text: string; description?: string }) {
   return (
-    <div className="flex min-h-36 items-center justify-center rounded-md border border-line bg-paper/60 text-sm font-semibold text-ink/55">
-      <Loader2 className="mr-2 animate-spin" size={17} />
-      {text}
+    <div className="flex min-h-36 flex-col items-center justify-center rounded-md border border-line bg-paper/60 px-4 text-center text-sm font-semibold text-ink/55">
+      <div className="flex items-center justify-center">
+        <Loader2 className="mr-2 animate-spin" size={17} />
+        {text}
+      </div>
+      {description ? <div className="mt-2 max-w-xl text-xs font-medium leading-5 text-ink/40">{description}</div> : null}
     </div>
   );
 }
@@ -92,13 +96,14 @@ export function KnowledgeRefs({ ids }: { ids: number[] }) {
   );
 }
 
-export function TaskSummaryCard({ title, task }: { title: string; task?: Task }) {
+export function TaskSummaryCard({ title, task, description }: { title: string; task?: Task; description?: string }) {
   return (
     <aside className="rounded-md border border-line bg-paper/60 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="label">{title}</div>
           <div className="mt-1 text-sm font-bold text-ink">{task ? `任务 #${task.id}` : "暂无关联任务"}</div>
+          {description ? <div className="mt-1 max-w-2xl text-xs leading-5 text-ink/45">{description}</div> : null}
         </div>
         {task ? <StatusBadge status={task.task_status} /> : null}
       </div>
@@ -110,6 +115,11 @@ export function TaskSummaryCard({ title, task }: { title: string; task?: Task })
           <div className="mt-3 grid gap-2 text-xs text-ink/55 md:grid-cols-2">
             <span>类型：{task.task_type}</span>
             <span>阶段：{task.current_stage ?? "-"}</span>
+            <span className="flex items-center gap-1">
+              <Clock3 size={13} />
+              更新：{formatDate(task.updated_at)}
+            </span>
+            <span>队列：{task.queue_name ?? "-"}</span>
           </div>
           {task.last_error_message ? (
             <div className="mt-3 flex gap-2 rounded-md border border-coral/20 bg-coral/10 p-3 text-xs font-semibold text-coral">

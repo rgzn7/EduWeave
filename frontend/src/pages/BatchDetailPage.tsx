@@ -266,6 +266,14 @@ export function BatchDetailPage() {
       isTaskActiveStatus(query.state.data?.result_status) || isTaskActiveStatus(selectedCoursewareTask?.task_status) ? 5_000 : false,
   });
 
+  const assessmentOverviewStatus = paperResults[0]?.result_status ?? assessmentTask?.task_status ?? "pending";
+  const coursewareOverviewStatus =
+    coursewareResults.find((item) => isSuccessfulResultStatus(item.result_status))?.result_status ??
+    coursewareResults[0]?.result_status ??
+    coursewareTask?.task_status ??
+    "pending";
+  const coverageOverviewStatus = coverageReports[0]?.report_status ?? coverageTask?.task_status ?? batch?.batch_status ?? "pending";
+
   const createAssessment = useMutation({
     mutationFn: () =>
       api.createAssessmentTask(batch!.curriculum_plan_id!, {
@@ -351,7 +359,18 @@ export function BatchDetailPage() {
           </div>
         </div>
         <div className="p-5">
-          {activeTab === "overview" ? <OverviewTab batch={batch} /> : null}
+          {activeTab === "overview" ? (
+            <OverviewTab
+              assessmentCount={paperResults.length}
+              assessmentStatus={assessmentOverviewStatus}
+              batch={batch}
+              coursewareCount={coursewareResults.length}
+              coursewareStatus={coursewareOverviewStatus}
+              coverageCount={coverageReports.length}
+              coverageStatus={coverageOverviewStatus}
+              lessonCount={lessonPlans.length}
+            />
+          ) : null}
           {activeTab === "curriculum" ? (
             <CurriculumTab
               plan={curriculumQuery.data}
@@ -432,7 +451,11 @@ export function BatchDetailPage() {
             />
           ) : null}
           {activeTab === "tasks" ? (
-            tasks.length ? <TaskTable tasks={tasks} /> : <EmptyState title="暂无关联任务" />
+            tasks.length ? (
+              <TaskTable tasks={tasks} />
+            ) : (
+              <EmptyState description="当前批次没有任务记录，通常表示生成尚未触发或批次数据异常。" title="暂无关联任务" />
+            )
           ) : null}
         </div>
       </section>

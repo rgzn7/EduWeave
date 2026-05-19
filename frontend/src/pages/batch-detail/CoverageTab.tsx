@@ -37,11 +37,14 @@ export function CoverageTab({
 
   return (
     <div className="space-y-5">
-      <TaskSummaryCard title="覆盖报告任务" task={task} />
-      {listLoading ? <LoadingBlock text="加载覆盖报告" /> : null}
+      <TaskSummaryCard description="覆盖报告用于校验课程方案和教案引用的知识点，帮助讲清楚生成结果是否覆盖输入基线。" title="覆盖报告任务" task={task} />
+      {listLoading ? <LoadingBlock description="正在读取当前批次的覆盖率、告警和成果物引用。" text="加载覆盖报告" /> : null}
       {listError ? <ErrorNotice title="覆盖报告列表获取失败" message={getErrorMessage(listError)} /> : null}
       {!listLoading && !listError && !reports.length ? (
-        <EmptyState title={isTaskActiveStatus(task?.task_status) ? "覆盖报告生成中" : "暂未产生覆盖报告"} />
+        <EmptyState
+          description={isTaskActiveStatus(task?.task_status) ? "覆盖分析仍在运行，完成后会展示覆盖率与告警。" : "当前批次没有覆盖报告，请从关联任务确认覆盖分析是否成功。"}
+          title={isTaskActiveStatus(task?.task_status) ? "覆盖报告生成中" : "暂未产生覆盖报告"}
+        />
       ) : null}
       {reports.length ? (
         <div className="grid gap-5 xl:grid-cols-[300px_1fr]">
@@ -70,7 +73,7 @@ export function CoverageTab({
             </div>
           </aside>
           <div className="space-y-5">
-            {detailLoading ? <LoadingBlock text="加载覆盖报告详情" /> : null}
+            {detailLoading ? <LoadingBlock description="正在读取覆盖摘要、告警列表和原始 report_json。" text="加载覆盖报告详情" /> : null}
             {detailError ? <ErrorNotice title="覆盖报告详情获取失败" message={getErrorMessage(detailError)} /> : null}
             {report ? (
               <>

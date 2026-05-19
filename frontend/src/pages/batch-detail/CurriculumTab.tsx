@@ -10,7 +10,7 @@ import { KeyValueGrid, KnowledgeRefs, LoadingBlock, SectionBlock, StatCard, Task
 
 function CurriculumSessions({ sessions }: { sessions: JsonObject[] }) {
   if (!sessions.length) {
-    return <EmptyState title="暂无课次安排" />;
+    return <EmptyState description="后端返回的课程方案中没有可展示的 lesson_sessions，下面仍保留原始 JSON 兜底。" title="暂无课次安排" />;
   }
   return (
     <div className="space-y-3">
@@ -64,10 +64,15 @@ export function CurriculumTab({
 
   return (
     <div className="space-y-5">
-      <TaskSummaryCard title="课程方案任务" task={task} />
-      {isLoading ? <LoadingBlock text="加载课程方案" /> : null}
+      <TaskSummaryCard description="课程方案是后续教案、测评和课件的上游成果；失败时可进入任务详情查看真实后端步骤。" title="课程方案任务" task={task} />
+      {isLoading ? <LoadingBlock description="正在读取课程方案详情和结构化 content_json。" text="加载课程方案" /> : null}
       {error ? <ErrorNotice title="课程方案获取失败" message={getErrorMessage(error)} /> : null}
-      {!isLoading && !error && !plan ? <EmptyState title={isTaskActiveStatus(task?.task_status) ? "课程方案生成中" : "暂未产生课程方案"} /> : null}
+      {!isLoading && !error && !plan ? (
+        <EmptyState
+          description={isTaskActiveStatus(task?.task_status) ? "任务仍在运行，请等待轮询刷新；也可以进入任务详情查看当前阶段。" : "当前批次没有课程方案结果，请先确认生成批次任务是否成功。"}
+          title={isTaskActiveStatus(task?.task_status) ? "课程方案生成中" : "暂未产生课程方案"}
+        />
+      ) : null}
       {plan ? (
         <>
           <section className="rounded-md border border-line bg-paper/60 p-5">

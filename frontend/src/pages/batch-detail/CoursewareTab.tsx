@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Download, MessageSquareReply, Plus, Presentation, RefreshCw } from "lucide-react";
+import { Clock3, Download, MessageSquareReply, Plus, Presentation, RefreshCw } from "lucide-react";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { JsonViewer } from "../../components/JsonViewer";
@@ -209,7 +209,7 @@ export function CoursewareTab({
       : selectedLesson.version_status !== "ready"
         ? "当前教案尚未 ready"
         : activeTask
-          ? "当前教案课件任务运行中"
+          ? "当前教案已有等待或运行中的课件任务"
           : selectedLessonResult
             ? "当前教案已存在课件结果"
             : createMutation.isPending
@@ -222,14 +222,20 @@ export function CoursewareTab({
 
   return (
     <div className="space-y-5">
-      <TaskSummaryCard title={selectedLesson ? `课件任务：第 ${selectedLesson.class_session_no ?? "-"} 课` : "课件任务"} task={task} />
+      <TaskSummaryCard
+        description="课件是按教案触发的长任务；Raccoon 仍在 running 时，本地结果会保持处理中并可继续刷新。"
+        title={selectedLesson ? `课件任务：第 ${selectedLesson.class_session_no ?? "-"} 课` : "课件任务"}
+        task={task}
+      />
 
       <section className="rounded-md border border-line bg-paper/60 p-5">
         <div className="flex flex-col justify-between gap-4 xl:flex-row xl:items-center">
           <div className="min-w-0">
             <div className="label">当前教案</div>
             <h3 className="mt-1 break-words text-lg font-bold text-ink">{getLessonLabel(selectedLesson)}</h3>
-            <p className="mt-2 text-sm leading-6 text-ink/55">课件由当前选中的 ready 教案生成，生成结果会绑定到这个教案。</p>
+            <p className="mt-2 text-sm leading-6 text-ink/55">
+              课件由当前选中的 ready 教案生成，生成结果会绑定到这个教案；PPTX 归档完成后才会开放下载。
+            </p>
           </div>
           <button className="btn btn-primary" disabled={Boolean(createDisabledReason)} onClick={() => createMutation.mutate()} type="button">
             <Plus size={16} />
@@ -240,7 +246,7 @@ export function CoursewareTab({
         {createMutation.error ? <ErrorNotice title="课件任务创建失败" message={getErrorMessage(createMutation.error)} /> : null}
       </section>
 
-      {listLoading ? <LoadingBlock text="加载课件结果" /> : null}
+      {listLoading ? <LoadingBlock description="正在读取当前批次下各教案绑定的课件结果。" text="加载课件结果" /> : null}
       {listError ? <ErrorNotice title="课件列表获取失败" message={getErrorMessage(listError)} /> : null}
 
       <div className="grid gap-5 xl:grid-cols-[300px_1fr]">
@@ -271,7 +277,7 @@ export function CoursewareTab({
                 })}
               </div>
             ) : (
-              <EmptyState title="暂无 ready 教案" />
+              <EmptyState description="课件必须基于 ready 教案生成，请先等待教案任务完成。" title="暂无 ready 教案" />
             )}
           </section>
 
@@ -306,13 +312,18 @@ export function CoursewareTab({
                 })}
               </div>
             ) : (
-              <EmptyState title={activeTask ? "课件生成中" : "暂未产生课件结果"} />
+              <EmptyState
+                description={activeTask ? "远端 PPTX 生成可能较久，页面会继续显示真实任务状态。" : "当前批次还没有任何课件结果，可从左侧选择 ready 教案后生成。"}
+                title={activeTask ? "课件生成中" : "暂未产生课件结果"}
+              />
             )}
           </section>
         </aside>
 
         <div className="space-y-5">
-          {!listLoading && !listError && selectedLesson && !selectedLessonResult ? <EmptyState title="当前教案暂未产生课件结果" /> : null}
+          {!listLoading && !listError && selectedLesson && !selectedLessonResult ? (
+            <EmptyState description="如果没有等待或运行中的课件任务，可以点击生成课件；历史 pending 任务会保留真实状态用于诊断。" title="当前教案暂未产生课件结果" />
+          ) : null}
 
           <section className="grid gap-3 md:grid-cols-3">
             <button className="btn btn-secondary" disabled={!canRefresh || refreshMutation.isPending} onClick={() => refreshMutation.mutate()} type="button">
@@ -328,6 +339,10 @@ export function CoursewareTab({
               {result ? `课件 #${result.id}` : "未选择课件"}
             </div>
           </section>
+          <div className="flex gap-2 rounded-md border border-accent/15 bg-accent/5 p-3 text-xs leading-5 text-ink/55">
+            <Clock3 className="mt-0.5 shrink-0 text-accent" size={15} />
+            <span>刷新状态会继续查询远端 Raccoon 任务；如果远端仍在生成，本地会保持处理中而不是判失败。</span>
+          </div>
 
           {refreshMutation.error ? <ErrorNotice title="课件状态刷新失败" message={getErrorMessage(refreshMutation.error)} /> : null}
           {downloadMutation.error ? <ErrorNotice title="PPTX 下载失败" message={getErrorMessage(downloadMutation.error)} /> : null}
@@ -360,7 +375,7 @@ export function CoursewareTab({
             </form>
           ) : null}
 
-          {detailLoading ? <LoadingBlock text="加载课件详情" /> : null}
+          {detailLoading ? <LoadingBlock description="正在读取课件结构、Raccoon 状态和导出文件引用。" text="加载课件详情" /> : null}
           {detailError ? <ErrorNotice title="课件详情获取失败" message={getErrorMessage(detailError)} /> : null}
           <CoursewareDetail result={result} lesson={selectedLesson} />
         </div>
