@@ -11,12 +11,13 @@ import { api } from "../lib/api";
 import type { GenerationBatch } from "../types";
 import { cn, formatDate, getErrorMessage, toNumberId } from "../utils";
 import { AssessmentTab, DEFAULT_UNIT_TEST_STRATEGY } from "./batch-detail/AssessmentTab";
+import { CoursewareTab } from "./batch-detail/CoursewareTab";
 import { CoverageTab } from "./batch-detail/CoverageTab";
 import { CurriculumTab } from "./batch-detail/CurriculumTab";
 import { isBatchLive, latestTask, sortLessons } from "./batch-detail/helpers";
 import { LessonTab } from "./batch-detail/LessonTab";
 import { OverviewTab } from "./batch-detail/OverviewTab";
-import { ResultPlaceholder, StatCard } from "./batch-detail/shared";
+import { StatCard } from "./batch-detail/shared";
 
 const tabs = [
   { id: "overview", label: "概览" },
@@ -30,6 +31,10 @@ const tabs = [
 
 type TabId = (typeof tabs)[number]["id"];
 
+function isSuccessfulResultStatus(status: string) {
+  return status === "success" || status === "ready";
+}
+
 export function BatchDetailPage() {
   const routeProjectId = toNumberId(useParams().projectId);
   const batchId = toNumberId(useParams().batchId);
@@ -39,6 +44,8 @@ export function BatchDetailPage() {
   const [selectedCoverageReportId, setSelectedCoverageReportId] = useState<number | null>(null);
   const [selectedBlueprintId, setSelectedBlueprintId] = useState<number | null>(null);
   const [selectedPaperId, setSelectedPaperId] = useState<number | null>(null);
+  const [selectedCoursewareResultId, setSelectedCoursewareResultId] = useState<number | null>(null);
+  const [coursewareAutoSelectedBatchId, setCoursewareAutoSelectedBatchId] = useState<number | null>(null);
 
   const batchQuery = useQuery({
     queryKey: ["generation-batch", batchId],
@@ -54,6 +61,22 @@ export function BatchDetailPage() {
   const lessonTask = useMemo(() => latestTask(tasks, "lesson_plan"), [tasks]);
   const coverageTask = useMemo(() => latestTask(tasks, "coverage"), [tasks]);
   const assessmentTask = useMemo(() => latestTask(tasks, "assessment"), [tasks]);
+  const coursewareTask = useMemo(() => latestTask(tasks, "courseware"), [tasks]);
+  const selectedCoursewareTask = useMemo(() => {
+    if (!selectedLessonId) {
+      return undefined;
+    }
+    return latestTask(
+      tasks.filter((task) => {
+        const payloadLessonId = Number(task.payload_json?.lesson_plan_id);
+        return (
+          (task.module_code === "courseware" || task.task_type.includes("courseware")) &&
+          (payloadLessonId === selectedLessonId || task.biz_key?.includes(`lesson_plan:${selectedLessonId}:courseware`))
+        );
+      }),
+      "courseware",
+    );
+  }, [selectedLessonId, tasks]);
 
   const projectQuery = useQuery({
     queryKey: ["project", projectId],
@@ -184,6 +207,63 @@ export function BatchDetailPage() {
     queryFn: () => api.getPaperResult(selectedPaperId!),
     enabled: Boolean(selectedPaperId),
     refetchInterval: isTaskActiveStatus(assessmentTask?.task_status) ? 5_000 : false,
+  });
+
+  const coursewareResultsQuery = useQuery({
+    queryKey: ["courseware-results", batch?.id],
+    queryFn: () => api.listCoursewareResults(batch!.id, { page: 1, page_size: 100 }),
+    enabled: Boolean(batch?.id),
+    refetchInterval: (query) => {
+      const hasLiveResult = (query.state.data?.items ?? []).some((item) => isTaskActiveStatus(item.result_status));
+      return isTaskActiveStatus(coursewareTask?.task_status) || isBatchLive(batch) || hasLiveResult ? 5_000 : false;
+    },
+  });
+
+  const coursewareResults = useMemo(() => {
+    return [...(coursewareResultsQuery.data?.items ?? [])].sort((a, b) => b.id - a.id);
+  }, [coursewareResultsQuery.data?.items]);
+
+  const selectedLesson = useMemo(() => {
+    return lessonPlans.find((lesson) => lesson.id === selectedLessonId);
+  }, [lessonPlans, selectedLessonId]);
+
+  useEffect(() => {
+    if (!selectedLessonId) {
+      setSelectedCoursewareResultId(null);
+      return;
+    }
+    const matchingResult = coursewareResults.find((item) => item.lesson_plan_id === selectedLessonId);
+    if (matchingResult) {
+      if (selectedCoursewareResultId !== matchingResult.id) {
+        setSelectedCoursewareResultId(matchingResult.id);
+      }
+      return;
+    }
+    if (selectedCoursewareResultId !== null) {
+      setSelectedCoursewareResultId(null);
+    }
+  }, [coursewareResults, selectedCoursewareResultId, selectedLessonId]);
+
+  useEffect(() => {
+    if (activeTab !== "courseware" || !batch?.id || coursewareAutoSelectedBatchId === batch.id || !coursewareResults.length) {
+      return;
+    }
+
+    const selectedLessonHasResult = selectedLessonId ? coursewareResults.some((item) => item.lesson_plan_id === selectedLessonId) : false;
+    if (!selectedLessonHasResult) {
+      const preferredResult = coursewareResults.find((item) => isSuccessfulResultStatus(item.result_status)) ?? coursewareResults[0];
+      setSelectedLessonId(preferredResult.lesson_plan_id);
+      setSelectedCoursewareResultId(preferredResult.id);
+    }
+    setCoursewareAutoSelectedBatchId(batch.id);
+  }, [activeTab, batch?.id, coursewareAutoSelectedBatchId, coursewareResults, selectedLessonId]);
+
+  const coursewareDetailQuery = useQuery({
+    queryKey: ["courseware-result", selectedCoursewareResultId],
+    queryFn: () => api.getCoursewareResult(selectedCoursewareResultId!),
+    enabled: Boolean(selectedCoursewareResultId),
+    refetchInterval: (query) =>
+      isTaskActiveStatus(query.state.data?.result_status) || isTaskActiveStatus(selectedCoursewareTask?.task_status) ? 5_000 : false,
   });
 
   const createAssessment = useMutation({
@@ -321,7 +401,22 @@ export function BatchDetailPage() {
             />
           ) : null}
           {activeTab === "courseware" ? (
-            <ResultPlaceholder title="课件结果入口" description="Phase3-B 暂不实现课件链路。课件任务、刷新、回复和 PPTX 下载将在 Phase3-C 接入。" />
+            <CoursewareTab
+              batch={batch}
+              lessons={lessonPlans}
+              selectedLessonId={selectedLessonId}
+              selectedLesson={selectedLesson}
+              onSelectLesson={setSelectedLessonId}
+              task={selectedCoursewareTask}
+              results={coursewareResults}
+              selectedResultId={selectedCoursewareResultId}
+              onSelectResult={setSelectedCoursewareResultId}
+              result={coursewareDetailQuery.data}
+              listLoading={coursewareResultsQuery.isLoading}
+              detailLoading={coursewareDetailQuery.isLoading}
+              listError={coursewareResultsQuery.error}
+              detailError={coursewareDetailQuery.error}
+            />
           ) : null}
           {activeTab === "coverage" ? (
             <CoverageTab
