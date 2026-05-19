@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-04
+@Date: 2026-05-19
 @Author: xisy
 @Discription: 课件模块业务服务
 """
@@ -24,11 +24,17 @@ from app.core.constants import (
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.core.middleware import get_request_id
 from app.modules.courseware.repository import CoursewareRepository
-from app.modules.courseware.schemas import CoursewareResultDetailResponse, CoursewareResultListItemResponse
+from app.modules.courseware.schemas import (
+    CoursewareResultDetailResponse,
+    CoursewareResultListItemResponse,
+    CoursewareSlideDeckUpdateRequest,
+    SlideDeckGenerationResult,
+)
 from app.modules.p0_models import CoursewareResult, FileObject
 from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.schemas import TaskListItemResponse
 from app.modules.task_center.service import TaskCenterService
+from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
 from app.shared.ppt import RaccoonPptJobState, RaccoonPptService
 from app.shared.queue import dispatch_task
 from app.shared.storage import ObsStorageClient
@@ -53,11 +59,13 @@ class CoursewareService:
         repository: CoursewareRepository | None = None,
         ppt_service: RaccoonPptService | None = None,
         storage_client: ObsStorageClient | None = None,
+        llm_service: OpenAICompatibleLlmService | None = None,
     ) -> None:
         self.session = session
         self.repository = repository or CoursewareRepository(session)
         self.ppt_service = ppt_service or RaccoonPptService()
         self.storage_client = storage_client or ObsStorageClient()
+        self.llm_service = llm_service or OpenAICompatibleLlmService()
         self.task_repository = TaskCenterRepository(session)
 
     def create_courseware_task(self, *, owner_user_id: int, lesson_plan_id: int) -> TaskListItemResponse:
@@ -170,6 +178,77 @@ class CoursewareService:
         self.session.refresh(courseware_result)
         return CoursewareResultDetailResponse(**self.build_courseware_response(courseware_result).model_dump())
 
+    def update_slide_deck(
+        self,
+        *,
+        owner_user_id: int,
+        courseware_result_id: int,
+        payload: CoursewareSlideDeckUpdateRequest,
+    ) -> CoursewareResultDetailResponse:
+        """保存教师编辑后的课件结构并标记需重排。"""
+        courseware_result = self.repository.get_courseware_result_for_owner(courseware_result_id, owner_user_id)
+        if courseware_result is None:
+            raise AppException(BusinessErrorCode.COURSEWARE_RESULT_NOT_FOUND, "课件结果不存在")
+        structure = dict(courseware_result.structure_json or {})
+        old_deck = structure.get("deck") or {}
+        deck_title = payload.deck_title or old_deck.get("deck_title") or "未命名课件"
+        slides = [slide.model_dump(mode="json") for slide in payload.slides]
+        structure["deck"] = {"deck_title": deck_title, "slides": slides}
+        edit_log = list(structure.get("edit_log") or [])
+        edit_log.append(
+            {
+                "operator_user_id": owner_user_id,
+                "edited_at": DateTimeUtil.to_isoformat(DateTimeUtil.now_utc()),
+                "action": "edit",
+                "slide_count": len(slides),
+            }
+        )
+        structure["edit_log"] = edit_log
+        structure["pptx_stale"] = True
+        courseware_result.structure_json = structure
+        courseware_result.page_count = len(slides)
+        courseware_result.page_type_stats_json = _build_slide_type_stats_from_dicts(slides)
+        self.repository.save(courseware_result)
+        self.session.commit()
+        self.session.refresh(courseware_result)
+        return CoursewareResultDetailResponse(**self.build_courseware_response(courseware_result).model_dump())
+
+    def regenerate_courseware_pptx(
+        self,
+        *,
+        owner_user_id: int,
+        courseware_result_id: int,
+    ) -> CoursewareResultDetailResponse:
+        """基于当前（含教师编辑）课件结构重新排版生成 PPTX。"""
+        courseware_result = self.repository.get_courseware_result_for_owner(courseware_result_id, owner_user_id)
+        if courseware_result is None:
+            raise AppException(BusinessErrorCode.COURSEWARE_RESULT_NOT_FOUND, "课件结果不存在")
+        structure = dict(courseware_result.structure_json or {})
+        deck_data = structure.get("deck") or {}
+        if not deck_data.get("slides"):
+            raise AppException(BusinessErrorCode.RACCOON_RESULT_INVALID, "课件结果缺少可重排的结构化内容")
+        deck = SlideDeckGenerationResult.model_validate(deck_data)
+        context = self.build_generation_context(
+            courseware_result.generation_batch_id,
+            courseware_result.lesson_plan_id,
+        )
+        prompt = self.build_raccoon_prompt(context, deck)
+        state = self.ppt_service.create_job_and_short_poll(
+            prompt=prompt,
+            role=RACCOON_ROLE,
+            scene=RACCOON_SCENE,
+            audience=RACCOON_AUDIENCE,
+        )
+        structure["raccoon_prompt_text"] = prompt
+        structure["pptx_stale"] = False
+        courseware_result.structure_json = structure
+        courseware_result.export_file_id = None
+        courseware_result.result_status = TASK_STATUS_PROCESSING
+        self.apply_remote_state(courseware_result, state)
+        self.session.commit()
+        self.session.refresh(courseware_result)
+        return CoursewareResultDetailResponse(**self.build_courseware_response(courseware_result).model_dump())
+
     def create_remote_courseware_result(
         self,
         *,
@@ -179,7 +258,22 @@ class CoursewareService:
     ) -> tuple[CoursewareResult, RaccoonPptJobState]:
         """基于生成批次创建 Raccoon PPT 课件任务。"""
         context = self.build_generation_context(generation_batch_id, lesson_plan_id)
-        prompt = self.build_raccoon_prompt(context)
+        deck = self.generate_slide_deck(context)
+        return self.create_remote_courseware_result_from_deck(
+            context=context,
+            deck=deck,
+            operator_user_id=operator_user_id,
+        )
+
+    def create_remote_courseware_result_from_deck(
+        self,
+        *,
+        context: dict[str, Any],
+        deck: SlideDeckGenerationResult,
+        operator_user_id: int | None,
+    ) -> tuple[CoursewareResult, RaccoonPptJobState]:
+        """基于已生成的结构化课件创建 Raccoon PPT 课件任务。"""
+        prompt = self.build_raccoon_prompt(context, deck)
         state = self.ppt_service.create_job_and_short_poll(
             prompt=prompt,
             role=RACCOON_ROLE,
@@ -195,9 +289,9 @@ class CoursewareService:
                 template_code=RACCOON_TEMPLATE_CODE,
                 template_version=RACCOON_TEMPLATE_VERSION,
                 result_status=TASK_STATUS_PROCESSING,
-                page_count=None,
-                page_type_stats_json={},
-                structure_json=self.build_structure_json(context, prompt, state, operator_user_id),
+                page_count=len(deck.slides),
+                page_type_stats_json=_build_slide_type_stats(deck),
+                structure_json=self.build_structure_json(context, prompt, state, operator_user_id, deck),
                 preview_json=self.build_preview_json(state),
                 export_file_id=None,
             )
@@ -294,23 +388,33 @@ class CoursewareService:
         except Exception as exc:  # noqa: BLE001
             raise AppException(BusinessErrorCode.FILE_UPLOAD_FAILED, "课件文件上传失败", {"error": str(exc)}) from exc
 
-        file_object = self.repository.create_file_object(
-            FileObject(
-                project_id=generation_batch.project_id,
-                biz_type=COURSEWARE_EXPORT_BIZ_TYPE,
-                bucket_name=self.storage_client.settings.obs_bucket,
-                object_key=object_key,
-                original_filename=filename,
-                file_ext=".pptx",
-                mime_type=PPTX_MIME_TYPE,
-                file_size=len(pptx_content),
-                content_hash=file_hash,
-                source_type="raccoon_ppt",
-                upload_status="uploaded",
-                uploaded_by=generation_batch.created_by,
-                metadata_json={"raccoon_job_id": state.job_id, "generation_batch_id": generation_batch.id},
+        bucket_name = self.storage_client.settings.obs_bucket
+        metadata_json = {"raccoon_job_id": state.job_id, "generation_batch_id": generation_batch.id}
+        file_object = self.repository.get_file_object_by_key(bucket_name, object_key)
+        if file_object is None:
+            file_object = self.repository.create_file_object(
+                FileObject(
+                    project_id=generation_batch.project_id,
+                    biz_type=COURSEWARE_EXPORT_BIZ_TYPE,
+                    bucket_name=bucket_name,
+                    object_key=object_key,
+                    original_filename=filename,
+                    file_ext=".pptx",
+                    mime_type=PPTX_MIME_TYPE,
+                    file_size=len(pptx_content),
+                    content_hash=file_hash,
+                    source_type="raccoon_ppt",
+                    upload_status="uploaded",
+                    uploaded_by=generation_batch.created_by,
+                    metadata_json=metadata_json,
+                )
             )
-        )
+        else:
+            file_object.file_size = len(pptx_content)
+            file_object.content_hash = file_hash
+            file_object.upload_status = "uploaded"
+            file_object.metadata_json = metadata_json
+            self.repository.save(file_object)
         courseware_result.export_file_id = file_object.id
 
     def build_generation_context(self, generation_batch_id: int, lesson_plan_id: int) -> dict[str, Any]:
@@ -369,9 +473,8 @@ class CoursewareService:
             "paper_result": self.repository.get_paper_result_by_batch(generation_batch.id),
         }
 
-    @staticmethod
-    def build_raccoon_prompt(context: dict[str, Any]) -> str:
-        """构造 Raccoon PPT 生成提示词。"""
+    def build_slide_deck_messages(self, context: dict[str, Any]) -> list[ChatMessage]:
+        """构造结构化课件生成提示词。"""
         project = context["project"]
         generation_batch = context["generation_batch"]
         curriculum_plan = context["curriculum_plan"]
@@ -382,7 +485,7 @@ class CoursewareService:
         paper_result = context["paper_result"]
         knowledge_point_selection = context["knowledge_point_selection"]
 
-        payload = {
+        user_payload = {
             "项目": {
                 "名称": project.name,
                 "学科": project.subject_code,
@@ -394,7 +497,6 @@ class CoursewareService:
                 "总课次": generation_batch.course_count,
                 "单次课时分钟": generation_batch.session_duration_minutes,
                 "章节范围": generation_batch.chapter_range_json,
-                "课件页型": ["封面", "目录", "知识讲解", "例题讲解", "课堂互动", "总结", "课后作业"],
             },
             "课程大纲": {
                 "标题": curriculum_plan.plan_title,
@@ -435,11 +537,62 @@ class CoursewareService:
             "知识点选择": knowledge_point_selection,
             "测评": {"试卷": paper_result.paper_json if paper_result is not None else None},
         }
+        system_prompt = (
+            "你是课件结构设计助手。请基于输入的结构化教学材料，设计一份可直接用于课堂授课的中文课件。"
+            "必须严格输出 JSON 对象，字段如下："
+            "deck_title（字符串，不超过 255 字，课件标题）；"
+            "slides（对象数组，至少 1 项，每项包含 "
+            "slide_no（从 1 起连续递增的整数，不重复）、"
+            "slide_type（字符串，取值仅限 cover/toc/knowledge/example/interaction/summary/homework）、"
+            "title（字符串，页标题，不超过 255 字）、"
+            "bullet_points（字符串数组，页面要点，每项非空，封面/目录可为空数组）、"
+            "speaker_notes（字符串，讲解备注，可为 null）、"
+            "knowledge_point_refs（整数数组，只能引用输入知识点中的 id，可为空数组）、"
+            "example_block（例题页提供，对象含 stem_text、answer_text、analysis_text；非例题页为 null））。"
+            "硬性要求：首页 slide_type 必须为 cover；需覆盖封面、目录、核心知识讲解、例题、课堂互动、总结、课后作业等页型；"
+            "页面信息密度适合学生课堂学习；不要输出 Markdown、解释文字或代码块。"
+        )
+        return [
+            ChatMessage(role="system", content=system_prompt),
+            ChatMessage(role="user", content=json.dumps(user_payload, ensure_ascii=False)),
+        ]
+
+    def generate_slide_deck(self, context: dict[str, Any]) -> SlideDeckGenerationResult:
+        """调用 LLM 生成结构化课件并校验知识点引用。"""
+        messages = self.build_slide_deck_messages(context)
+        deck = self.llm_service.generate_structured_output(
+            messages=messages,
+            response_model=SlideDeckGenerationResult,
+        )
+        return self._validate_slide_deck(deck, context)
+
+    @staticmethod
+    def _validate_slide_deck(deck: SlideDeckGenerationResult, context: dict[str, Any]) -> SlideDeckGenerationResult:
+        """剔除幻灯片中不属于可用知识点集合的引用。"""
+        valid_ids = {int(point.id) for point in context["knowledge_points"]}
+        for slide in deck.slides:
+            slide.knowledge_point_refs = [ref for ref in slide.knowledge_point_refs if int(ref) in valid_ids]
+        return deck
+
+    @staticmethod
+    def build_raccoon_prompt(context: dict[str, Any], deck: SlideDeckGenerationResult) -> str:
+        """基于已组织好的结构化课件构造 Raccoon 排版提示词。"""
+        project = context["project"]
+        profile_version = context["profile_version"]
+        payload = {
+            "项目": {
+                "名称": project.name,
+                "学科": project.subject_code,
+                "年级": project.grade_code,
+                "适用对象": project.applicable_target,
+            },
+            "学情摘要": profile_version.summary_text,
+            "课件": deck.model_dump(mode="json"),
+        }
         return (
-            "请基于以下结构化教学材料，生成一份可直接用于课堂授课的中文 PPTX 课件。"
-            "课件要逻辑清晰、页面标题明确、每页信息密度适合学生课堂学习；"
-            "请覆盖封面、目录、核心知识讲解、例题、互动练习、总结和课后作业。"
-            "请不要输出解释文字，只生成课件。\n\n"
+            "请严格按以下已排好的幻灯片结构逐页生成中文 PPTX 课件："
+            "不要改变页序与每页要点，保持 slides 数组的顺序与内容一一对应；"
+            "仅做版式美化与排版，不要新增或删减页面，不要输出解释文字，只生成课件。\n\n"
             f"{json.dumps(payload, ensure_ascii=False)}"
         )
 
@@ -449,16 +602,20 @@ class CoursewareService:
         prompt: str,
         state: RaccoonPptJobState,
         operator_user_id: int | None,
+        deck: SlideDeckGenerationResult,
     ) -> dict[str, Any]:
         """构造课件结构与生成摘要。"""
         generation_batch = context["generation_batch"]
         lesson_plan = context["lesson_plan"]
         return {
-            "generator": "raccoon_ppt",
+            "generator": "llm_slides+raccoon_layout",
             "role": RACCOON_ROLE,
             "scene": RACCOON_SCENE,
             "audience": RACCOON_AUDIENCE,
-            "prompt_text": prompt,
+            "deck": deck.model_dump(mode="json"),
+            "edit_log": [],
+            "pptx_stale": False,
+            "raccoon_prompt_text": prompt,
             "prompt_summary": {
                 "generation_batch_id": generation_batch.id,
                 "lesson_plan_id": lesson_plan.id,
@@ -512,6 +669,7 @@ class CoursewareService:
         )
         step_names = [
             ("prepare_courseware_baseline", "准备课件生成基线"),
+            ("generate_slide_deck", "生成结构化课件大纲"),
             ("create_raccoon_ppt_job", "创建 Raccoon PPT 任务"),
             ("poll_raccoon_ppt_job", "轮询 Raccoon PPT 任务"),
             ("archive_courseware_result", "归档课件 PPTX"),
@@ -624,6 +782,20 @@ class CoursewareService:
         if not job_id:
             raise AppException(BusinessErrorCode.RACCOON_RESULT_INVALID, "课件结果缺少 Raccoon 任务ID")
         return str(job_id)
+
+
+def _build_slide_type_stats_from_dicts(slides: list[dict[str, Any]]) -> dict[str, int]:
+    """按页型统计幻灯片数量。"""
+    stats: dict[str, int] = {}
+    for slide in slides:
+        slide_type = str(slide.get("slide_type") or "unknown")
+        stats[slide_type] = stats.get(slide_type, 0) + 1
+    return stats
+
+
+def _build_slide_type_stats(deck: SlideDeckGenerationResult) -> dict[str, int]:
+    """按页型统计幻灯片数量。"""
+    return _build_slide_type_stats_from_dicts([slide.model_dump(mode="json") for slide in deck.slides])
 
 
 def _select_courseware_knowledge_points(

@@ -9,7 +9,23 @@
       "Bash(grep -nA1 \"ValidationError|pydantic.dev\" /tmp/resume_run6.log)",
       "Bash(tee /tmp/resume_run7.log)",
       "Bash(mysql -uroot -pboss1114 eduweave -e \"SELECT TABLE_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA='eduweave' AND COLUMN_NAME='project_id' ORDER BY TABLE_NAME\")",
-      "Bash(cd /Users/xisy/Personal/Projects/thesis-viva/backend/app/modules/generation && grep -n \"def _raise_for_sse_error\\\\|def _build_stream_text_details\\\\|def _build_stream_missing_text_details\\\\|def _clip_text\\\\|def _dump_prompt_json\\\\|^import\\\\|^from\\\\|LLM_RETRY_BASE_SECONDS\\\\|_SSE_ERROR\" llm_service.py | head -40)"
+      "Bash(cd /Users/xisy/Personal/Projects/thesis-viva/backend/app/modules/generation && grep -n \"def _raise_for_sse_error\\\\|def _build_stream_text_details\\\\|def _build_stream_missing_text_details\\\\|def _clip_text\\\\|def _dump_prompt_json\\\\|^import\\\\|^from\\\\|LLM_RETRY_BASE_SECONDS\\\\|_SSE_ERROR\" llm_service.py | head -40)",
+      "Bash(APP_LOAD_DOTENV=0 python -m pytest tests/test_llm_service.py -q)",
+      "Bash(.venv/bin/python -c \"import pydantic_settings, httpx, pytest; print\\('venv ok', pydantic_settings.__version__\\)\")",
+      "Bash(APP_LOAD_DOTENV=0 .venv/bin/python -m pytest tests/test_llm_service.py -q)",
+      "Bash(redis-cli ping *)",
+      "Bash(mysql -uroot -pboss1114 -e \"SELECT 1;\")",
+      "Bash(mysql -uroot -pboss1114 eduweave -e ' *)",
+      "Bash(mysql -uroot -pboss1114 eduweave -e 'SHOW COLUMNS FROM __TRACKED_VAR__;')",
+      "Bash(awk '{print $1}')",
+      "Bash(.venv/bin/python scripts/verify_knowledge_extract.py > /tmp/eduweave_verify_extract.log 2>&1)",
+      "Bash(python -c \"t=open\\('app/modules/p0_models.py'\\).read\\(\\); i=t.find\\('class FileObject'\\); s=t[i:i+1800]; import re; [print\\(l\\) for l in s.splitlines\\(\\) if 'file_ext' in l or 'content_type' in l or 'object_key' in l or 'original_filename' in l]\")",
+      "Bash(sed -n '505,560p' app/modules/parsing/tasks.py)",
+      "Bash(python -c \"t=open\\('app/modules/p0_models.py'\\).read\\(\\); i=t.find\\('class FileObject'\\); s=t[i:i+2200]; [print\\(l.strip\\(\\)\\) for l in s.splitlines\\(\\) if 'mapped_column' in l]\")",
+      "Bash(sed -n '1,32p' app/modules/lesson_plan/tasks.py)",
+      "Bash(python -c ' *)",
+      "Bash(mysql -uroot -pboss1114 eduweave -N -e ' *)",
+      "Bash(python -c \"import PIL; print\\('PIL', PIL.__version__\\)\")"
     ]
   }
 }

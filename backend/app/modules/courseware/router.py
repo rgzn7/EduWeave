@@ -17,6 +17,7 @@ from app.modules.courseware.schemas import (
     CoursewareReplyRequest,
     CoursewareResultDetailResponse,
     CoursewareResultListItemResponse,
+    CoursewareSlideDeckUpdateRequest,
 )
 from app.modules.courseware.service import CoursewareService
 from app.modules.task_center.schemas import TaskListItemResponse
@@ -142,3 +143,47 @@ def reply_courseware_result(
         answer=request.answer,
     )
     return ResponseFactory.success(detail.model_dump(mode="json"), "回复课件生成补充问题成功")
+
+
+@router.put(
+    "/courseware-results/{courseware_result_id}/slides",
+    summary="更新课件结构化内容",
+    description="保存教师编辑后的结构化幻灯片内容，记录编辑留痕并标记需重新排版。",
+    operation_id="courseware_slides_update",
+    response_model=ApiResponse[CoursewareResultDetailResponse],
+    status_code=status.HTTP_200_OK,
+)
+def update_courseware_slides(
+    request: CoursewareSlideDeckUpdateRequest,
+    courseware_result_id: int = Path(..., description="课件结果主键", examples=[1]),
+    service: Annotated[CoursewareService, Depends(get_courseware_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """更新课件结构化内容。"""
+    detail = service.update_slide_deck(
+        owner_user_id=current_user.id,
+        courseware_result_id=courseware_result_id,
+        payload=request,
+    )
+    return ResponseFactory.success(detail.model_dump(mode="json"), "更新课件结构化内容成功")
+
+
+@router.post(
+    "/courseware-results/{courseware_result_id}/regenerate",
+    summary="重新排版生成课件",
+    description="基于当前（含教师编辑）的结构化课件内容，重新调用 Raccoon 排版生成 PPTX。",
+    operation_id="courseware_result_regenerate",
+    response_model=ApiResponse[CoursewareResultDetailResponse],
+    status_code=status.HTTP_200_OK,
+)
+def regenerate_courseware_result(
+    courseware_result_id: int = Path(..., description="课件结果主键", examples=[1]),
+    service: Annotated[CoursewareService, Depends(get_courseware_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """重新排版生成课件。"""
+    detail = service.regenerate_courseware_pptx(
+        owner_user_id=current_user.id,
+        courseware_result_id=courseware_result_id,
+    )
+    return ResponseFactory.success(detail.model_dump(mode="json"), "重新排版生成课件成功")

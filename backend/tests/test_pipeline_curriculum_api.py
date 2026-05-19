@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-04
+@Date: 2026-05-19
 @Author: xisy
 @Discription: 生成编排与课程大纲、教案、测评、课件接口测试
 """
@@ -16,6 +16,8 @@ from app.core.exceptions import AppException, BusinessErrorCode
 from app.core.security import hash_password
 from app.modules.assessment.schemas import AssessmentGenerationResult
 from app.modules.auth.models import SysUser
+from app.modules.courseware.schemas import SlideDeckGenerationResult, SlideDraft
+from app.modules.courseware.service import CoursewareService
 from app.modules.curriculum.schemas import CurriculumGenerationResult
 from app.modules.knowledge.schemas import (
     KnowledgeChapterBoundaryItem,
@@ -328,6 +330,23 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
                 questions=questions,
             )
 
+        if response_model is SlideDeckGenerationResult:
+            point_id = int(user_payload["知识点"][0]["id"])
+            return SlideDeckGenerationResult(
+                deck_title="三年级数学乘法提升课件",
+                slides=[
+                    SlideDraft(slide_no=1, slide_type="cover", title="乘法口诀提升", bullet_points=[]),
+                    SlideDraft(
+                        slide_no=2,
+                        slide_type="knowledge",
+                        title="乘法口诀",
+                        bullet_points=["熟记乘法口诀", "理解口诀规律"],
+                        knowledge_point_refs=[point_id],
+                    ),
+                    SlideDraft(slide_no=3, slide_type="summary", title="本课小结", bullet_points=["回顾乘法口诀"]),
+                ],
+            )
+
         target_session = user_payload.get("target_lesson_session") or {"session_no": 1, "title": "第1讲 乘法口诀训练"}
         target_refs = target_session.get("knowledge_point_refs") if isinstance(target_session, dict) else None
         point_id = int(target_refs[0]) if target_refs else int(user_payload["knowledge_points"][0]["id"])
@@ -612,6 +631,50 @@ def test_generation_batch_should_create_curriculum_lesson_plans_and_coverage(cli
     assert file_url_response.status_code == 200
     assert file_url_response.json()["data"]["signed_url"].startswith("https://obs.test.example.com/")
 
+    structure = courseware_payload["structure_json"]
+    assert structure["generator"] == "llm_slides+raccoon_layout"
+    assert structure["pptx_stale"] is False
+    assert structure["edit_log"] == []
+    assert len(structure["deck"]["slides"]) == 3
+    assert structure["deck"]["slides"][0]["slide_type"] == "cover"
+    assert courseware_payload["page_count"] == 3
+
+    slides_update_response = client.put(
+        f"/api/v1/courseware-results/{courseware_result_id}/slides",
+        headers=headers,
+        json={
+            "deck_title": "教师修订版课件",
+            "slides": [
+                {"slide_no": 1, "slide_type": "cover", "title": "乘法口诀提升（修订）", "bullet_points": []},
+                {
+                    "slide_no": 2,
+                    "slide_type": "knowledge",
+                    "title": "乘法口诀精讲",
+                    "bullet_points": ["熟记口诀", "掌握进位"],
+                },
+            ],
+        },
+    )
+    assert slides_update_response.status_code == 200
+    updated_payload = slides_update_response.json()["data"]
+    assert updated_payload["structure_json"]["deck"]["deck_title"] == "教师修订版课件"
+    assert len(updated_payload["structure_json"]["deck"]["slides"]) == 2
+    assert updated_payload["structure_json"]["pptx_stale"] is True
+    assert len(updated_payload["structure_json"]["edit_log"]) == 1
+    assert updated_payload["structure_json"]["edit_log"][0]["action"] == "edit"
+    assert updated_payload["page_count"] == 2
+
+    regenerate_response = client.post(
+        f"/api/v1/courseware-results/{courseware_result_id}/regenerate",
+        headers=headers,
+    )
+    assert regenerate_response.status_code == 200
+    regenerated_payload = regenerate_response.json()["data"]
+    assert regenerated_payload["result_status"] == "success"
+    assert regenerated_payload["export_file_id"] is not None
+    assert regenerated_payload["structure_json"]["pptx_stale"] is False
+    assert len(regenerated_payload["structure_json"]["deck"]["slides"]) == 2
+
 
 def test_curriculum_prompt_should_use_chapter_range_scope(
     client,
@@ -766,11 +829,16 @@ def test_courseware_prompt_should_prefer_current_lesson_knowledge_refs(
 ) -> None:
     """课件提示词应优先使用当前教案引用的知识点，而不是前 30 个知识点。"""
     _ = generation_test_stubs
-    captured_prompts: list[str] = []
+    captured_payloads: list[dict] = []
+    original_build_messages = CoursewareService.build_slide_deck_messages
 
-    def capture_create_job(self, *, prompt: str, role: str, scene: str, audience: str):  # noqa: ANN001
-        _ = (self, role, scene, audience)
-        captured_prompts.append(prompt)
+    def capture_build_messages(self, context):  # noqa: ANN001
+        messages = original_build_messages(self, context)
+        captured_payloads.append(json.loads(messages[1].content))
+        return messages
+
+    def stub_create_job(self, *, prompt: str, role: str, scene: str, audience: str):  # noqa: ANN001
+        _ = (self, prompt, role, scene, audience)
         return RaccoonPptJobState(
             job_id="ppt-job-selected-kp",
             status="succeeded",
@@ -778,7 +846,8 @@ def test_courseware_prompt_should_prefer_current_lesson_knowledge_refs(
             raw_payload={"data": {"job_id": "ppt-job-selected-kp", "status": "succeeded"}},
         )
 
-    monkeypatch.setattr(RaccoonPptService, "create_job_and_short_poll", capture_create_job)
+    monkeypatch.setattr(CoursewareService, "build_slide_deck_messages", capture_build_messages)
+    monkeypatch.setattr(RaccoonPptService, "create_job_and_short_poll", stub_create_job)
     headers = build_auth_headers(client)
     project_id = create_project(client, headers)
     knowledge_version_id = create_knowledge_version(client, headers, project_id)
@@ -847,7 +916,7 @@ def test_courseware_prompt_should_prefer_current_lesson_knowledge_refs(
     courseware_task_response = client.post(f"/api/v1/lesson-plans/{lesson_plan_id}/courseware-tasks", headers=headers)
 
     assert courseware_task_response.status_code == 201
-    prompt_payload = json.loads(captured_prompts[0].split("\n\n", 1)[1])
+    prompt_payload = captured_payloads[0]
     assert prompt_payload["知识点选择"]["source"] == "lesson_plan"
     assert prompt_payload["知识点选择"]["limit"] == 30
     assert prompt_payload["知识点选择"]["original_count"] == 35
@@ -855,6 +924,69 @@ def test_courseware_prompt_should_prefer_current_lesson_knowledge_refs(
     assert prompt_payload["知识点选择"]["truncated_count"] == 5
     assert prompt_payload["知识点选择"]["is_truncated"] is True
     assert [item["id"] for item in prompt_payload["知识点"]] == target_point_ids[:30]
+
+
+def test_courseware_task_should_fail_on_slide_deck_stage_when_llm_invalid(
+    client,
+    generation_test_stubs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """课件结构生成失败时应停留在结构化课件阶段，不应提前进入 Raccoon 创建阶段。"""
+    _ = generation_test_stubs
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    knowledge_version_id = create_knowledge_version(client, headers, project_id)
+    learner_profile_version_id = create_learner_profile_version(client, headers, project_id)
+
+    response = client.post(
+        "/api/v1/generation-batches",
+        headers=headers,
+        json={
+            "project_id": project_id,
+            "knowledge_version_id": knowledge_version_id,
+            "learner_profile_version_id": learner_profile_version_id,
+            "course_count": 1,
+            "session_duration_minutes": 90,
+        },
+    )
+    assert response.status_code == 201
+    batch_payload = response.json()["data"]
+
+    original_generate = OpenAICompatibleLlmService.generate_structured_output
+
+    def fail_slide_deck_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
+        if response_model is SlideDeckGenerationResult:
+            raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 返回课件结构非法")
+        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature)
+
+    monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", fail_slide_deck_generate)
+
+    courseware_task_response = client.post(
+        f"/api/v1/lesson-plans/{batch_payload['lesson_plan_id']}/courseware-tasks",
+        headers=headers,
+    )
+    assert courseware_task_response.status_code == 503
+    assert courseware_task_response.json()["errors"][0]["code"] == BusinessErrorCode.LLM_RESULT_INVALID.value
+
+    batch_detail_response = client.get(f"/api/v1/generation-batches/{batch_payload['id']}", headers=headers)
+    courseware_task_payload = [
+        task for task in batch_detail_response.json()["data"]["tasks"] if task["task_type"] == "courseware_generate"
+    ][0]
+    assert courseware_task_payload["task_status"] == "failure"
+    assert courseware_task_payload["current_stage"] == "generate_slide_deck"
+    assert courseware_task_payload["last_error_code"] == BusinessErrorCode.LLM_RESULT_INVALID.value
+
+    task_detail_response = client.get(f"/api/v1/tasks/{courseware_task_payload['id']}", headers=headers)
+    task_steps = {step["step_code"]: step for step in task_detail_response.json()["data"]["steps"]}
+    assert task_steps["prepare_courseware_baseline"]["step_status"] == "success"
+    assert task_steps["generate_slide_deck"]["step_status"] == "failure"
+    assert task_steps["create_raccoon_ppt_job"]["step_status"] == "pending"
+
+    courseware_list_response = client.get(
+        f"/api/v1/courseware-results?generation_batch_id={batch_payload['id']}",
+        headers=headers,
+    )
+    assert courseware_list_response.json()["data"]["pagination"]["total_count"] == 0
 
 
 def test_generation_batch_should_reject_foreign_baseline(client, generation_test_stubs) -> None:

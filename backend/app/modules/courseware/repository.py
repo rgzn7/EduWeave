@@ -138,6 +138,14 @@ class CoursewareRepository:
         self.session.flush()
         return file_object
 
+    def get_file_object_by_key(self, bucket_name: str, object_key: str) -> FileObject | None:
+        """按桶与对象路径查询文件对象。"""
+        statement = select(FileObject).where(
+            FileObject.bucket_name == bucket_name,
+            FileObject.object_key == object_key,
+        )
+        return self.session.scalar(statement)
+
     def get_courseware_result_for_owner(self, courseware_result_id: int, owner_user_id: int) -> CoursewareResult | None:
         """查询当前教师可见的课件结果。"""
         statement = (
