@@ -272,7 +272,7 @@ export function BatchDetailPage() {
     coursewareResults[0]?.result_status ??
     coursewareTask?.task_status ??
     "pending";
-  const coverageOverviewStatus = coverageReports[0]?.report_status ?? coverageTask?.task_status ?? batch?.batch_status ?? "pending";
+  const coverageOverviewStatus = coverageReports[0]?.report_status ?? coverageTask?.task_status ?? "pending";
 
   const createAssessment = useMutation({
     mutationFn: () =>
