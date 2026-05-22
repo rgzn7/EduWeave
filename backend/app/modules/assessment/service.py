@@ -15,6 +15,7 @@ from app.core.constants import (
 )
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.core.middleware import get_request_id
+from app.modules.assessment.presets import resolve_assessment_strategy
 from app.modules.assessment.repository import AssessmentRepository
 from app.modules.assessment.schemas import (
     AssessmentBlueprintDetailResponse,
@@ -30,14 +31,6 @@ from app.modules.task_center.schemas import TaskListItemResponse
 from app.modules.task_center.service import TaskCenterService
 from app.shared.document import DocumentExportService
 from app.shared.queue import dispatch_task
-
-DEFAULT_ASSESSMENT_STRATEGY = {
-    "scenario_type": "unit_test",
-    "scene_type": "unit_test",
-    "question_count": 10,
-    "question_types": ["single_choice", "fill_blank", "short_answer"],
-    "difficulty_range": [1, 5],
-}
 
 
 class AssessmentService:
@@ -66,9 +59,7 @@ class AssessmentService:
         if not self.repository.list_lesson_plans_by_batch(generation_batch.id):
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "测评生成前必须先完成至少一份教案")
 
-        strategy = _normalize_assessment_strategy(
-            request.assessment_strategy_json or generation_batch.assessment_strategy_json
-        )
+        strategy = resolve_assessment_strategy(request.scene_type.value)
         if self.repository.get_success_paper_result_by_batch_scene(generation_batch.id, strategy["scene_type"]) is not None:
             raise AppException(BusinessErrorCode.TASK_CONFLICT, "当前批次下该测评场景已存在成功试卷")
         if self.repository.get_active_assessment_task(generation_batch.id, strategy["scene_type"]) is not None:
@@ -87,7 +78,7 @@ class AssessmentService:
                 "task_record_id": task.id,
                 "generation_batch_id": generation_batch.id,
                 "curriculum_plan_id": curriculum_plan.id,
-                "assessment_strategy_json": strategy,
+                "scene_type": strategy["scene_type"],
                 "operator_user_id": owner_user_id,
             },
             queue=GENERATION_QUEUE_NAME,
@@ -241,7 +232,7 @@ class AssessmentService:
             payload_json={
                 "generation_batch_id": generation_batch.id,
                 "curriculum_plan_id": curriculum_plan_id,
-                "assessment_strategy_json": strategy,
+                "scene_type": strategy["scene_type"],
             },
             request_id=get_request_id() or None,
         )
@@ -260,18 +251,3 @@ class AssessmentService:
                 step_status=TASK_STATUS_PENDING,
             )
         return task
-
-
-def _normalize_assessment_strategy(strategy_json: dict | None) -> dict:
-    """归一化测评策略。"""
-    strategy = {**DEFAULT_ASSESSMENT_STRATEGY, **(strategy_json or {})}
-    question_count = int(strategy.get("question_count") or DEFAULT_ASSESSMENT_STRATEGY["question_count"])
-    question_types = strategy.get("question_types") or DEFAULT_ASSESSMENT_STRATEGY["question_types"]
-    difficulty_range = strategy.get("difficulty_range") or DEFAULT_ASSESSMENT_STRATEGY["difficulty_range"]
-    return {
-        "scenario_type": str(strategy.get("scenario_type") or "unit_test"),
-        "scene_type": str(strategy.get("scene_type") or "unit_test"),
-        "question_count": question_count,
-        "question_types": [str(question_type) for question_type in question_types],
-        "difficulty_range": [int(difficulty_range[0]), int(difficulty_range[1])],
-    }

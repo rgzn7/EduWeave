@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 
+from app.modules.assessment.presets import SceneType
 from app.schemas.base import BaseSchema
 
 SUPPORTED_ASSESSMENT_QUESTION_TYPES = {"single_choice", "fill_blank", "short_answer"}
@@ -38,18 +39,10 @@ class AssessmentBlueprintDetailResponse(AssessmentBlueprintListItemResponse):
 class AssessmentTaskCreateRequest(BaseSchema):
     """创建测评生成任务请求。"""
 
-    assessment_strategy_json: dict[str, Any] | None = Field(
-        default=None,
-        description="测评策略配置，不传则沿用生成批次策略或默认单元测试策略",
-        examples=[
-            {
-                "scenario_type": "unit_test",
-                "scene_type": "unit_test",
-                "question_count": 10,
-                "question_types": ["single_choice", "fill_blank", "short_answer"],
-                "difficulty_range": [1, 5],
-            }
-        ],
+    scene_type: SceneType = Field(
+        default=SceneType.UNIT_TEST,
+        description="测练场景类型，后端按场景自动套用预设策略：homework=课后作业，unit_test=单元测试，final_exam=期末综合测",
+        examples=["homework"],
     )
 
 

@@ -17,6 +17,7 @@ from app.core.constants import (
 )
 from app.core.database import SessionLocal
 from app.core.exceptions import AppException, BusinessErrorCode
+from app.modules.assessment.presets import resolve_assessment_strategy
 from app.modules.assessment.repository import AssessmentRepository
 from app.modules.assessment.schemas import AssessmentGenerationResult, AssessmentKnowledgeWeightDraft
 from app.modules.p0_models import AssessmentBlueprint, PaperResult, QuestionItem
@@ -25,14 +26,6 @@ from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
 from app.shared.utils import DateTimeUtil
 from app.shared.utils.chapter_range_util import build_chapter_range_selection, filter_knowledge_points_by_chapter_selection
-
-DEFAULT_ASSESSMENT_STRATEGY = {
-    "scenario_type": "unit_test",
-    "scene_type": "unit_test",
-    "question_count": 10,
-    "question_types": ["single_choice", "fill_blank", "short_answer"],
-    "difficulty_range": [1, 5],
-}
 
 
 def run_generate_assessment_task(payload: dict) -> dict[str, int | str]:
@@ -92,9 +85,7 @@ def run_generate_assessment_task(payload: dict) -> dict[str, int | str]:
         if not lesson_plans:
             raise AppException(BusinessErrorCode.GENERATION_BASELINE_INVALID, "测评生成前必须先完成至少一份教案")
 
-        strategy = _normalize_assessment_strategy(
-            payload.get("assessment_strategy_json") or generation_batch.assessment_strategy_json
-        )
+        strategy = resolve_assessment_strategy(payload.get("scene_type"))
         _mark_step(
             step_map["prepare_assessment_baseline"],
             TASK_STATUS_SUCCESS,
@@ -255,21 +246,6 @@ def run_generate_assessment_task(payload: dict) -> dict[str, int | str]:
         session.close()
 
 
-def _normalize_assessment_strategy(strategy_json: dict[str, Any] | None) -> dict[str, Any]:
-    """归一化测评策略。"""
-    strategy = {**DEFAULT_ASSESSMENT_STRATEGY, **(strategy_json or {})}
-    question_count = int(strategy.get("question_count") or DEFAULT_ASSESSMENT_STRATEGY["question_count"])
-    question_types = strategy.get("question_types") or DEFAULT_ASSESSMENT_STRATEGY["question_types"]
-    difficulty_range = strategy.get("difficulty_range") or DEFAULT_ASSESSMENT_STRATEGY["difficulty_range"]
-    return {
-        "scenario_type": str(strategy.get("scenario_type") or "unit_test"),
-        "scene_type": str(strategy.get("scene_type") or "unit_test"),
-        "question_count": question_count,
-        "question_types": [str(question_type) for question_type in question_types],
-        "difficulty_range": [int(difficulty_range[0]), int(difficulty_range[1])],
-    }
-
-
 def _build_assessment_messages(
     *,
     project,
@@ -327,9 +303,12 @@ def _build_assessment_messages(
     }
     scene_type = str(strategy["scene_type"])
     scenario_type = str(strategy["scenario_type"])
+    scene_label = str(strategy.get("scene_label") or scene_type)
+    prompt_constraint = str(strategy.get("prompt_constraint") or "")
     system_prompt = (
         "你是测评蓝图和题目生成助手。"
-        f"当前策略场景为 scene_type={scene_type}、scenario_type={scenario_type}，"
+        f"当前策略场景为 scene_type={scene_type}、scenario_type={scenario_type}（{scene_label}）。"
+        f"{prompt_constraint}"
         "请基于课程大纲、批次内教案和知识点生成与该场景一致的中文测评蓝图与题目，"
         "不得固定写成单元测试；blueprint_name、paper_title、strategy_summary 和题目语境必须体现当前场景。"
         "必须严格输出 JSON 对象，字段包含 blueprint_name、paper_title、strategy_summary、"
@@ -337,6 +316,7 @@ def _build_assessment_messages(
         "questions 数量必须不少于 assessment_strategy.question_count，只能多不能少；"
         "如不确定可适当多出几道，多余题目会按题号顺序被截断，但绝不允许少于该题量。"
         "question_no 必须从 1 开始连续递增且不得重复。"
+        "每道题的 difficulty_level 必须落在 assessment_strategy.difficulty_range 指定的闭区间内。"
         "question_type_distribution 和 difficulty_distribution 必须与 questions 逐题统计完全一致。"
         "每道题必须包含 knowledge_point_id、question_type、difficulty_level、stem_text、answer_text、analysis_text。"
         "所有 knowledge_point_id 必须只引用输入中的知识点 id，题型只能使用输入策略中的 question_types。"
@@ -496,6 +476,7 @@ def _build_paper_json(result: AssessmentGenerationResult, *, strategy: dict[str,
     return {
         "paper_title": result.paper_title,
         "scene_type": strategy["scene_type"],
+        "scene_label": strategy.get("scene_label") or strategy["scene_type"],
         "question_type_distribution": result.question_type_distribution,
         "difficulty_distribution": result.difficulty_distribution,
         "questions": [question.model_dump(mode="json") for question in result.questions],
