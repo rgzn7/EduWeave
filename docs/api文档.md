@@ -2017,7 +2017,6 @@
   chapter_range_json?: object | null  # 章节范围快照；缺省或 chapter_node_ids 为空表示全量，非空 chapter_node_ids 表示选中章节及其子章节
   course_count: integer  # 总课次
   session_duration_minutes: integer  # 单次课时分钟数
-  assessment_strategy_json?: object | null  # 测评策略快照，不传则使用单元测试默认策略
 }
 ```
 
@@ -2527,7 +2526,7 @@
 
 **创建按需测评生成任务**
 
-为当前教师可见的课程大纲创建测评生成任务，生成测评蓝图、试卷和题目。
+为当前教师可见的课程大纲创建测评生成任务，按 scene_type 自动套用测练场景预设，生成测评蓝图、试卷和题目；同一批次同一场景不可重复生成。
 
 **参数**
 
@@ -2539,7 +2538,7 @@
 
 ```json
 {
-  assessment_strategy_json?: object | null  # 测评策略配置，不传则沿用生成批次策略或默认单元测试策略
+  scene_type?: 'homework' | 'unit_test' | 'final_exam'  # 测练场景类型，后端按场景自动套用预设策略：homework=课后作业，unit_test=单元测试，final_exam=期末综合测
 }
 ```
 
@@ -2599,7 +2598,7 @@
 | 位置 | 名称 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- | --- |
 | query | `curriculum_plan_id` | integer | 是 | 课程大纲主键 |
-| query | `scenario_type` | string | 否 | 测评场景类型 |
+| query | `scenario_type` | string | 否 | 测练场景类型：homework=课后作业，unit_test=单元测试，final_exam=期末综合测 |
 | query | `page` | integer | 否 | 页码 |
 | query | `page_size` | integer | 否 | 每页大小 |
 
@@ -2708,7 +2707,7 @@
 | 位置 | 名称 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- | --- |
 | query | `generation_batch_id` | integer | 是 | 生成批次主键 |
-| query | `scene_type` | string | 否 | 试卷场景类型 |
+| query | `scene_type` | string | 否 | 测练场景类型：homework=课后作业，unit_test=单元测试，final_exam=期末综合测 |
 | query | `page` | integer | 否 | 页码 |
 | query | `page_size` | integer | 否 | 每页大小 |
 
@@ -3086,6 +3085,125 @@
   answer: string  # 补充回答内容
 }
 ```
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    id: integer  # 课件结果主键
+    generation_batch_id: integer  # 生成批次主键
+    lesson_plan_id: integer  # 教案版本主键
+    template_code?: object  # 模板编码
+    template_version?: object  # 模板版本
+    result_status: string  # 课件结果状态
+    page_count?: object  # 页数
+    page_type_stats_json?: object  # 页面类型统计
+    structure_json: object  # 课件结构与生成摘要
+    preview_json?: object  # 远程任务预览状态
+    export_file_id?: object  # 导出文件主键
+    created_at: object  # 创建时间
+    updated_at: object  # 更新时间
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+### PUT `/api/v1/courseware-results/{courseware_result_id}/slides`
+
+**更新课件结构化内容**
+
+保存教师编辑后的结构化幻灯片内容，记录编辑留痕并标记需重新排版。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `courseware_result_id` | integer | 是 | 课件结果主键 |
+
+**请求体**
+
+```json
+{
+  deck_title?: string | null  # 课件标题
+  slides: array[{
+    slide_no: integer  # 页序号
+    slide_type: string  # 页型：cover/toc/knowledge/example/interaction/summary/homework
+    title: string  # 页标题
+    bullet_points?: array[string]  # 页面要点
+    speaker_notes?: string | null  # 讲解备注
+    knowledge_point_refs?: array[integer]  # 关联知识点主键列表
+    example_block?: {
+      stem_text: string  # 例题题干
+      answer_text?: string | null  # 例题答案
+      analysis_text?: string | null  # 例题解析
+    } | null  # 例题块（例题页使用）
+  }]  # 编辑后的幻灯片列表
+}
+```
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    id: integer  # 课件结果主键
+    generation_batch_id: integer  # 生成批次主键
+    lesson_plan_id: integer  # 教案版本主键
+    template_code?: object  # 模板编码
+    template_version?: object  # 模板版本
+    result_status: string  # 课件结果状态
+    page_count?: object  # 页数
+    page_type_stats_json?: object  # 页面类型统计
+    structure_json: object  # 课件结构与生成摘要
+    preview_json?: object  # 远程任务预览状态
+    export_file_id?: object  # 导出文件主键
+    created_at: object  # 创建时间
+    updated_at: object  # 更新时间
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+### POST `/api/v1/courseware-results/{courseware_result_id}/regenerate`
+
+**重新排版生成课件**
+
+基于当前（含教师编辑）的结构化课件内容，重新调用 Raccoon 排版生成 PPTX。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `courseware_result_id` | integer | 是 | 课件结果主键 |
 
 **响应**
 

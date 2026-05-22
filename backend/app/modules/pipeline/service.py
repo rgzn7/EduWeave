@@ -15,6 +15,7 @@ from app.core.constants import (
 )
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.core.middleware import get_request_id
+from app.modules.assessment.presets import DEFAULT_ASSESSMENT_SCENE_TYPE, resolve_assessment_strategy
 from app.modules.p0_models import GenerationBatch
 from app.modules.pipeline.repository import PipelineRepository
 from app.modules.pipeline.schemas import (
@@ -26,14 +27,6 @@ from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.service import TaskCenterService
 from app.shared.queue import dispatch_task
 from app.shared.utils import DateTimeUtil
-
-DEFAULT_ASSESSMENT_STRATEGY = {
-    "scenario_type": "unit_test",
-    "scene_type": "unit_test",
-    "question_count": 10,
-    "question_types": ["single_choice", "fill_blank", "short_answer"],
-    "difficulty_range": [1, 5],
-}
 
 
 class PipelineService:
@@ -82,7 +75,7 @@ class PipelineService:
                 chapter_range_json=request.chapter_range_json,
                 course_count=request.course_count,
                 session_duration_minutes=request.session_duration_minutes,
-                assessment_strategy_json=request.assessment_strategy_json or DEFAULT_ASSESSMENT_STRATEGY,
+                assessment_strategy_json=resolve_assessment_strategy(DEFAULT_ASSESSMENT_SCENE_TYPE),
                 pipeline_options_json={"enabled_steps": ["curriculum", "lesson_plan", "coverage"]},
                 created_by=owner_user_id,
             )
@@ -183,7 +176,6 @@ class PipelineService:
                 "learner_profile_version_id": request.learner_profile_version_id,
                 "course_count": request.course_count,
                 "session_duration_minutes": request.session_duration_minutes,
-                "assessment_strategy_json": request.assessment_strategy_json or DEFAULT_ASSESSMENT_STRATEGY,
             },
             request_id=get_request_id() or None,
         )

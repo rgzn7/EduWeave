@@ -289,12 +289,14 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
             strategy = user_payload["assessment_strategy"]
             question_count = int(strategy["question_count"])
             question_types = list(strategy["question_types"])
+            difficulty_min, difficulty_max = strategy["difficulty_range"]
+            difficulty_span = difficulty_max - difficulty_min + 1
             questions = []
             question_type_distribution: dict[str, int] = {}
             difficulty_distribution: dict[str, int] = {}
             for question_no in range(1, question_count + 1):
                 question_type = question_types[(question_no - 1) % len(question_types)]
-                difficulty_level = 2 + (question_no % 3)
+                difficulty_level = difficulty_min + ((question_no - 1) % difficulty_span)
                 question_type_distribution[question_type] = question_type_distribution.get(question_type, 0) + 1
                 difficulty_key = str(difficulty_level)
                 difficulty_distribution[difficulty_key] = difficulty_distribution.get(difficulty_key, 0) + 1

@@ -68,7 +68,7 @@ class DocxRenderService:
         paper_json = _ensure_dict(paper_result.paper_json)
         document = _create_document()
         document.add_heading(_safe_text(paper_result.title or paper_json.get("paper_title"), "试卷"), level=0)
-        _add_meta_paragraph(document, "试卷类型", paper_result.scene_type)
+        _add_meta_paragraph(document, "试卷类型", paper_json.get("scene_label") or paper_result.scene_type)
         _add_meta_paragraph(document, "题目数量", paper_result.question_count)
         _add_mapping_section(document, "题型分布", paper_json.get("question_type_distribution"))
         _add_mapping_section(document, "难度分布", paper_json.get("difficulty_distribution"))
