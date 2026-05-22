@@ -4,16 +4,29 @@
 @Discription: 课件模块任务执行能力
 """
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.core.constants import TASK_STATUS_FAILURE, TASK_STATUS_PENDING, TASK_STATUS_PROCESSING, TASK_STATUS_SUCCESS
+from app.core.constants import (
+    COURSEWARE_GENERATE_TASK_TYPE,
+    COURSEWARE_WAITING_RACCOON_STAGE,
+    TASK_STATUS_FAILURE,
+    TASK_STATUS_PENDING,
+    TASK_STATUS_PROCESSING,
+    TASK_STATUS_SUCCESS,
+)
 from app.core.database import SessionLocal
-from app.core.exceptions import AppException, BusinessErrorCode, get_task_error_code
+from app.core.exceptions import AppException, BusinessErrorCode
+from app.core.logging import get_logger
 from app.modules.courseware.repository import CoursewareRepository
 from app.modules.courseware.service import CoursewareService
+from app.modules.p0_models import TaskRecord
+from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
+from app.shared.queue.app import celery_app
 from app.shared.utils import DateTimeUtil
+
+logger = get_logger(__name__)
 
 
 def run_generate_courseware_task(payload: dict) -> dict[str, int | str | None]:
@@ -263,30 +276,16 @@ def _mark_task_failure(
     payload: dict,
     exc: Exception,
 ) -> None:
+    """处理课件生成任务失败：可重试错误重排重试，否则判终态失败。"""
     task = task_repository.get_task_by_id(payload["task_record_id"])
-    if task is not None:
-        task.task_status = TASK_STATUS_FAILURE
-        task.last_error_code = get_task_error_code(exc, BusinessErrorCode.COURSEWARE_TASK_FAILED)
-        task.last_error_message = getattr(exc, "message", None) if isinstance(exc, AppException) else str(exc)
-        task.finished_at = DateTimeUtil.now_utc()
-        task_repository.save(task)
-    for step_code in (
-        "prepare_courseware_baseline",
-        "generate_slide_deck",
-        "create_raccoon_ppt_job",
-        "poll_raccoon_ppt_job",
-        "archive_courseware_result",
-        "finalize_generation_batch",
-    ):
-        step = task_repository.get_task_step(payload["task_record_id"], step_code)
-        if step is None or step.step_status == TASK_STATUS_SUCCESS:
-            continue
-        step.step_status = TASK_STATUS_FAILURE
-        step.detail_json = {"error": str(exc)}
-        step.finished_at = DateTimeUtil.now_utc()
-        task_repository.save(step)
-        break
-    repository.session.commit()
+    if task is None:
+        return
+    requeue_or_fail_task(
+        task_repository,
+        task,
+        exc=exc,
+        fallback_error_code=BusinessErrorCode.COURSEWARE_TASK_FAILED,
+    )
 
 
 def _create_session(payload: dict) -> Session:
@@ -297,3 +296,66 @@ def _create_session(payload: dict) -> Session:
     engine = create_engine(database_url, pool_pre_ping=True, future=True)
     factory = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, class_=Session)
     return factory()
+
+
+def poll_pending_remote_courseware_results_once(session: Session, *, limit: int = 20) -> dict[str, int]:
+    """对停泊在 Raccoon 远程生成阶段的课件任务执行一次单发复查并推进状态。
+
+    课件任务在 Raccoon PPT 未及时返回时会停泊在 waiting_raccoon_result 阶段，
+    原本仅靠前端调用 /refresh 推进；此处由后台周期复查，使关闭页面后也能完成。
+    仅处理 waiting_raccoon_result 阶段，waiting_user_input 需用户回复故不在此推进。
+    """
+    parked_tasks = list(
+        session.scalars(
+            select(TaskRecord)
+            .where(
+                TaskRecord.task_type == COURSEWARE_GENERATE_TASK_TYPE,
+                TaskRecord.task_status == TASK_STATUS_PROCESSING,
+                TaskRecord.current_stage == COURSEWARE_WAITING_RACCOON_STAGE,
+            )
+            .order_by(TaskRecord.updated_at.asc())
+            .limit(limit)
+        )
+    )
+    service = CoursewareService(session)
+    summary = {"scanned": len(parked_tasks), "succeeded": 0, "failed": 0, "pending": 0, "errored": 0}
+    for task in parked_tasks:
+        lesson_plan_id = (task.payload_json or {}).get("lesson_plan_id")
+        courseware_result = (
+            service.repository.get_courseware_result_by_batch_lesson(task.generation_batch_id, lesson_plan_id)
+            if lesson_plan_id is not None
+            else None
+        )
+        if courseware_result is None:
+            summary["errored"] += 1
+            logger.warning("课件停泊任务无法定位课件结果", task_id=task.id)
+            continue
+        try:
+            state = service.poll_remote_state_once(courseware_result)
+            session.commit()
+        except Exception as exc:  # noqa: BLE001
+            session.rollback()
+            summary["errored"] += 1
+            logger.error("课件远程状态复查异常", task_id=task.id, error=str(exc))
+            continue
+        normalized_status = state.status.lower()
+        if normalized_status == "succeeded":
+            summary["succeeded"] += 1
+        elif normalized_status in {"failed", "canceled"}:
+            summary["failed"] += 1
+        else:
+            summary["pending"] += 1
+    return summary
+
+
+@celery_app.task(name="courseware.poll_pending_remote_results")
+def poll_pending_remote_courseware_results() -> dict[str, int]:
+    """周期复查停泊在 Raccoon 远程生成阶段的课件任务（Celery Beat 调度）。"""
+    session = SessionLocal()
+    try:
+        summary = poll_pending_remote_courseware_results_once(session)
+        if summary["scanned"]:
+            logger.info("课件远程状态复查完成", **summary)
+        return summary
+    finally:
+        session.close()

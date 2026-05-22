@@ -96,11 +96,11 @@ class ParsingService:
                 "task_record_id": parse_task.id,
                 "textbook_version_id": textbook_version_id,
                 "operator_user_id": owner_user_id,
-                "database_url": self.session.get_bind().url.render_as_string(hide_password=False),
                 "strategy_code": request.strategy_code,
                 "set_as_current_on_success": request.set_as_current_on_success,
             },
             queue=PARSING_QUEUE_NAME,
+            session=self.session,
         )
         if dispatch_result.worker_task_id:
             parse_task.worker_task_id = dispatch_result.worker_task_id
@@ -144,12 +144,12 @@ class ParsingService:
                 "task_record_id": task.id,
                 "parse_version_id": parse_version_id,
                 "operator_user_id": owner_user_id,
-                "database_url": self.session.get_bind().url.render_as_string(hide_password=False),
                 "page_range_text": page_range_text,
                 "strategy_code": request.strategy_code,
                 "set_as_current_on_success": request.set_as_current_on_success,
             },
             queue=PARSING_QUEUE_NAME,
+            session=self.session,
         )
         if dispatch_result.worker_task_id:
             task.worker_task_id = dispatch_result.worker_task_id

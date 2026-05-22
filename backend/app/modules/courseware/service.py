@@ -95,9 +95,9 @@ class CoursewareService:
                 "generation_batch_id": generation_batch.id,
                 "lesson_plan_id": lesson_plan.id,
                 "operator_user_id": owner_user_id,
-                "database_url": self.session.get_bind().url.render_as_string(hide_password=False),
             },
             queue=GENERATION_QUEUE_NAME,
+            session=self.session,
         )
         if dispatch_result.worker_task_id:
             task.worker_task_id = dispatch_result.worker_task_id
@@ -303,6 +303,13 @@ class CoursewareService:
         """短轮询并应用远程状态。"""
         job_id = self._get_raccoon_job_id(courseware_result)
         state = self.ppt_service.short_poll_job(job_id)
+        self.apply_remote_state(courseware_result, state)
+        return state
+
+    def poll_remote_state_once(self, courseware_result: CoursewareResult) -> RaccoonPptJobState:
+        """单发查询 Raccoon 远程状态并落库，不做 120s 短轮询，供后台批量复查使用。"""
+        job_id = self._get_raccoon_job_id(courseware_result)
+        state = self.ppt_service.get_job_state(job_id)
         self.apply_remote_state(courseware_result, state)
         return state
 

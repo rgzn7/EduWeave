@@ -47,6 +47,35 @@ PARSING_QUEUE_NAME = "parsing_queue"
 KNOWLEDGE_QUEUE_NAME = "knowledge_queue"
 GENERATION_QUEUE_NAME = "generation_queue"
 
+TASK_STALE_TIMEOUT_ERROR_CODE = "TASK_STALE_TIMEOUT"
+TASK_HANDLER_UNREGISTERED_ERROR_CODE = "TASK_HANDLER_UNREGISTERED"
+
+# 课件任务等待 Raccoon PPT 远程异步结果的两个停泊阶段
+COURSEWARE_WAITING_RACCOON_STAGE = "waiting_raccoon_result"
+COURSEWARE_WAITING_USER_INPUT_STAGE = "waiting_user_input"
+# 处于以下阶段的任务在等待外部异步结果，此时并无 worker 在执行，
+# reaper 不得将其当作僵尸任务回收。
+EXTERNAL_WAIT_TASK_STAGES = frozenset({COURSEWARE_WAITING_RACCOON_STAGE, COURSEWARE_WAITING_USER_INPUT_STAGE})
+
+# 可重试的任务失败错误码：基础设施/外部依赖类瞬时错误，
+# 区别于业务校验类错误（如各类 NOT_FOUND、BASELINE_INVALID），后者重试无意义。
+RETRYABLE_TASK_ERROR_CODES = frozenset(
+    {
+        "EXTERNAL_SERVICE_ERROR",
+        "DEPENDENCY_NOT_READY",
+        "LLM_REQUEST_FAILED",
+        "LLM_RESULT_INVALID",
+        "MINERU_SUBMIT_FAILED",
+        "MINERU_POLL_TIMEOUT",
+        "MINERU_TASK_FAILED",
+        "MINERU_RESULT_INVALID",
+        "RACCOON_REQUEST_FAILED",
+        "RACCOON_POLL_TIMEOUT",
+        "RACCOON_RESULT_INVALID",
+        "FILE_UPLOAD_FAILED",
+    }
+)
+
 PARSE_MODE_FULL = "full"
 PARSE_STATUS_PENDING = "pending"
 PARSE_STATUS_PROCESSING = "processing"

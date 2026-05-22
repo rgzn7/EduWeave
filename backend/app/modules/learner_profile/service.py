@@ -167,7 +167,6 @@ class LearnerProfileService:
                     "project_id": project.id,
                     "profile_file_id": profile_file.id,
                     "operator_user_id": owner_user_id,
-                    "database_url": self.session.get_bind().url.render_as_string(hide_password=False),
                     "title": profile_file.title,
                     "grade_code": grade_code,
                     "subject_scope": subject_scope,
@@ -175,6 +174,7 @@ class LearnerProfileService:
                     "set_as_current": set_as_current,
                 },
                 queue=PROFILE_QUEUE_NAME,
+                session=self.session,
             )
             if dispatch_result.worker_task_id:
                 task.worker_task_id = dispatch_result.worker_task_id
