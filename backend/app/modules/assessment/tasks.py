@@ -11,16 +11,16 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.constants import (
-    TASK_STATUS_FAILURE,
     TASK_STATUS_PROCESSING,
     TASK_STATUS_SUCCESS,
     VERSION_STATUS_READY,
 )
 from app.core.database import SessionLocal
-from app.core.exceptions import AppException, BusinessErrorCode, get_task_error_code
+from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.assessment.repository import AssessmentRepository
 from app.modules.assessment.schemas import AssessmentGenerationResult, AssessmentKnowledgeWeightDraft
 from app.modules.p0_models import AssessmentBlueprint, PaperResult, QuestionItem
+from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
 from app.shared.utils import DateTimeUtil
@@ -543,28 +543,16 @@ def _get_step_map(task_repository: TaskCenterRepository, task_record_id: int) ->
 
 
 def _mark_task_failure(task_repository: TaskCenterRepository, repository: AssessmentRepository, payload: dict, exc: Exception) -> None:
+    """处理测评生成任务失败：可重试错误重排重试，否则判终态失败。"""
     task = task_repository.get_task_by_id(payload["task_record_id"])
-    if task is not None:
-        task.task_status = TASK_STATUS_FAILURE
-        task.last_error_code = get_task_error_code(exc, BusinessErrorCode.ASSESSMENT_TASK_FAILED)
-        task.last_error_message = getattr(exc, "message", None) if isinstance(exc, AppException) else str(exc)
-        task.finished_at = DateTimeUtil.now_utc()
-        task_repository.save(task)
-    for step_code in (
-        "prepare_assessment_baseline",
-        "invoke_llm_assessment",
-        "persist_assessment_result",
-        "finalize_assessment_task",
-    ):
-        step = task_repository.get_task_step(payload["task_record_id"], step_code)
-        if step is None or step.step_status == TASK_STATUS_SUCCESS:
-            continue
-        step.step_status = TASK_STATUS_FAILURE
-        step.detail_json = {"error": str(exc)}
-        step.finished_at = DateTimeUtil.now_utc()
-        task_repository.save(step)
-        break
-    repository.session.commit()
+    if task is None:
+        return
+    requeue_or_fail_task(
+        task_repository,
+        task,
+        exc=exc,
+        fallback_error_code=BusinessErrorCode.ASSESSMENT_TASK_FAILED,
+    )
 
 
 def _create_session(payload: dict) -> Session:

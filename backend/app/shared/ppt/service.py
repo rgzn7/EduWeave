@@ -43,6 +43,10 @@ class RaccoonPptService:
             time.sleep(self.settings.raccoon_poll_interval_seconds)
             state = self.client.get_ppt_job(job_id)
 
+    def get_job_state(self, job_id: str) -> RaccoonPptJobState:
+        """单发查询远程任务状态，不做轮询，供后台批量复查使用。"""
+        return self.client.get_ppt_job(job_id)
+
     def reply_and_short_poll(self, *, job_id: str, answer: str) -> RaccoonPptJobState:
         """回复补充问题并继续短轮询。"""
         state = self.client.reply_ppt_job(job_id=job_id, answer=answer)

@@ -13,7 +13,6 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.constants import (
     REVIEW_STATUS_PENDING,
-    TASK_STATUS_FAILURE,
     TASK_STATUS_PENDING,
     TASK_STATUS_PROCESSING,
     TASK_STATUS_SUCCESS,
@@ -21,7 +20,7 @@ from app.core.constants import (
     VERSION_STATUS_READY,
 )
 from app.core.database import SessionLocal
-from app.core.exceptions import AppException, BusinessErrorCode, get_task_error_code
+from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.p0_models import FileObject, ParseVersion
 from app.modules.parsing.domain import (
     build_page_drafts_from_normalized_document,
@@ -34,6 +33,7 @@ from app.modules.parsing.domain import (
     render_pdf_page_images,
 )
 from app.modules.parsing.repository import ParsingRepository
+from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.mineru import MineruDocumentService
 from app.shared.storage import ObsStorageClient
@@ -610,23 +610,18 @@ def _get_step_map(task_repository: TaskCenterRepository, task_record_id: int) ->
 
 
 def _mark_task_failure(task_repository: TaskCenterRepository, repository: ParsingRepository, payload: dict, exc: Exception) -> None:
-    session = repository.session
+    """处理解析任务失败：可重试错误重排重试，终态失败时级联标记教材解析状态。"""
     task = task_repository.get_task_by_id(payload["task_record_id"])
-    if task is not None:
-        task.task_status = TASK_STATUS_FAILURE
-        task.last_error_code = get_task_error_code(exc, BusinessErrorCode.PARSE_TASK_FAILED)
-        task.last_error_message = getattr(exc, "message", None) if isinstance(exc, AppException) else str(exc)
-        task.finished_at = DateTimeUtil.now_utc()
-        task_repository.save(task)
-    for step_code in ("prepare_source", "submit_mineru", "poll_mineru_result", "persist_parse_result"):
-        step = task_repository.get_task_step(payload["task_record_id"], step_code)
-        if step is None or step.step_status == TASK_STATUS_SUCCESS:
-            continue
-        step.step_status = TASK_STATUS_FAILURE
-        step.detail_json = {"error": str(exc)}
-        step.finished_at = DateTimeUtil.now_utc()
-        task_repository.save(step)
-        break
+    if task is None:
+        return
+    terminal_failed = not requeue_or_fail_task(
+        task_repository,
+        task,
+        exc=exc,
+        fallback_error_code=BusinessErrorCode.PARSE_TASK_FAILED,
+    )
+    if not terminal_failed:
+        return
 
     textbook_version_id = payload.get("textbook_version_id")
     parse_version_id = payload.get("parse_version_id")
@@ -640,7 +635,7 @@ def _mark_task_failure(task_repository: TaskCenterRepository, repository: Parsin
     if textbook_version is not None:
         textbook_version.parse_status = "failure"
         repository.save(textbook_version)
-    session.commit()
+        repository.session.commit()
 
 
 def _guess_mime_type(filename: str) -> str:

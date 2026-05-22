@@ -9,9 +9,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.constants import TASK_STATUS_FAILURE, TASK_STATUS_PROCESSING, TASK_STATUS_SUCCESS
 from app.core.database import SessionLocal
-from app.core.exceptions import AppException, BusinessErrorCode, get_task_error_code
+from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.coverage.repository import CoverageRepository
 from app.modules.coverage.service import CoverageService
+from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.utils import DateTimeUtil
 
@@ -216,34 +217,23 @@ def _mark_task_failure(
     payload: dict,
     exc: Exception,
 ) -> None:
+    """处理覆盖率分析任务失败：可重试错误重排重试，终态失败时级联标记生成批次。"""
     task = task_repository.get_task_by_id(payload["task_record_id"])
-    generation_batch = repository.get_generation_batch(payload["generation_batch_id"])
-    if generation_batch is not None:
-        generation_batch.batch_status = TASK_STATUS_FAILURE
-        generation_batch.finished_at = DateTimeUtil.now_utc()
-        repository.save(generation_batch)
-    if task is not None:
-        task.task_status = TASK_STATUS_FAILURE
-        task.last_error_code = get_task_error_code(exc, BusinessErrorCode.COVERAGE_TASK_FAILED)
-        task.last_error_message = getattr(exc, "message", None) if isinstance(exc, AppException) else str(exc)
-        task.finished_at = DateTimeUtil.now_utc()
-        task_repository.save(task)
-    for step_code in (
-        "prepare_coverage_baseline",
-        "collect_artifact_refs",
-        "persist_coverage_report",
-        "write_generation_trace",
-        "finalize_generation_batch",
-    ):
-        step = task_repository.get_task_step(payload["task_record_id"], step_code)
-        if step is None or step.step_status == TASK_STATUS_SUCCESS:
-            continue
-        step.step_status = TASK_STATUS_FAILURE
-        step.detail_json = {"error": str(exc)}
-        step.finished_at = DateTimeUtil.now_utc()
-        task_repository.save(step)
-        break
-    repository.session.commit()
+    if task is None:
+        return
+    terminal_failed = not requeue_or_fail_task(
+        task_repository,
+        task,
+        exc=exc,
+        fallback_error_code=BusinessErrorCode.COVERAGE_TASK_FAILED,
+    )
+    if terminal_failed:
+        generation_batch = repository.get_generation_batch(payload["generation_batch_id"])
+        if generation_batch is not None:
+            generation_batch.batch_status = TASK_STATUS_FAILURE
+            generation_batch.finished_at = DateTimeUtil.now_utc()
+            repository.save(generation_batch)
+            repository.session.commit()
 
 
 def _create_session(payload: dict) -> Session:

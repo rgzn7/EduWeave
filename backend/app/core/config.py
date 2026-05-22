@@ -32,6 +32,14 @@ class Settings(BaseSettings):
 
     redis_url: str
     task_eager_mode: bool = False
+    # 任务卡在 processing 超过该秒数视为僵尸任务，由 reaper 回收
+    task_stale_threshold_seconds: int = 1800
+    # reaper 周期扫描间隔（秒）
+    task_reaper_interval_seconds: int = 300
+    # 任务级失败重试的指数退避基数（秒）
+    task_retry_backoff_base_seconds: int = 30
+    # 课件 Raccoon PPT 远程状态后台复查间隔（秒）
+    courseware_remote_poll_interval_seconds: int = 60
 
     jwt_secret: str
     jwt_access_token_expire_minutes: int = 120
@@ -265,6 +273,19 @@ class Settings(BaseSettings):
         """校验 LLM 重试退避基数。"""
         if value <= 0:
             raise ValueError("LLM 重试退避基数必须大于 0")
+        return value
+
+    @field_validator(
+        "task_stale_threshold_seconds",
+        "task_reaper_interval_seconds",
+        "task_retry_backoff_base_seconds",
+        "courseware_remote_poll_interval_seconds",
+    )
+    @classmethod
+    def validate_task_recovery_seconds(cls, value: int) -> int:
+        """校验后台周期任务相关秒数配置必须为正。"""
+        if value <= 0:
+            raise ValueError("后台周期任务相关秒数配置必须大于 0")
         return value
 
     @field_validator("raccoon_poll_interval_seconds", "raccoon_short_poll_timeout_seconds")

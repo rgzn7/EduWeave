@@ -9,9 +9,9 @@ import json
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.core.constants import REVIEW_STATUS_CONFIRMED, TASK_STATUS_FAILURE, TASK_STATUS_PENDING, TASK_STATUS_PROCESSING, TASK_STATUS_SUCCESS
+from app.core.constants import REVIEW_STATUS_CONFIRMED, TASK_STATUS_PENDING, TASK_STATUS_PROCESSING, TASK_STATUS_SUCCESS
 from app.core.database import SessionLocal
-from app.core.exceptions import AppException, BusinessErrorCode, get_task_error_code
+from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.knowledge.domain import (
     build_chapter_drafts_from_boundaries,
     build_markdown_line_index,
@@ -26,6 +26,7 @@ from app.modules.knowledge.schemas import (
     KnowledgeChapterPointExtractionResult,
 )
 from app.modules.knowledge.service import _build_knowledge_version_model, upsert_vectors_for_knowledge_version
+from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleEmbeddingService, OpenAICompatibleLlmService
 from app.shared.utils import DateTimeUtil
@@ -367,23 +368,16 @@ def _get_step_map(task_repository: TaskCenterRepository, task_record_id: int) ->
 
 
 def _mark_task_failure(task_repository: TaskCenterRepository, repository: KnowledgeRepository, payload: dict, exc: Exception) -> None:
+    """处理知识抽取任务失败：可重试错误重排重试，否则判终态失败。"""
     task = task_repository.get_task_by_id(payload["task_record_id"])
-    if task is not None:
-        task.task_status = TASK_STATUS_FAILURE
-        task.last_error_code = get_task_error_code(exc, BusinessErrorCode.KNOWLEDGE_TASK_FAILED)
-        task.last_error_message = getattr(exc, "message", None) if isinstance(exc, AppException) else str(exc)
-        task.finished_at = DateTimeUtil.now_utc()
-        task_repository.save(task)
-    for step_code in ("prepare_parse_source", "invoke_llm_extract", "persist_knowledge_result", "upsert_vectors"):
-        step = task_repository.get_task_step(payload["task_record_id"], step_code)
-        if step is None or step.step_status == TASK_STATUS_SUCCESS:
-            continue
-        step.step_status = TASK_STATUS_FAILURE
-        step.detail_json = {"error": str(exc)}
-        step.finished_at = DateTimeUtil.now_utc()
-        task_repository.save(step)
-        break
-    repository.session.commit()
+    if task is None:
+        return
+    requeue_or_fail_task(
+        task_repository,
+        task,
+        exc=exc,
+        fallback_error_code=BusinessErrorCode.KNOWLEDGE_TASK_FAILED,
+    )
 
 
 def _create_session(payload: dict) -> Session:

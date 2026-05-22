@@ -1465,3 +1465,98 @@ def test_generation_batch_should_mark_failure_when_lesson_plan_has_invalid_knowl
     assert tasks[0]["task_status"] == "success"
     assert tasks[1]["task_status"] == "failure"
     assert tasks[1]["last_error_code"] == BusinessErrorCode.LLM_RESULT_INVALID.value
+
+
+def test_pending_courseware_should_finalize_via_background_poll(
+    client,
+    generation_test_stubs,
+    seeded_session_factory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """停泊等待 Raccoon 的课件任务应能被后台复查自动推进完成，无需前端刷新。"""
+    _ = generation_test_stubs
+    from app.modules.courseware.tasks import poll_pending_remote_courseware_results_once
+
+    def running_create_job(self, *, prompt: str, role: str, scene: str, audience: str):  # noqa: ANN001
+        _ = (self, prompt, role, scene, audience)
+        return RaccoonPptJobState(
+            job_id="ppt-job-bgpoll",
+            status="running",
+            raw_payload={"data": {"job_id": "ppt-job-bgpoll", "status": "running"}},
+        )
+
+    monkeypatch.setattr(RaccoonPptService, "create_job_and_short_poll", running_create_job)
+
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    knowledge_version_id = create_knowledge_version(client, headers, project_id)
+    learner_profile_version_id = create_learner_profile_version(client, headers, project_id)
+
+    batch_response = client.post(
+        "/api/v1/generation-batches",
+        headers=headers,
+        json={
+            "project_id": project_id,
+            "knowledge_version_id": knowledge_version_id,
+            "learner_profile_version_id": learner_profile_version_id,
+            "course_count": 1,
+            "session_duration_minutes": 90,
+        },
+    )
+    assert batch_response.status_code == 201
+    batch_payload = batch_response.json()["data"]
+
+    courseware_task_response = client.post(
+        f"/api/v1/lesson-plans/{batch_payload['lesson_plan_ids'][0]}/courseware-tasks",
+        headers=headers,
+    )
+    assert courseware_task_response.status_code == 201
+    courseware_task_payload = courseware_task_response.json()["data"]
+    assert courseware_task_payload["task_status"] == "processing"
+
+    # 阶段一：Raccoon 仍在生成，后台单发复查应保持任务停泊
+    def running_get_job(self, job_id: str):  # noqa: ANN001
+        _ = self
+        return RaccoonPptJobState(
+            job_id=job_id,
+            status="running",
+            raw_payload={"data": {"job_id": job_id, "status": "running"}},
+        )
+
+    monkeypatch.setattr(RaccoonPptService, "get_job_state", running_get_job)
+    session = seeded_session_factory()
+    try:
+        pending_summary = poll_pending_remote_courseware_results_once(session)
+    finally:
+        session.close()
+    assert pending_summary == {"scanned": 1, "succeeded": 0, "failed": 0, "pending": 1, "errored": 0}
+    parked_detail = client.get(f"/api/v1/tasks/{courseware_task_payload['id']}", headers=headers).json()["data"]
+    assert parked_detail["task_status"] == "processing"
+
+    # 阶段二：Raccoon 完成，后台复查无需前端刷新即收口
+    def succeeded_get_job(self, job_id: str):  # noqa: ANN001
+        _ = self
+        return RaccoonPptJobState(
+            job_id=job_id,
+            status="succeeded",
+            download_url="https://raccoon.test.example.com/courseware.pptx",
+            raw_payload={"data": {"job_id": job_id, "status": "succeeded"}},
+        )
+
+    monkeypatch.setattr(RaccoonPptService, "get_job_state", succeeded_get_job)
+    session = seeded_session_factory()
+    try:
+        done_summary = poll_pending_remote_courseware_results_once(session)
+    finally:
+        session.close()
+    assert done_summary["scanned"] == 1
+    assert done_summary["succeeded"] == 1
+
+    task_detail = client.get(f"/api/v1/tasks/{courseware_task_payload['id']}", headers=headers).json()["data"]
+    assert task_detail["task_status"] == "success"
+    courseware_items = client.get(
+        f"/api/v1/courseware-results?generation_batch_id={batch_payload['id']}",
+        headers=headers,
+    ).json()["data"]["items"]
+    assert courseware_items[0]["result_status"] == "success"
+    assert courseware_items[0]["export_file_id"] is not None
