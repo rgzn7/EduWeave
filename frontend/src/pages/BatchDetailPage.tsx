@@ -369,6 +369,7 @@ export function BatchDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["generation-batch", batchId] });
       queryClient.invalidateQueries({ queryKey: ["assessment-blueprints", batch?.curriculum_plan_id] });
       queryClient.invalidateQueries({ queryKey: ["paper-results", batch?.id] });
+      queryClient.invalidateQueries({ queryKey: ["question-items", batch?.id] });
     },
   });
 

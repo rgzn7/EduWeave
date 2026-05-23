@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FileQuestion, Plus, ShieldCheck } from "lucide-react";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorNotice } from "../../components/ErrorNotice";
@@ -7,7 +7,7 @@ import { JsonViewer } from "../../components/JsonViewer";
 import { StatusBadge } from "../../components/StatusBadge";
 import { isTaskActiveStatus } from "../../hooks/useTaskPolling";
 import { api } from "../../lib/api";
-import type { AssessmentBlueprint, GenerationBatch, PaperResult, Task } from "../../types";
+import type { AssessmentBlueprint, GenerationBatch, PaperResult, QuestionBankItem, Task } from "../../types";
 import { cn, formatDate, getErrorMessage } from "../../utils";
 import { asRecord, asRecordList, displayValue, type JsonObject } from "./helpers";
 import { KeyValueGrid, KnowledgeRefs, LoadingBlock, SectionBlock, StatCard, TaskSummaryCard } from "./shared";
@@ -63,6 +63,10 @@ const QUESTION_TYPE_LABELS: Record<string, string> = {
   fill_blank: "填空题",
   short_answer: "简答题",
 };
+
+const QUESTION_TYPE_OPTIONS = ["single_choice", "fill_blank", "short_answer"];
+const DIFFICULTY_OPTIONS = [1, 2, 3, 4, 5];
+const QUESTION_BANK_PAGE_SIZE = 20;
 
 function labelQuestionType(type: unknown) {
   const normalized = String(type ?? "");
@@ -238,123 +242,211 @@ function PaperDetail({ paper }: { paper?: PaperResult }) {
   );
 }
 
-function QuestionBankPreview({ paper }: { paper?: PaperResult }) {
+function QuestionBankCard({ question }: { question: QuestionBankItem | JsonObject }) {
+  return (
+    <article className="rounded-md border border-line bg-white px-3 py-3">
+      <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+        <span className="rounded-md bg-ink px-2 py-1 text-white">第 {displayValue(question.question_no)} 题</span>
+        <span className="rounded-md bg-accent/10 px-2 py-1 text-accent">{labelQuestionType(question.question_type)}</span>
+        <span className="rounded-md bg-paper px-2 py-1 text-ink/55">难度 {displayValue(question.difficulty_level)}</span>
+        <span className="rounded-md bg-paper px-2 py-1 text-ink/55">知识点 {displayValue(question.knowledge_point_id)}</span>
+        {"scene_type" in question && question.scene_type ? (
+          <span className="rounded-md bg-paper px-2 py-1 text-ink/55">{labelScene(question.scene_type)}</span>
+        ) : null}
+      </div>
+      {"paper_title" in question && question.paper_title ? (
+        <div className="mt-2 text-xs font-semibold text-ink/45">所属试卷：{displayValue(question.paper_title)}</div>
+      ) : null}
+      <p className="mt-3 line-clamp-2 break-words text-sm font-semibold leading-6 text-ink">{displayValue(question.stem_text)}</p>
+      <div className="mt-2 grid gap-2 text-xs leading-5 text-ink/55 xl:grid-cols-2">
+        <span className="break-words">答案：{displayValue(question.answer_text)}</span>
+        <span className="break-words">解析：{displayValue(question.analysis_text)}</span>
+      </div>
+    </article>
+  );
+}
+
+function QuestionBankPreview({
+  batchId,
+  selectedScene,
+  paper,
+  refetchWhileActive,
+}: {
+  batchId: number;
+  selectedScene: AssessmentSceneType;
+  paper?: PaperResult;
+  refetchWhileActive?: boolean;
+}) {
+  const [sceneFilter, setSceneFilter] = useState<AssessmentSceneType | "">(selectedScene);
   const [typeFilter, setTypeFilter] = useState("");
   const [difficultyFilter, setDifficultyFilter] = useState("");
   const [knowledgeFilter, setKnowledgeFilter] = useState("");
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
-    setTypeFilter("");
-    setDifficultyFilter("");
-    setKnowledgeFilter("");
-  }, [paper?.id]);
+    setSceneFilter(selectedScene);
+    setPage(1);
+  }, [selectedScene]);
 
-  const questionRecords = useMemo(() => getPaperQuestionRecords(paper), [paper]);
-  const questionTypes = useMemo(
-    () => Array.from(new Set(questionRecords.map((item) => String(item.question_type ?? "")).filter(Boolean))).sort(),
-    [questionRecords],
-  );
-  const difficultyLevels = useMemo(
-    () => Array.from(new Set(questionRecords.map((item) => String(item.difficulty_level ?? "")).filter(Boolean))).sort(),
-    [questionRecords],
-  );
-  const knowledgePointIds = useMemo(
-    () => Array.from(new Set(questionRecords.map((item) => String(item.knowledge_point_id ?? "")).filter(Boolean))).sort(),
-    [questionRecords],
-  );
-  const filteredQuestions = useMemo(
+  useEffect(() => {
+    setPage(1);
+  }, [difficultyFilter, knowledgeFilter, sceneFilter, typeFilter]);
+
+  const rawKnowledgeId = knowledgeFilter.trim() ? Number(knowledgeFilter.trim()) : undefined;
+  const normalizedKnowledgeId = rawKnowledgeId !== undefined && Number.isFinite(rawKnowledgeId) && rawKnowledgeId > 0 ? rawKnowledgeId : undefined;
+  const questionBankQuery = useQuery({
+    queryKey: ["question-items", batchId, sceneFilter, typeFilter, difficultyFilter, normalizedKnowledgeId, page],
+    queryFn: () =>
+      api.listQuestionItems({
+        generation_batch_id: batchId,
+        scene_type: sceneFilter || undefined,
+        question_type: typeFilter || undefined,
+        difficulty_level: difficultyFilter ? Number(difficultyFilter) : undefined,
+        knowledge_point_id: normalizedKnowledgeId,
+        page,
+        page_size: QUESTION_BANK_PAGE_SIZE,
+      }),
+    enabled: batchId > 0,
+    refetchInterval: refetchWhileActive ? 5_000 : false,
+  });
+
+  useEffect(() => {
+    if (questionBankQuery.data && page > questionBankQuery.data.pagination.total_pages && questionBankQuery.data.pagination.total_pages > 0) {
+      setPage(questionBankQuery.data.pagination.total_pages);
+    }
+  }, [page, questionBankQuery.data]);
+
+  const fallbackQuestionRecords = useMemo(() => getPaperQuestionRecords(paper), [paper]);
+  const fallbackFilteredQuestions = useMemo(
     () =>
-      questionRecords.filter((item) => {
+      fallbackQuestionRecords.filter((item) => {
         const matchesType = !typeFilter || String(item.question_type ?? "") === typeFilter;
         const matchesDifficulty = !difficultyFilter || String(item.difficulty_level ?? "") === difficultyFilter;
-        const matchesKnowledge = !knowledgeFilter || String(item.knowledge_point_id ?? "") === knowledgeFilter;
+        const matchesKnowledge = !knowledgeFilter.trim() || String(item.knowledge_point_id ?? "") === knowledgeFilter.trim();
         return matchesType && matchesDifficulty && matchesKnowledge;
       }),
-    [difficultyFilter, knowledgeFilter, questionRecords, typeFilter],
+    [difficultyFilter, fallbackQuestionRecords, knowledgeFilter, typeFilter],
   );
+
+  const questionItems = questionBankQuery.data?.items ?? [];
+  const pagination = questionBankQuery.data?.pagination;
+  const showFallback = Boolean(questionBankQuery.error && fallbackQuestionRecords.length);
 
   return (
     <section className="space-y-4 rounded-md border border-line bg-paper/60 p-4">
       <div className="flex flex-col justify-between gap-3 xl:flex-row xl:items-start">
         <div>
           <div className="label">题目沉淀</div>
-          <h3 className="mt-1 text-sm font-bold text-ink">{paper ? `当前试卷 #${paper.id}` : "请选择试卷结果"}</h3>
+          <h3 className="mt-1 text-sm font-bold text-ink">全批次题库数据</h3>
           <p className="mt-2 max-w-2xl text-xs leading-5 text-ink/50">
-            当前基于试卷详情中的题目明细展示；全批次题库查询等待后端 question-items 接口，不展示虚构沉淀数据。
+            当前基于后端 question-items 接口查询批次内真实题目，支持按场景、题型、难度和知识点筛选。
           </p>
         </div>
-        <StatusBadge status={paper?.result_status ?? "pending"} />
+        <StatusBadge status={questionBankQuery.error ? "failure" : questionBankQuery.isFetching ? "processing" : "success"} />
       </div>
-      {paper && questionRecords.length ? (
-        <>
-          <div className="grid gap-3 md:grid-cols-3">
-            <label className="block">
-              <span className="label">题型</span>
-              <select className="field mt-2" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
-                <option value="">全部题型</option>
-                {questionTypes.map((type) => (
-                  <option key={type} value={type}>
-                    {labelQuestionType(type)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block">
-              <span className="label">难度</span>
-              <select className="field mt-2" value={difficultyFilter} onChange={(event) => setDifficultyFilter(event.target.value)}>
-                <option value="">全部难度</option>
-                {difficultyLevels.map((level) => (
-                  <option key={level} value={level}>
-                    难度 {level}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block">
-              <span className="label">知识点</span>
-              <select className="field mt-2" value={knowledgeFilter} onChange={(event) => setKnowledgeFilter(event.target.value)}>
-                <option value="">全部知识点</option>
-                {knowledgePointIds.map((id) => (
-                  <option key={id} value={id}>
-                    #{id}
-                  </option>
-                ))}
-              </select>
-            </label>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <label className="block">
+          <span className="label">测练场景</span>
+          <select className="field mt-2" value={sceneFilter} onChange={(event) => setSceneFilter(event.target.value as AssessmentSceneType | "")}>
+            <option value="">全部场景</option>
+            {ASSESSMENT_SCENES.map((scene) => (
+              <option key={scene.scene_type} value={scene.scene_type}>
+                {scene.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="label">题型</span>
+          <select className="field mt-2" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+            <option value="">全部题型</option>
+            {QUESTION_TYPE_OPTIONS.map((type) => (
+              <option key={type} value={type}>
+                {labelQuestionType(type)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="label">难度</span>
+          <select className="field mt-2" value={difficultyFilter} onChange={(event) => setDifficultyFilter(event.target.value)}>
+            <option value="">全部难度</option>
+            {DIFFICULTY_OPTIONS.map((level) => (
+              <option key={level} value={level}>
+                难度 {level}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="label">知识点 ID</span>
+          <input
+            className="field mt-2"
+            min={1}
+            onChange={(event) => setKnowledgeFilter(event.target.value)}
+            placeholder="全部知识点"
+            type="number"
+            value={knowledgeFilter}
+          />
+        </label>
+      </div>
+
+      {questionBankQuery.error ? <ErrorNotice title="题库查询失败" message={getErrorMessage(questionBankQuery.error)} /> : null}
+
+      {showFallback ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold leading-5 text-amber-800">
+          已切换为当前试卷降级视图，展示试卷 #{paper?.id} 内题目。
+        </div>
+      ) : null}
+
+      <div className="grid gap-3 md:grid-cols-3">
+        <StatCard label={showFallback ? "当前试卷题目" : "题库题目总数"} value={showFallback ? fallbackQuestionRecords.length : (pagination?.total_count ?? questionItems.length)} />
+        <StatCard label={showFallback ? "降级筛选结果" : "本页题目"} value={showFallback ? fallbackFilteredQuestions.length : questionItems.length} />
+        <StatCard label="当前场景" value={sceneFilter ? labelScene(sceneFilter) : "全部场景"} />
+      </div>
+
+      {questionBankQuery.isLoading ? <LoadingBlock description="正在读取全批次题库题目。" text="加载题目沉淀" /> : null}
+
+      {!questionBankQuery.isLoading && !questionBankQuery.error && !questionItems.length ? (
+        <EmptyState description="当前筛选条件下没有题目沉淀数据，可调整场景、题型、难度或知识点。" title="暂无题目沉淀" />
+      ) : null}
+
+      {!showFallback && questionItems.length ? (
+        <div className="space-y-2">
+          {questionItems.map((question) => (
+            <QuestionBankCard key={question.id} question={question} />
+          ))}
+        </div>
+      ) : null}
+
+      {showFallback ? (
+        fallbackFilteredQuestions.length ? (
+          <div className="space-y-2">
+            {fallbackFilteredQuestions.map((question, index) => (
+              <QuestionBankCard key={`${question.id ?? question.question_no ?? index}`} question={question} />
+            ))}
           </div>
-          <div className="grid gap-3 md:grid-cols-3">
-            <StatCard label="当前试卷题目" value={questionRecords.length} />
-            <StatCard label="筛选结果" value={filteredQuestions.length} />
-            <StatCard label="测练场景" value={labelScene(paper.scene_type)} />
+        ) : (
+          <EmptyState description="当前试卷降级视图没有匹配题目，请调整题型、难度或知识点。" title="暂无匹配题目" />
+        )
+      ) : null}
+
+      {!showFallback && pagination ? (
+        <div className="flex flex-col justify-between gap-3 rounded-md border border-line bg-white px-3 py-3 text-xs font-semibold text-ink/55 md:flex-row md:items-center">
+          <span>
+            第 {pagination.page} / {pagination.total_pages || 1} 页，共 {pagination.total_count} 题
+          </span>
+          <div className="flex gap-2">
+            <button className="btn btn-secondary h-8 px-3 text-xs" disabled={!pagination.has_previous} onClick={() => setPage((current) => Math.max(current - 1, 1))} type="button">
+              上一页
+            </button>
+            <button className="btn btn-secondary h-8 px-3 text-xs" disabled={!pagination.has_next} onClick={() => setPage((current) => current + 1)} type="button">
+              下一页
+            </button>
           </div>
-          {filteredQuestions.length ? (
-            <div className="space-y-2">
-              {filteredQuestions.map((question, index) => (
-                <article className="rounded-md border border-line bg-white px-3 py-3" key={`${question.id ?? question.question_no ?? index}`}>
-                  <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
-                    <span className="rounded-md bg-ink px-2 py-1 text-white">第 {displayValue(question.question_no)} 题</span>
-                    <span className="rounded-md bg-accent/10 px-2 py-1 text-accent">{labelQuestionType(question.question_type)}</span>
-                    <span className="rounded-md bg-paper px-2 py-1 text-ink/55">难度 {displayValue(question.difficulty_level)}</span>
-                    <span className="rounded-md bg-paper px-2 py-1 text-ink/55">知识点 {displayValue(question.knowledge_point_id)}</span>
-                  </div>
-                  <p className="mt-3 line-clamp-2 break-words text-sm font-semibold leading-6 text-ink">{displayValue(question.stem_text)}</p>
-                  <div className="mt-2 grid gap-2 text-xs leading-5 text-ink/55 xl:grid-cols-2">
-                    <span className="break-words">答案：{displayValue(question.answer_text)}</span>
-                    <span className="break-words">解析：{displayValue(question.analysis_text)}</span>
-                  </div>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <EmptyState description="当前筛选条件没有匹配题目，请调整题型、难度或知识点。" title="暂无匹配题目" />
-          )}
-        </>
-      ) : (
-        <EmptyState
-          description={paper ? "当前试卷详情没有 questions 明细，等待后端返回题目沉淀数据。" : "选择试卷后展示题干、答案、解析、题型、难度和知识点。"}
-          title="暂无题目沉淀"
-        />
-      )}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -597,7 +689,7 @@ export function AssessmentTab({
 
       {paperDetailLoading ? <LoadingBlock description="正在读取题目、答案解析和知识点来源。" text="加载试卷详情" /> : null}
       {paperDetailError ? <ErrorNotice title="试卷详情获取失败" message={getErrorMessage(paperDetailError)} /> : null}
-      <QuestionBankPreview paper={paper} />
+      <QuestionBankPreview batchId={batch.id} selectedScene={selectedScene} paper={paper} refetchWhileActive={activeTask} />
       <PaperDetail paper={paper} />
     </div>
   );
