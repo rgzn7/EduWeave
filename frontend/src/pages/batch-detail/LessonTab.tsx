@@ -1,8 +1,11 @@
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Download } from "lucide-react";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { JsonViewer } from "../../components/JsonViewer";
 import { StatusBadge } from "../../components/StatusBadge";
 import { isTaskActiveStatus } from "../../hooks/useTaskPolling";
+import { api } from "../../lib/api";
 import type { GenerationBatch, LessonPlan, Task } from "../../types";
 import { cn, formatDate, getErrorMessage } from "../../utils";
 import { asNumberList, asRecord, asRecordList, asStringList, displayValue, type JsonObject } from "./helpers";
@@ -101,7 +104,26 @@ export function LessonTab({
   detailError: unknown;
   task?: Task;
 }) {
+  const queryClient = useQueryClient();
   const content = asRecord(lesson?.content_json);
+  const downloadMutation = useMutation({
+    mutationFn: async () => {
+      if (!lesson) {
+        throw new Error("缺少教案");
+      }
+      const result = lesson.export_file_id ? await api.getFileDownloadUrl(lesson.export_file_id) : await api.exportLessonPlanDocx(lesson.id);
+      if (!result.signed_url) {
+        throw new Error("后端未返回有效下载地址");
+      }
+      return result;
+    },
+    onSuccess: (result) => {
+      if (lesson) {
+        queryClient.invalidateQueries({ queryKey: ["lesson-plan", lesson.id] });
+      }
+      window.open(result.signed_url!, "_blank", "noopener,noreferrer");
+    },
+  });
 
   return (
     <div className="space-y-5">
@@ -153,8 +175,15 @@ export function LessonTab({
                       <h2 className="mt-1 break-words text-xl font-bold text-ink">{lesson.lesson_title}</h2>
                       <p className="mt-2 text-sm leading-6 text-ink/60">{lesson.summary_text ?? "暂无摘要"}</p>
                     </div>
-                    <StatusBadge status={lesson.version_status} />
+                    <div className="flex shrink-0 flex-wrap items-center gap-2">
+                      <StatusBadge status={lesson.version_status} />
+                      <button className="btn btn-secondary" disabled={downloadMutation.isPending} onClick={() => downloadMutation.mutate()} type="button">
+                        <Download size={16} />
+                        {downloadMutation.isPending ? "准备下载" : lesson.export_file_id ? "下载 DOCX" : "导出 DOCX"}
+                      </button>
+                    </div>
                   </div>
+                  {downloadMutation.error ? <ErrorNotice title="教案 DOCX 下载失败" message={getErrorMessage(downloadMutation.error)} /> : null}
                   <div className="mt-4 grid gap-3 md:grid-cols-3">
                     <StatCard label="课次" value={lesson.class_session_no} />
                     <StatCard label="版本" value={lesson.version_no} />

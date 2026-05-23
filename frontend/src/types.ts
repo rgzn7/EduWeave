@@ -131,6 +131,30 @@ export type ParseVersion = {
   updated_at: string;
 };
 
+export type ParseEvidenceExample = {
+  page_no?: number | null;
+  block_id?: number | string | null;
+  block_no?: number | string | null;
+  block_type?: string | null;
+  text_snippet?: string | null;
+  resource_file_id?: number | null;
+};
+
+export type ParseEvidenceSummary = {
+  parse_version_id: number;
+  strategy_code?: string | null;
+  mineru_model?: string | null;
+  parse_status?: string | null;
+  review_status?: string | null;
+  page_count?: number | null;
+  block_count?: number | null;
+  issue_count?: number | null;
+  block_type_stats?: JsonRecord | null;
+  media_stats?: JsonRecord | null;
+  mineru_options?: JsonRecord | null;
+  sample_evidence?: ParseEvidenceExample[];
+};
+
 export type KnowledgeVersion = {
   id: number;
   project_id: number;
@@ -252,6 +276,12 @@ export type QuestionItem = {
   updated_at: string;
 };
 
+export type QuestionBankItem = QuestionItem & {
+  scene_type?: string | null;
+  paper_title?: string | null;
+  knowledge_point_name?: string | null;
+};
+
 export type PaperResult = {
   id: number;
   generation_batch_id: number;
@@ -355,5 +385,4 @@ export type CreateGenerationBatchPayload = {
   chapter_range_json?: JsonRecord | null;
   course_count: number;
   session_duration_minutes: number;
-  assessment_strategy_json?: JsonRecord | null;
 };

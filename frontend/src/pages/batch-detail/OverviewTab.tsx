@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { JsonViewer } from "../../components/JsonViewer";
 import { ProgressBar } from "../../components/ProgressBar";
 import { StatusBadge } from "../../components/StatusBadge";
+import type { AssessmentSceneSummary } from "./AssessmentTab";
 import type { GenerationBatch } from "../../types";
 import { formatDate } from "../../utils";
 import { StatCard } from "./shared";
@@ -37,8 +38,7 @@ function FlowItem({
 export function OverviewTab({
   batch,
   lessonCount,
-  assessmentCount,
-  assessmentStatus,
+  assessmentScenes,
   coursewareCount,
   coursewareStatus,
   coverageCount,
@@ -46,8 +46,7 @@ export function OverviewTab({
 }: {
   batch: GenerationBatch;
   lessonCount: number;
-  assessmentCount: number;
-  assessmentStatus: string;
+  assessmentScenes: AssessmentSceneSummary[];
   coursewareCount: number;
   coursewareStatus: string;
   coverageCount: number;
@@ -56,6 +55,15 @@ export function OverviewTab({
   const taskProgress = batch.tasks?.length
     ? Math.round(batch.tasks.reduce((sum, task) => sum + (task.progress_percent ?? 0), 0) / batch.tasks.length)
     : 0;
+  const completedAssessmentScenes = assessmentScenes.filter((scene) => scene.paperCount > 0);
+  const assessmentPaperCount = assessmentScenes.reduce((sum, scene) => sum + scene.paperCount, 0);
+  const hasAssessmentInProgress = assessmentScenes.some((scene) => ["processing", "running"].includes(scene.status));
+  const assessmentStatus =
+    completedAssessmentScenes.length === assessmentScenes.length
+      ? "ready"
+      : hasAssessmentInProgress || completedAssessmentScenes.length
+        ? "processing"
+        : "pending";
 
   return (
     <div className="space-y-5">
@@ -113,10 +121,10 @@ export function OverviewTab({
             title="教案"
           />
           <FlowItem
-            detail={assessmentCount ? `${assessmentCount} 份试卷结果` : "按需生成单元测评"}
+            detail={assessmentPaperCount ? `已生成 ${completedAssessmentScenes.length}/${assessmentScenes.length} 类，共 ${assessmentPaperCount} 份` : "按需生成作业、单元测评和综合测"}
             icon={<FileQuestion size={18} />}
             status={assessmentStatus}
-            title="测评"
+            title="测练体系"
           />
           <FlowItem
             detail={coursewareCount ? `${coursewareCount} 份课件结果` : "按需生成 PPTX"}
@@ -131,10 +139,23 @@ export function OverviewTab({
             title="覆盖校验"
           />
         </div>
+        <div className="mt-3 grid gap-3 md:grid-cols-3">
+          {assessmentScenes.map((scene) => (
+            <section className="rounded-md border border-line bg-paper/60 p-3" key={scene.scene_type}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-bold text-ink">{scene.label}</div>
+                  <div className="mt-1 text-xs text-ink/50">{scene.paperCount ? `${scene.paperCount} 份结果` : "等待生成"}</div>
+                </div>
+                <StatusBadge status={scene.status} />
+              </div>
+            </section>
+          ))}
+        </div>
       </section>
       <div className="grid gap-4 xl:grid-cols-2">
         <JsonViewer title="chapter_range_json" value={batch.chapter_range_json} />
-        <JsonViewer title="assessment_strategy_json" value={batch.assessment_strategy_json} />
+        <JsonViewer title="pipeline_options_json" value={batch.pipeline_options_json} />
       </div>
       <div className="grid gap-4 xl:grid-cols-3">
         <section className="rounded-md border border-line bg-paper/60 p-4">

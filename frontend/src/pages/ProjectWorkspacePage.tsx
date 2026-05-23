@@ -24,7 +24,7 @@ import { StatusBadge } from "../components/StatusBadge";
 import { TaskTable } from "../components/TaskTable";
 import { isTaskActiveStatus } from "../hooks/useTaskPolling";
 import { api } from "../lib/api";
-import type { KnowledgeVersion, LearnerProfileVersion, ParseVersion, Task, TextbookVersion } from "../types";
+import type { KnowledgeVersion, LearnerProfileVersion, ParseEvidenceSummary, ParseVersion, Task, TextbookVersion } from "../types";
 import { cn, formatDate, getErrorMessage, toNumberId } from "../utils";
 
 const READY_STATUS = "ready";
@@ -240,6 +240,128 @@ function BaselineRow({
   );
 }
 
+function displayMetric(value: unknown) {
+  if (value === undefined || value === null || value === "") {
+    return "-";
+  }
+  return String(value);
+}
+
+function recordEntries(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return [];
+  }
+  return Object.entries(value as Record<string, unknown>).filter(([, item]) => item !== undefined && item !== null && item !== "");
+}
+
+function EvidenceMetricGrid({ entries }: { entries: [string, unknown][] }) {
+  if (!entries.length) {
+    return <div className="text-sm text-ink/45">等待后端 evidence-summary 接口返回统计。</div>;
+  }
+  return (
+    <div className="grid gap-3 md:grid-cols-2">
+      {entries.map(([key, value]) => (
+        <div className="rounded-md border border-line bg-white px-3 py-2" key={key}>
+          <div className="text-xs font-semibold text-ink/45">{key}</div>
+          <div className="mt-1 break-words text-sm font-bold text-ink">{displayMetric(value)}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ParseEvidencePanel({
+  parseVersion,
+  summary,
+  isLoading,
+  error,
+}: {
+  parseVersion?: ParseVersion;
+  summary?: ParseEvidenceSummary;
+  isLoading: boolean;
+  error: unknown;
+}) {
+  if (!parseVersion) {
+    return <EmptyState title="暂无解析证据" description="选择或生成解析版本后，这里会展示 MinerU 解析证据摘要。" />;
+  }
+
+  const sampleEvidence = summary?.sample_evidence ?? [];
+  const baseRows: [string, unknown][] = [
+    ["解析版本", `#${summary?.parse_version_id ?? parseVersion.id}`],
+    ["解析策略", summary?.strategy_code ?? parseVersion.strategy_code],
+    ["MinerU 模型", summary?.mineru_model ?? "等待后端接口"],
+    ["解析状态", summary?.parse_status ?? parseVersion.parse_status],
+    ["复核状态", summary?.review_status ?? parseVersion.review_status],
+  ];
+  const scaleRows: [string, unknown][] = [
+    ["页数", summary?.page_count ?? parseVersion.page_count],
+    ["Block 总数", summary?.block_count],
+    ["Issue 数", summary?.issue_count ?? parseVersion.issue_count],
+  ];
+  const unavailable = !isLoading && !summary;
+
+  return (
+    <section className="rounded-md border border-line bg-paper/60 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <div className="label">解析证据摘要</div>
+          <h3 className="mt-1 text-sm font-bold text-ink">MinerU 结构化能力展示</h3>
+        </div>
+        <StatusBadge status={summary?.parse_status ?? parseVersion.parse_status} />
+      </div>
+      {isLoading ? <div className="mt-3 text-xs font-semibold text-ink/45">正在读取 evidence-summary...</div> : null}
+      {unavailable ? (
+        <div className="mt-3 rounded-md border border-dashed border-line bg-white px-3 py-2 text-xs font-semibold leading-5 text-ink/50">
+          等待后端 evidence-summary 接口；当前仅展示解析版本基础信息，不展示虚构的 block、图片、表格或公式统计。
+          {error ? <span className="block text-coral">接口返回：{getErrorMessage(error)}</span> : null}
+        </div>
+      ) : null}
+      <div className="mt-4 grid gap-4 xl:grid-cols-2">
+        <div>
+          <div className="mb-2 text-xs font-semibold text-ink/45">版本基础信息</div>
+          <EvidenceMetricGrid entries={baseRows} />
+        </div>
+        <div>
+          <div className="mb-2 text-xs font-semibold text-ink/45">规模统计</div>
+          <EvidenceMetricGrid entries={scaleRows} />
+        </div>
+        <div>
+          <div className="mb-2 text-xs font-semibold text-ink/45">Block 类型统计</div>
+          <EvidenceMetricGrid entries={recordEntries(summary?.block_type_stats)} />
+        </div>
+        <div>
+          <div className="mb-2 text-xs font-semibold text-ink/45">多媒体与资源统计</div>
+          <EvidenceMetricGrid entries={recordEntries(summary?.media_stats)} />
+        </div>
+      </div>
+      <div className="mt-4">
+        <div className="mb-2 text-xs font-semibold text-ink/45">MinerU 参数摘要</div>
+        <EvidenceMetricGrid entries={recordEntries(summary?.mineru_options)} />
+      </div>
+      <div className="mt-4">
+        <div className="mb-2 text-xs font-semibold text-ink/45">示例证据</div>
+        {sampleEvidence.length ? (
+          <div className="space-y-2">
+            {sampleEvidence.slice(0, 5).map((item, index) => (
+              <div className="rounded-md border border-line bg-white px-3 py-2 text-sm" key={`${item.block_id ?? item.block_no ?? index}`}>
+                <div className="flex flex-wrap gap-2 text-xs font-semibold text-ink/50">
+                  <span>页码 {displayMetric(item.page_no)}</span>
+                  <span>Block {displayMetric(item.block_no ?? item.block_id)}</span>
+                  <span>类型 {displayMetric(item.block_type)}</span>
+                  <span>资源 {displayMetric(item.resource_file_id)}</span>
+                </div>
+                <div className="mt-1 line-clamp-2 break-words text-ink/70">{displayMetric(item.text_snippet)}</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-sm text-ink/45">等待后端返回页码、block 编号、文本片段与资源文件 ID。</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function UploadError({ error, title }: { error: unknown; title: string }) {
   if (!error) {
     return null;
@@ -308,6 +430,13 @@ export function ProjectWorkspacePage() {
     queryFn: () => api.listKnowledgeVersions(selectedParseVersionId!),
     enabled: Boolean(selectedParseVersionId),
     refetchInterval: 8_000,
+  });
+
+  const parseEvidenceSummaryQuery = useQuery({
+    queryKey: ["parse-evidence-summary", selectedParseVersionId],
+    queryFn: () => api.getParseEvidenceSummary(selectedParseVersionId!),
+    enabled: Boolean(selectedParseVersionId),
+    retry: false,
   });
 
   const generationBatchesQuery = useQuery({
@@ -442,6 +571,7 @@ export function ProjectWorkspacePage() {
     if (selectedTextbookId) {
       queryClient.invalidateQueries({ queryKey: ["parse-versions", selectedTextbookId] });
     }
+    queryClient.invalidateQueries({ queryKey: ["parse-evidence-summary"] });
     if (selectedParseVersionId) {
       queryClient.invalidateQueries({ queryKey: ["knowledge-versions", selectedParseVersionId] });
     }
@@ -735,6 +865,12 @@ export function ProjectWorkspacePage() {
               <UploadError error={confirmParseVersion.error} title="解析版本确认失败" />
             </div>
           </div>
+          <ParseEvidencePanel
+            parseVersion={selectedParseVersion}
+            summary={parseEvidenceSummaryQuery.data}
+            isLoading={parseEvidenceSummaryQuery.isLoading}
+            error={parseEvidenceSummaryQuery.error}
+          />
         </WorkflowSection>
 
         <WorkflowSection

@@ -1,8 +1,11 @@
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Download } from "lucide-react";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { JsonViewer } from "../../components/JsonViewer";
 import { StatusBadge } from "../../components/StatusBadge";
 import { isTaskActiveStatus } from "../../hooks/useTaskPolling";
+import { api } from "../../lib/api";
 import type { CurriculumPlan, Task } from "../../types";
 import { getErrorMessage } from "../../utils";
 import { asNumberList, asRecord, asRecordList, asStringList, displayValue, type JsonObject } from "./helpers";
@@ -59,8 +62,27 @@ export function CurriculumTab({
   error: unknown;
   task?: Task;
 }) {
+  const queryClient = useQueryClient();
   const content = asRecord(plan?.content_json);
   const sessions = asRecordList(content?.lesson_sessions);
+  const downloadMutation = useMutation({
+    mutationFn: async () => {
+      if (!plan) {
+        throw new Error("缺少课程方案");
+      }
+      const result = plan.export_file_id ? await api.getFileDownloadUrl(plan.export_file_id) : await api.exportCurriculumPlanDocx(plan.id);
+      if (!result.signed_url) {
+        throw new Error("后端未返回有效下载地址");
+      }
+      return result;
+    },
+    onSuccess: (result) => {
+      if (plan) {
+        queryClient.invalidateQueries({ queryKey: ["curriculum-plan", plan.id] });
+      }
+      window.open(result.signed_url!, "_blank", "noopener,noreferrer");
+    },
+  });
 
   return (
     <div className="space-y-5">
@@ -82,8 +104,15 @@ export function CurriculumTab({
                 <h2 className="mt-1 break-words text-xl font-bold text-ink">{plan.plan_title}</h2>
                 <p className="mt-2 text-sm leading-6 text-ink/60">{plan.summary_text ?? "暂无摘要"}</p>
               </div>
-              <StatusBadge status={plan.version_status} />
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <StatusBadge status={plan.version_status} />
+                <button className="btn btn-secondary" disabled={downloadMutation.isPending} onClick={() => downloadMutation.mutate()} type="button">
+                  <Download size={16} />
+                  {downloadMutation.isPending ? "准备下载" : plan.export_file_id ? "下载 DOCX" : "导出 DOCX"}
+                </button>
+              </div>
             </div>
+            {downloadMutation.error ? <ErrorNotice title="课程方案 DOCX 下载失败" message={getErrorMessage(downloadMutation.error)} /> : null}
             <div className="mt-4 grid gap-3 md:grid-cols-4">
               <StatCard label="课程数" value={plan.course_count} />
               <StatCard label="课时分钟" value={plan.session_duration_minutes} />

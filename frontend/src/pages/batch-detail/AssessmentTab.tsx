@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Download, FileQuestion, Plus, ShieldCheck } from "lucide-react";
 import { EmptyState } from "../../components/EmptyState";
@@ -9,15 +10,53 @@ import { api } from "../../lib/api";
 import type { AssessmentBlueprint, GenerationBatch, PaperResult, Task } from "../../types";
 import { cn, formatDate, getErrorMessage } from "../../utils";
 import { asRecord, asRecordList, displayValue, type JsonObject } from "./helpers";
-import { KeyValueGrid, KnowledgeRefs, LoadingBlock, SectionBlock, StatCard, TaskSummaryCard, TextList } from "./shared";
+import { KeyValueGrid, KnowledgeRefs, LoadingBlock, SectionBlock, StatCard, TaskSummaryCard } from "./shared";
 
-export const DEFAULT_UNIT_TEST_STRATEGY = {
-  scenario_type: "unit_test",
-  scene_type: "unit_test",
-  question_count: 10,
-  question_types: ["single_choice", "fill_blank", "short_answer"],
-  difficulty_range: [1, 5],
+export type AssessmentSceneType = "homework" | "unit_test" | "final_exam";
+
+export type AssessmentSceneConfig = {
+  scene_type: AssessmentSceneType;
+  label: string;
+  shortLabel: string;
+  questionCount: number;
+  difficultyRange: string;
+  description: string;
 };
+
+export type AssessmentSceneSummary = {
+  scene_type: AssessmentSceneType;
+  label: string;
+  paperCount: number;
+  blueprintCount: number;
+  status: string;
+};
+
+export const ASSESSMENT_SCENES: AssessmentSceneConfig[] = [
+  {
+    scene_type: "homework",
+    label: "课后作业",
+    shortLabel: "作业",
+    questionCount: 6,
+    difficultyRange: "1-3",
+    description: "巩固当堂知识点，题量精简，偏基础应用。",
+  },
+  {
+    scene_type: "unit_test",
+    label: "单元测评",
+    shortLabel: "单元",
+    questionCount: 10,
+    difficultyRange: "2-4",
+    description: "覆盖本单元主要知识点，兼顾理解和典型应用。",
+  },
+  {
+    scene_type: "final_exam",
+    label: "期末综合测",
+    shortLabel: "综合",
+    questionCount: 20,
+    difficultyRange: "2-5",
+    description: "覆盖更广知识范围，强调综合运用和区分度。",
+  },
+];
 
 const QUESTION_TYPE_LABELS: Record<string, string> = {
   single_choice: "单选题",
@@ -28,6 +67,19 @@ const QUESTION_TYPE_LABELS: Record<string, string> = {
 function labelQuestionType(type: unknown) {
   const normalized = String(type ?? "");
   return QUESTION_TYPE_LABELS[normalized] ?? displayValue(type);
+}
+
+export function getAssessmentSceneConfig(sceneType: string | null | undefined) {
+  return ASSESSMENT_SCENES.find((scene) => scene.scene_type === sceneType) ?? ASSESSMENT_SCENES[1];
+}
+
+function labelScene(sceneType: unknown) {
+  return getAssessmentSceneConfig(String(sceneType ?? "")).label;
+}
+
+function getPaperQuestionRecords(paper?: PaperResult) {
+  const paperJson = asRecord(paper?.paper_json);
+  return paper?.questions?.length ? paper.questions.map((question) => question as unknown as JsonObject) : asRecordList(paperJson?.questions);
 }
 
 function QuestionCard({ question }: { question: JsonObject }) {
@@ -71,6 +123,7 @@ function BlueprintDetail({ blueprint }: { blueprint?: AssessmentBlueprint }) {
   const content = asRecord(blueprint?.content_json);
   const strategySummary = asRecord(content?.strategy_summary) ?? asRecord(blueprint?.strategy_json);
   const knowledgeWeights = asRecordList(content?.knowledge_weights);
+  const sceneConfig = getAssessmentSceneConfig(blueprint?.scenario_type);
 
   if (!blueprint) {
     return null;
@@ -84,7 +137,7 @@ function BlueprintDetail({ blueprint }: { blueprint?: AssessmentBlueprint }) {
             <div className="label">测评蓝图 #{blueprint.id}</div>
             <h2 className="mt-1 break-words text-xl font-bold text-ink">{blueprint.blueprint_name}</h2>
             <p className="mt-2 text-sm text-ink/55">
-              {blueprint.scenario_type} / 版本 {blueprint.version_no} / {formatDate(blueprint.updated_at)}
+              {sceneConfig.label} / {blueprint.scenario_type} / 版本 {blueprint.version_no} / {formatDate(blueprint.updated_at)}
             </p>
           </div>
           <StatusBadge status={blueprint.version_status} />
@@ -132,9 +185,8 @@ function BlueprintDetail({ blueprint }: { blueprint?: AssessmentBlueprint }) {
 
 function PaperDetail({ paper }: { paper?: PaperResult }) {
   const paperJson = asRecord(paper?.paper_json);
-  const questionRecords = paper?.questions?.length
-    ? paper.questions.map((question) => question as unknown as JsonObject)
-    : asRecordList(paperJson?.questions);
+  const sceneName = String(paperJson?.scene_label ?? labelScene(paper?.scene_type));
+  const questionRecords = getPaperQuestionRecords(paper);
 
   if (!paper) {
     return null;
@@ -148,7 +200,7 @@ function PaperDetail({ paper }: { paper?: PaperResult }) {
             <div className="label">试卷 #{paper.id}</div>
             <h2 className="mt-1 break-words text-xl font-bold text-ink">{paper.title}</h2>
             <p className="mt-2 text-sm text-ink/55">
-              {paper.scene_type} / {paper.question_count} 题 / {formatDate(paper.updated_at)}
+              {sceneName} / {paper.scene_type} / {paper.question_count} 题 / {formatDate(paper.updated_at)}
             </p>
           </div>
           <StatusBadge status={paper.result_status} />
@@ -186,10 +238,134 @@ function PaperDetail({ paper }: { paper?: PaperResult }) {
   );
 }
 
+function QuestionBankPreview({ paper }: { paper?: PaperResult }) {
+  const [typeFilter, setTypeFilter] = useState("");
+  const [difficultyFilter, setDifficultyFilter] = useState("");
+  const [knowledgeFilter, setKnowledgeFilter] = useState("");
+
+  useEffect(() => {
+    setTypeFilter("");
+    setDifficultyFilter("");
+    setKnowledgeFilter("");
+  }, [paper?.id]);
+
+  const questionRecords = useMemo(() => getPaperQuestionRecords(paper), [paper]);
+  const questionTypes = useMemo(
+    () => Array.from(new Set(questionRecords.map((item) => String(item.question_type ?? "")).filter(Boolean))).sort(),
+    [questionRecords],
+  );
+  const difficultyLevels = useMemo(
+    () => Array.from(new Set(questionRecords.map((item) => String(item.difficulty_level ?? "")).filter(Boolean))).sort(),
+    [questionRecords],
+  );
+  const knowledgePointIds = useMemo(
+    () => Array.from(new Set(questionRecords.map((item) => String(item.knowledge_point_id ?? "")).filter(Boolean))).sort(),
+    [questionRecords],
+  );
+  const filteredQuestions = useMemo(
+    () =>
+      questionRecords.filter((item) => {
+        const matchesType = !typeFilter || String(item.question_type ?? "") === typeFilter;
+        const matchesDifficulty = !difficultyFilter || String(item.difficulty_level ?? "") === difficultyFilter;
+        const matchesKnowledge = !knowledgeFilter || String(item.knowledge_point_id ?? "") === knowledgeFilter;
+        return matchesType && matchesDifficulty && matchesKnowledge;
+      }),
+    [difficultyFilter, knowledgeFilter, questionRecords, typeFilter],
+  );
+
+  return (
+    <section className="space-y-4 rounded-md border border-line bg-paper/60 p-4">
+      <div className="flex flex-col justify-between gap-3 xl:flex-row xl:items-start">
+        <div>
+          <div className="label">题目沉淀</div>
+          <h3 className="mt-1 text-sm font-bold text-ink">{paper ? `当前试卷 #${paper.id}` : "请选择试卷结果"}</h3>
+          <p className="mt-2 max-w-2xl text-xs leading-5 text-ink/50">
+            当前基于试卷详情中的题目明细展示；全批次题库查询等待后端 question-items 接口，不展示虚构沉淀数据。
+          </p>
+        </div>
+        <StatusBadge status={paper?.result_status ?? "pending"} />
+      </div>
+      {paper && questionRecords.length ? (
+        <>
+          <div className="grid gap-3 md:grid-cols-3">
+            <label className="block">
+              <span className="label">题型</span>
+              <select className="field mt-2" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)}>
+                <option value="">全部题型</option>
+                {questionTypes.map((type) => (
+                  <option key={type} value={type}>
+                    {labelQuestionType(type)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="label">难度</span>
+              <select className="field mt-2" value={difficultyFilter} onChange={(event) => setDifficultyFilter(event.target.value)}>
+                <option value="">全部难度</option>
+                {difficultyLevels.map((level) => (
+                  <option key={level} value={level}>
+                    难度 {level}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="label">知识点</span>
+              <select className="field mt-2" value={knowledgeFilter} onChange={(event) => setKnowledgeFilter(event.target.value)}>
+                <option value="">全部知识点</option>
+                {knowledgePointIds.map((id) => (
+                  <option key={id} value={id}>
+                    #{id}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            <StatCard label="当前试卷题目" value={questionRecords.length} />
+            <StatCard label="筛选结果" value={filteredQuestions.length} />
+            <StatCard label="测练场景" value={labelScene(paper.scene_type)} />
+          </div>
+          {filteredQuestions.length ? (
+            <div className="space-y-2">
+              {filteredQuestions.map((question, index) => (
+                <article className="rounded-md border border-line bg-white px-3 py-3" key={`${question.id ?? question.question_no ?? index}`}>
+                  <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
+                    <span className="rounded-md bg-ink px-2 py-1 text-white">第 {displayValue(question.question_no)} 题</span>
+                    <span className="rounded-md bg-accent/10 px-2 py-1 text-accent">{labelQuestionType(question.question_type)}</span>
+                    <span className="rounded-md bg-paper px-2 py-1 text-ink/55">难度 {displayValue(question.difficulty_level)}</span>
+                    <span className="rounded-md bg-paper px-2 py-1 text-ink/55">知识点 {displayValue(question.knowledge_point_id)}</span>
+                  </div>
+                  <p className="mt-3 line-clamp-2 break-words text-sm font-semibold leading-6 text-ink">{displayValue(question.stem_text)}</p>
+                  <div className="mt-2 grid gap-2 text-xs leading-5 text-ink/55 xl:grid-cols-2">
+                    <span className="break-words">答案：{displayValue(question.answer_text)}</span>
+                    <span className="break-words">解析：{displayValue(question.analysis_text)}</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <EmptyState description="当前筛选条件没有匹配题目，请调整题型、难度或知识点。" title="暂无匹配题目" />
+          )}
+        </>
+      ) : (
+        <EmptyState
+          description={paper ? "当前试卷详情没有 questions 明细，等待后端返回题目沉淀数据。" : "选择试卷后展示题干、答案、解析、题型、难度和知识点。"}
+          title="暂无题目沉淀"
+        />
+      )}
+    </section>
+  );
+}
+
 export function AssessmentTab({
   batch,
   hasLessonPlans,
   task,
+  selectedScene,
+  sceneSummaries,
+  onSelectScene,
   blueprints,
   selectedBlueprintId,
   onSelectBlueprint,
@@ -213,6 +389,9 @@ export function AssessmentTab({
   batch: GenerationBatch;
   hasLessonPlans: boolean;
   task?: Task;
+  selectedScene: AssessmentSceneType;
+  sceneSummaries: AssessmentSceneSummary[];
+  onSelectScene: (scene: AssessmentSceneType) => void;
   blueprints: AssessmentBlueprint[];
   selectedBlueprintId: number | null;
   onSelectBlueprint: (id: number) => void;
@@ -229,21 +408,23 @@ export function AssessmentTab({
   paperDetailLoading: boolean;
   paperListError: unknown;
   paperDetailError: unknown;
-  onCreateAssessment: () => void;
+  onCreateAssessment: (scene: AssessmentSceneType) => void;
   createPending: boolean;
   createError: unknown;
 }) {
   const queryClient = useQueryClient();
+  const selectedSceneConfig = getAssessmentSceneConfig(selectedScene);
   const activeTask = isTaskActiveStatus(task?.task_status);
   const hasSuccessPaper = papers.some((item) => ["success", "ready"].includes(item.result_status));
+  const sceneSummaryMap = Object.fromEntries(sceneSummaries.map((summary) => [summary.scene_type, summary]));
   const createDisabledReason = !batch.curriculum_plan_id
     ? "需要先生成课程方案"
     : !hasLessonPlans
       ? "需要先生成至少一份教案"
       : activeTask
-        ? "测评任务运行中"
+        ? `${selectedSceneConfig.label}任务运行中`
         : hasSuccessPaper
-          ? "当前批次已生成单元测评"
+          ? `当前批次已生成${selectedSceneConfig.label}`
           : createPending
             ? "正在创建测评任务"
             : null;
@@ -269,19 +450,50 @@ export function AssessmentTab({
 
   return (
     <div className="space-y-5">
-      <TaskSummaryCard description="测评是按需生成成果；任务成功后会同时产生蓝图和试卷结果。" title="测评任务" task={task} />
+      <TaskSummaryCard description={`${selectedSceneConfig.label}按需生成；任务成功后会同时产生蓝图和试卷结果。`} title="测练任务" task={task} />
 
       <section className="rounded-md border border-line bg-paper/60 p-5">
-        <div className="flex flex-col justify-between gap-4 xl:flex-row xl:items-center">
+        <div className="flex flex-col justify-between gap-4 xl:flex-row xl:items-start">
           <div>
-            <div className="label">默认策略</div>
-            <h3 className="mt-1 text-lg font-bold text-ink">单元测评 unit_test</h3>
-            <p className="mt-2 text-sm leading-6 text-ink/55">10 题，覆盖单选、填空、简答，难度范围 1-5。</p>
+            <div className="label">测练体系</div>
+            <h3 className="mt-1 text-lg font-bold text-ink">{selectedSceneConfig.label}</h3>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-ink/55">
+              {selectedSceneConfig.questionCount} 题，覆盖单选、填空、简答，难度范围 {selectedSceneConfig.difficultyRange}。{selectedSceneConfig.description}
+            </p>
           </div>
-          <button className="btn btn-primary" disabled={Boolean(createDisabledReason)} onClick={onCreateAssessment} type="button">
+          <button className="btn btn-primary" disabled={Boolean(createDisabledReason)} onClick={() => onCreateAssessment(selectedScene)} type="button">
             <Plus size={16} />
-            生成单元测评
+            生成{selectedSceneConfig.label}
           </button>
+        </div>
+        <div className="mt-5 grid gap-3 lg:grid-cols-3">
+          {ASSESSMENT_SCENES.map((scene) => {
+            const summary = sceneSummaryMap[scene.scene_type];
+            const isSelected = scene.scene_type === selectedScene;
+            return (
+              <button
+                className={cn(
+                  "rounded-md border border-line bg-white p-4 text-left transition hover:border-accent/40 hover:bg-accent/5",
+                  isSelected && "border-accent bg-accent/10",
+                )}
+                key={scene.scene_type}
+                onClick={() => onSelectScene(scene.scene_type)}
+                type="button"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-ink">{scene.label}</div>
+                    <div className="mt-1 text-xs font-semibold text-ink/50">{scene.scene_type}</div>
+                  </div>
+                  <StatusBadge status={summary?.status ?? "pending"} />
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-semibold text-ink/55">
+                  <span>试卷 {summary?.paperCount ?? 0} 份</span>
+                  <span>蓝图 {summary?.blueprintCount ?? 0} 份</span>
+                </div>
+              </button>
+            );
+          })}
         </div>
         {createDisabledReason ? <div className="mt-3 text-xs font-semibold text-ink/45">{createDisabledReason}</div> : null}
         {createError ? <ErrorNotice title="测评任务创建失败" message={getErrorMessage(createError)} /> : null}
@@ -293,11 +505,11 @@ export function AssessmentTab({
             <ShieldCheck size={16} />
             测评蓝图
           </div>
-          {blueprintListLoading ? <LoadingBlock description="正在读取当前课程方案下的 unit_test 蓝图。" text="加载测评蓝图" /> : null}
+          {blueprintListLoading ? <LoadingBlock description={`正在读取当前课程方案下的 ${selectedSceneConfig.label} 蓝图。`} text="加载测评蓝图" /> : null}
           {blueprintListError ? <ErrorNotice title="测评蓝图列表获取失败" message={getErrorMessage(blueprintListError)} /> : null}
           {!blueprintListLoading && !blueprintListError && !blueprints.length ? (
             <EmptyState
-              description={activeTask ? "测评任务仍在运行，蓝图会在后端持久化后出现。" : "当前批次还没有蓝图结果，可在依赖满足后生成单元测评。"}
+              description={activeTask ? "测评任务仍在运行，蓝图会在后端持久化后出现。" : `当前批次还没有${selectedSceneConfig.label}蓝图，可在依赖满足后生成。`}
               title={activeTask ? "测评蓝图生成中" : "暂未产生测评蓝图"}
             />
           ) : null}
@@ -316,7 +528,7 @@ export function AssessmentTab({
                   <div className="min-w-0">
                     <div className="truncate text-sm font-bold">{item.blueprint_name}</div>
                     <div className="mt-1 text-xs text-ink/50">
-                      #{item.id} / {item.scenario_type} / {formatDate(item.updated_at)}
+                      #{item.id} / {labelScene(item.scenario_type)} / {formatDate(item.updated_at)}
                     </div>
                   </div>
                   <StatusBadge status={item.version_status} />
@@ -335,7 +547,7 @@ export function AssessmentTab({
           {paperListError ? <ErrorNotice title="试卷列表获取失败" message={getErrorMessage(paperListError)} /> : null}
           {!paperListLoading && !paperListError && !papers.length ? (
             <EmptyState
-              description={activeTask ? "试卷会在测评任务完成后出现，页面会随轮询刷新。" : "当前批次还没有单元试卷结果。"}
+              description={activeTask ? "试卷会在测评任务完成后出现，页面会随轮询刷新。" : `当前批次还没有${selectedSceneConfig.label}结果。`}
               title={activeTask ? "试卷生成中" : "暂未产生试卷"}
             />
           ) : null}
@@ -354,7 +566,7 @@ export function AssessmentTab({
                   <div className="min-w-0">
                     <div className="truncate text-sm font-bold">{item.title}</div>
                     <div className="mt-1 text-xs text-ink/50">
-                      #{item.id} / {item.question_count} 题 / {formatDate(item.updated_at)}
+                      #{item.id} / {labelScene(item.scene_type)} / {item.question_count} 题 / {formatDate(item.updated_at)}
                     </div>
                   </div>
                   <StatusBadge status={item.result_status} />
@@ -385,6 +597,7 @@ export function AssessmentTab({
 
       {paperDetailLoading ? <LoadingBlock description="正在读取题目、答案解析和知识点来源。" text="加载试卷详情" /> : null}
       {paperDetailError ? <ErrorNotice title="试卷详情获取失败" message={getErrorMessage(paperDetailError)} /> : null}
+      <QuestionBankPreview paper={paper} />
       <PaperDetail paper={paper} />
     </div>
   );

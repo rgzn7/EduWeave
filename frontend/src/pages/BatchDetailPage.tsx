@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Loader2, RotateCw } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { EmptyState } from "../components/EmptyState";
@@ -8,9 +8,9 @@ import { StatusBadge } from "../components/StatusBadge";
 import { TaskTable } from "../components/TaskTable";
 import { isTaskActiveStatus } from "../hooks/useTaskPolling";
 import { api } from "../lib/api";
-import type { GenerationBatch } from "../types";
+import type { AssessmentBlueprint, GenerationBatch, JsonRecord, PaperResult, Task } from "../types";
 import { cn, formatDate, getErrorMessage, toNumberId } from "../utils";
-import { AssessmentTab, DEFAULT_UNIT_TEST_STRATEGY } from "./batch-detail/AssessmentTab";
+import { ASSESSMENT_SCENES, AssessmentTab, type AssessmentSceneSummary, type AssessmentSceneType } from "./batch-detail/AssessmentTab";
 import { CoursewareTab } from "./batch-detail/CoursewareTab";
 import { CoverageTab } from "./batch-detail/CoverageTab";
 import { CurriculumTab } from "./batch-detail/CurriculumTab";
@@ -23,7 +23,7 @@ const tabs = [
   { id: "overview", label: "概览" },
   { id: "curriculum", label: "课程方案" },
   { id: "lesson", label: "教案" },
-  { id: "assessment", label: "测评" },
+  { id: "assessment", label: "测练" },
   { id: "courseware", label: "课件" },
   { id: "coverage", label: "覆盖报告" },
   { id: "tasks", label: "关联任务" },
@@ -35,6 +35,27 @@ function isSuccessfulResultStatus(status: string) {
   return status === "success" || status === "ready";
 }
 
+function isAssessmentSceneType(value: unknown): value is AssessmentSceneType {
+  return ASSESSMENT_SCENES.some((scene) => scene.scene_type === value);
+}
+
+function getTaskAssessmentScene(task: Task): AssessmentSceneType | null {
+  const payload = task.payload_json;
+  const directScene = payload?.scene_type;
+  if (isAssessmentSceneType(directScene)) {
+    return directScene;
+  }
+  const legacyStrategy = payload?.assessment_strategy_json as JsonRecord | undefined;
+  if (isAssessmentSceneType(legacyStrategy?.scene_type)) {
+    return legacyStrategy.scene_type as AssessmentSceneType;
+  }
+  if (task.biz_key) {
+    const matchedScene = ASSESSMENT_SCENES.find((scene) => task.biz_key?.endsWith(`:assessment:${scene.scene_type}`));
+    return matchedScene?.scene_type ?? null;
+  }
+  return null;
+}
+
 export function BatchDetailPage() {
   const routeProjectId = toNumberId(useParams().projectId);
   const batchId = toNumberId(useParams().batchId);
@@ -42,6 +63,7 @@ export function BatchDetailPage() {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [selectedLessonId, setSelectedLessonId] = useState<number | null>(null);
   const [selectedCoverageReportId, setSelectedCoverageReportId] = useState<number | null>(null);
+  const [selectedAssessmentScene, setSelectedAssessmentScene] = useState<AssessmentSceneType>("unit_test");
   const [selectedBlueprintId, setSelectedBlueprintId] = useState<number | null>(null);
   const [selectedPaperId, setSelectedPaperId] = useState<number | null>(null);
   const [selectedCoursewareResultId, setSelectedCoursewareResultId] = useState<number | null>(null);
@@ -60,7 +82,23 @@ export function BatchDetailPage() {
   const curriculumTask = useMemo(() => latestTask(tasks, "curriculum"), [tasks]);
   const lessonTask = useMemo(() => latestTask(tasks, "lesson_plan"), [tasks]);
   const coverageTask = useMemo(() => latestTask(tasks, "coverage"), [tasks]);
-  const assessmentTask = useMemo(() => latestTask(tasks, "assessment"), [tasks]);
+  const assessmentTasksByScene = useMemo(() => {
+    return Object.fromEntries(
+      ASSESSMENT_SCENES.map((scene) => [
+        scene.scene_type,
+        latestTask(
+          tasks.filter((task) => {
+            if (!(task.module_code === "assessment" || task.task_type.includes("assessment"))) {
+              return false;
+            }
+            return getTaskAssessmentScene(task) === scene.scene_type;
+          }),
+          "assessment",
+        ),
+      ]),
+    ) as Record<AssessmentSceneType, Task | undefined>;
+  }, [tasks]);
+  const assessmentTask = assessmentTasksByScene[selectedAssessmentScene];
   const coursewareTask = useMemo(() => latestTask(tasks, "courseware"), [tasks]);
   const selectedCoursewareTask = useMemo(() => {
     if (!selectedLessonId) {
@@ -153,16 +191,35 @@ export function BatchDetailPage() {
     refetchInterval: isTaskActiveStatus(coverageTask?.task_status) ? 5_000 : false,
   });
 
-  const assessmentBlueprintsQuery = useQuery({
-    queryKey: ["assessment-blueprints", batch?.curriculum_plan_id, "unit_test"],
-    queryFn: () => api.listAssessmentBlueprints(batch!.curriculum_plan_id!, { scenario_type: "unit_test", page: 1, page_size: 100 }),
-    enabled: Boolean(batch?.curriculum_plan_id),
-    refetchInterval: isTaskActiveStatus(assessmentTask?.task_status) || isBatchLive(batch) ? 5_000 : false,
+  const assessmentBlueprintQueries = useQueries({
+    queries: ASSESSMENT_SCENES.map((scene) => ({
+      queryKey: ["assessment-blueprints", batch?.curriculum_plan_id, scene.scene_type],
+      queryFn: () =>
+        api.listAssessmentBlueprints(batch!.curriculum_plan_id!, {
+          scenario_type: scene.scene_type,
+          page: 1,
+          page_size: 100,
+        }),
+      enabled: Boolean(batch?.curriculum_plan_id),
+      refetchInterval: isTaskActiveStatus(assessmentTasksByScene[scene.scene_type]?.task_status) || isBatchLive(batch) ? 5_000 : false,
+    })),
   });
 
-  const assessmentBlueprints = useMemo(() => {
-    return [...(assessmentBlueprintsQuery.data?.items ?? [])].sort((a, b) => b.id - a.id);
-  }, [assessmentBlueprintsQuery.data?.items]);
+  const assessmentBlueprintsByScene = useMemo(() => {
+    return Object.fromEntries(
+      ASSESSMENT_SCENES.map((scene, index) => [
+        scene.scene_type,
+        [...(assessmentBlueprintQueries[index]?.data?.items ?? [])].sort((a, b) => b.id - a.id),
+      ]),
+    ) as Record<AssessmentSceneType, AssessmentBlueprint[]>;
+  }, [assessmentBlueprintQueries]);
+
+  const assessmentBlueprints = assessmentBlueprintsByScene[selectedAssessmentScene] ?? [];
+  const selectedAssessmentSceneIndex = Math.max(
+    ASSESSMENT_SCENES.findIndex((scene) => scene.scene_type === selectedAssessmentScene),
+    0,
+  );
+  const selectedAssessmentBlueprintsQuery = assessmentBlueprintQueries[selectedAssessmentSceneIndex];
 
   useEffect(() => {
     if (!assessmentBlueprints.length) {
@@ -172,7 +229,7 @@ export function BatchDetailPage() {
     if (!selectedBlueprintId || !assessmentBlueprints.some((item) => item.id === selectedBlueprintId)) {
       setSelectedBlueprintId(assessmentBlueprints[0].id);
     }
-  }, [assessmentBlueprints, selectedBlueprintId]);
+  }, [assessmentBlueprints, selectedAssessmentScene, selectedBlueprintId]);
 
   const assessmentBlueprintDetailQuery = useQuery({
     queryKey: ["assessment-blueprint", selectedBlueprintId],
@@ -181,16 +238,31 @@ export function BatchDetailPage() {
     refetchInterval: isTaskActiveStatus(assessmentTask?.task_status) ? 5_000 : false,
   });
 
-  const paperResultsQuery = useQuery({
-    queryKey: ["paper-results", batch?.id, "unit_test"],
-    queryFn: () => api.listPaperResults(batch!.id, { scene_type: "unit_test", page: 1, page_size: 100 }),
-    enabled: Boolean(batch?.id),
-    refetchInterval: isTaskActiveStatus(assessmentTask?.task_status) || isBatchLive(batch) ? 5_000 : false,
+  const paperResultQueries = useQueries({
+    queries: ASSESSMENT_SCENES.map((scene) => ({
+      queryKey: ["paper-results", batch?.id, scene.scene_type],
+      queryFn: () =>
+        api.listPaperResults(batch!.id, {
+          scene_type: scene.scene_type,
+          page: 1,
+          page_size: 100,
+        }),
+      enabled: Boolean(batch?.id),
+      refetchInterval: isTaskActiveStatus(assessmentTasksByScene[scene.scene_type]?.task_status) || isBatchLive(batch) ? 5_000 : false,
+    })),
   });
 
-  const paperResults = useMemo(() => {
-    return [...(paperResultsQuery.data?.items ?? [])].sort((a, b) => b.id - a.id);
-  }, [paperResultsQuery.data?.items]);
+  const paperResultsByScene = useMemo(() => {
+    return Object.fromEntries(
+      ASSESSMENT_SCENES.map((scene, index) => [
+        scene.scene_type,
+        [...(paperResultQueries[index]?.data?.items ?? [])].sort((a, b) => b.id - a.id),
+      ]),
+    ) as Record<AssessmentSceneType, PaperResult[]>;
+  }, [paperResultQueries]);
+
+  const paperResults = paperResultsByScene[selectedAssessmentScene] ?? [];
+  const selectedPaperResultsQuery = paperResultQueries[selectedAssessmentSceneIndex];
 
   useEffect(() => {
     if (!paperResults.length) {
@@ -200,7 +272,7 @@ export function BatchDetailPage() {
     if (!selectedPaperId || !paperResults.some((item) => item.id === selectedPaperId)) {
       setSelectedPaperId(paperResults[0].id);
     }
-  }, [paperResults, selectedPaperId]);
+  }, [paperResults, selectedAssessmentScene, selectedPaperId]);
 
   const paperDetailQuery = useQuery({
     queryKey: ["paper-result", selectedPaperId],
@@ -208,6 +280,21 @@ export function BatchDetailPage() {
     enabled: Boolean(selectedPaperId),
     refetchInterval: isTaskActiveStatus(assessmentTask?.task_status) ? 5_000 : false,
   });
+
+  const assessmentSceneSummaries = useMemo<AssessmentSceneSummary[]>(() => {
+    return ASSESSMENT_SCENES.map((scene) => {
+      const scenePapers = paperResultsByScene[scene.scene_type] ?? [];
+      const sceneBlueprints = assessmentBlueprintsByScene[scene.scene_type] ?? [];
+      const sceneTask = assessmentTasksByScene[scene.scene_type];
+      return {
+        scene_type: scene.scene_type,
+        label: scene.label,
+        paperCount: scenePapers.length,
+        blueprintCount: sceneBlueprints.length,
+        status: scenePapers[0]?.result_status ?? sceneTask?.task_status ?? "pending",
+      };
+    });
+  }, [assessmentBlueprintsByScene, assessmentTasksByScene, paperResultsByScene]);
 
   const coursewareResultsQuery = useQuery({
     queryKey: ["courseware-results", batch?.id],
@@ -266,7 +353,6 @@ export function BatchDetailPage() {
       isTaskActiveStatus(query.state.data?.result_status) || isTaskActiveStatus(selectedCoursewareTask?.task_status) ? 5_000 : false,
   });
 
-  const assessmentOverviewStatus = paperResults[0]?.result_status ?? assessmentTask?.task_status ?? "pending";
   const coursewareOverviewStatus =
     coursewareResults.find((item) => isSuccessfulResultStatus(item.result_status))?.result_status ??
     coursewareResults[0]?.result_status ??
@@ -275,14 +361,24 @@ export function BatchDetailPage() {
   const coverageOverviewStatus = coverageReports[0]?.report_status ?? coverageTask?.task_status ?? "pending";
 
   const createAssessment = useMutation({
-    mutationFn: () =>
+    mutationFn: (sceneType: AssessmentSceneType) =>
       api.createAssessmentTask(batch!.curriculum_plan_id!, {
-        assessment_strategy_json: DEFAULT_UNIT_TEST_STRATEGY,
+        scene_type: sceneType,
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["generation-batch", batchId] });
-      queryClient.invalidateQueries({ queryKey: ["assessment-blueprints", batch?.curriculum_plan_id, "unit_test"] });
-      queryClient.invalidateQueries({ queryKey: ["paper-results", batch?.id, "unit_test"] });
+      queryClient.invalidateQueries({ queryKey: ["assessment-blueprints", batch?.curriculum_plan_id] });
+      queryClient.invalidateQueries({ queryKey: ["paper-results", batch?.id] });
+    },
+  });
+
+  const refreshCoverage = useMutation({
+    mutationFn: () => api.refreshCoverageReport(batch!.id),
+    onSuccess: (report) => {
+      setSelectedCoverageReportId(report.id);
+      queryClient.setQueryData(["coverage-report", report.id], report);
+      queryClient.invalidateQueries({ queryKey: ["coverage-reports", report.generation_batch_id] });
+      queryClient.invalidateQueries({ queryKey: ["generation-batch", batchId] });
     },
   });
 
@@ -361,8 +457,7 @@ export function BatchDetailPage() {
         <div className="p-5">
           {activeTab === "overview" ? (
             <OverviewTab
-              assessmentCount={paperResults.length}
-              assessmentStatus={assessmentOverviewStatus}
+              assessmentScenes={assessmentSceneSummaries}
               batch={batch}
               coursewareCount={coursewareResults.length}
               coursewareStatus={coursewareOverviewStatus}
@@ -398,23 +493,26 @@ export function BatchDetailPage() {
               batch={batch}
               hasLessonPlans={lessonPlans.length > 0}
               task={assessmentTask}
+              selectedScene={selectedAssessmentScene}
+              sceneSummaries={assessmentSceneSummaries}
+              onSelectScene={setSelectedAssessmentScene}
               blueprints={assessmentBlueprints}
               selectedBlueprintId={selectedBlueprintId}
               onSelectBlueprint={setSelectedBlueprintId}
               blueprint={assessmentBlueprintDetailQuery.data}
-              blueprintListLoading={assessmentBlueprintsQuery.isLoading}
+              blueprintListLoading={selectedAssessmentBlueprintsQuery?.isLoading ?? false}
               blueprintDetailLoading={assessmentBlueprintDetailQuery.isLoading}
-              blueprintListError={assessmentBlueprintsQuery.error}
+              blueprintListError={selectedAssessmentBlueprintsQuery?.error}
               blueprintDetailError={assessmentBlueprintDetailQuery.error}
               papers={paperResults}
               selectedPaperId={selectedPaperId}
               onSelectPaper={setSelectedPaperId}
               paper={paperDetailQuery.data}
-              paperListLoading={paperResultsQuery.isLoading}
+              paperListLoading={selectedPaperResultsQuery?.isLoading ?? false}
               paperDetailLoading={paperDetailQuery.isLoading}
-              paperListError={paperResultsQuery.error}
+              paperListError={selectedPaperResultsQuery?.error}
               paperDetailError={paperDetailQuery.error}
-              onCreateAssessment={() => createAssessment.mutate()}
+              onCreateAssessment={(sceneType) => createAssessment.mutate(sceneType)}
               createPending={createAssessment.isPending}
               createError={createAssessment.error}
             />
@@ -448,6 +546,9 @@ export function BatchDetailPage() {
               listError={coverageReportsQuery.error}
               detailError={coverageDetailQuery.error}
               task={coverageTask}
+              onRefreshCoverage={() => refreshCoverage.mutate()}
+              refreshPending={refreshCoverage.isPending}
+              refreshError={refreshCoverage.error}
             />
           ) : null}
           {activeTab === "tasks" ? (

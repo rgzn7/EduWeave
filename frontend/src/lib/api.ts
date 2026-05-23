@@ -17,9 +17,11 @@ import type {
   LoginResult,
   PageResult,
   PaperResult,
+  ParseEvidenceSummary,
   ParseVersion,
   Project,
   ProjectDashboard,
+  QuestionBankItem,
   Task,
   TaskDetail,
   TextbookVersion,
@@ -169,6 +171,9 @@ export const api = {
       method: "POST",
     });
   },
+  getParseEvidenceSummary(parseVersionId: number) {
+    return request<ParseEvidenceSummary>(`/api/v1/parse-versions/${parseVersionId}/evidence-summary`);
+  },
   uploadLearnerProfile(
     projectId: number,
     payload: {
@@ -259,7 +264,7 @@ export const api = {
       method: "POST",
     });
   },
-  createAssessmentTask(curriculumPlanId: number, payload?: { assessment_strategy_json?: Record<string, unknown> | null }) {
+  createAssessmentTask(curriculumPlanId: number, payload?: { scene_type?: "homework" | "unit_test" | "final_exam" }) {
     return request<Task>(`/api/v1/curriculum-plans/${curriculumPlanId}/assessment-tasks`, {
       method: "POST",
       body: JSON.stringify(payload ?? {}),
@@ -292,6 +297,18 @@ export const api = {
     return request<FileDownloadUrl>(`/api/v1/paper-results/${paperResultId}/export-docx`, {
       method: "POST",
     });
+  },
+  listQuestionItems(query?: {
+    generation_batch_id?: number;
+    paper_result_id?: number;
+    knowledge_point_id?: number;
+    question_type?: string;
+    difficulty_level?: number;
+    scene_type?: string;
+    page?: number;
+    page_size?: number;
+  }) {
+    return request<PageResult<QuestionBankItem>>("/api/v1/question-items", {}, { page: 1, page_size: 20, ...query });
   },
   createCoursewareTask(lessonPlanId: number) {
     return request<Task>(`/api/v1/lesson-plans/${lessonPlanId}/courseware-tasks`, {
@@ -328,6 +345,11 @@ export const api = {
   },
   getCoverageReport(coverageReportId: number) {
     return request<CoverageReport>(`/api/v1/coverage-reports/${coverageReportId}`);
+  },
+  refreshCoverageReport(generationBatchId: number) {
+    return request<CoverageReport>(`/api/v1/generation-batches/${generationBatchId}/coverage-reports/refresh`, {
+      method: "POST",
+    });
   },
   getFileDownloadUrl(fileObjectId: number) {
     return request<FileDownloadUrl>(`/api/v1/files/${fileObjectId}/download-url`);
