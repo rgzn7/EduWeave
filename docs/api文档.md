@@ -1379,6 +1379,54 @@
 
 ---
 
+### GET `/api/v1/parse-versions/{parse_version_id}/evidence-summary`
+
+**获取解析证据摘要**
+
+聚合解析版本的页数、block 统计、类型分布、MinerU 参数与示例 block，证明教材 PDF 已被结构化拆解。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `parse_version_id` | integer | 是 | 解析版本主键 |
+| query | `sample_size` | integer | 否 | 示例证据 block 数量，限制在 3-10 之间 |
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    parse_version_id: integer  # 解析版本主键
+    textbook_version_id: integer  # 教材版本主键
+    strategy_code: string  # 解析策略编码
+    mineru_model?: string  # MinerU 模型名称
+    parse_status: string  # 解析状态
+    review_status: string  # 审核状态
+    version_status: string  # 版本状态
+    volume: object  # 规模统计
+    block_type_counts: object  # block 类型分布，按数量倒序
+    mineru_parameters: object  # MinerU 参数摘要
+    sample_blocks: object  # 示例证据 block 列表
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
 ### GET `/api/v1/parse-versions/{parse_version_id}/pages`
 
 **获取解析页列表**

@@ -37,6 +37,10 @@ from app.modules.parsing.domain import (
 from app.modules.parsing.repository import ParsingRepository
 from app.modules.parsing.schemas import (
     ParseBlockResponse,
+    ParseEvidenceBlockTypeCount,
+    ParseEvidenceMineruParameterSummary,
+    ParseEvidenceSampleBlock,
+    ParseEvidenceVolumeSummary,
     ParseIssueResponse,
     ParseManualRevisionPageRequest,
     ParseManualRevisionRequest,
@@ -44,6 +48,7 @@ from app.modules.parsing.schemas import (
     ParseReparseTaskCreateRequest,
     ParseTaskCreateRequest,
     ParseVersionDetailResponse,
+    ParseVersionEvidenceSummaryResponse,
     ParseVersionListItemResponse,
 )
 from app.modules.task_center.repository import TaskCenterRepository
@@ -354,6 +359,119 @@ class ParsingService:
         issues = self.repository.list_parse_issues(parse_version.id, offset, page_size)
         total_count = self.repository.count_parse_issues(parse_version.id)
         return [ParseIssueResponse.model_validate(issue, from_attributes=True) for issue in issues], total_count
+
+    def get_parse_version_evidence_summary(
+        self,
+        *,
+        owner_user_id: int,
+        parse_version_id: int,
+        sample_size: int = 6,
+    ) -> ParseVersionEvidenceSummaryResponse:
+        """聚合解析证据摘要，证明 PDF 已被结构化拆解。"""
+        parse_version = self.repository.get_parse_version_for_owner(parse_version_id, owner_user_id)
+        if parse_version is None:
+            raise AppException(BusinessErrorCode.PARSE_VERSION_NOT_FOUND, "解析版本不存在")
+
+        block_type_pairs = self.repository.count_block_types(parse_version.id)
+        block_type_pairs.sort(key=lambda pair: (-pair[1], pair[0]))
+        type_to_count = dict(block_type_pairs)
+        image_block_count = sum(count for block_type, count in type_to_count.items() if block_type.startswith("image"))
+        table_block_count = sum(count for block_type, count in type_to_count.items() if block_type.startswith("table"))
+        equation_block_count = sum(
+            count
+            for block_type, count in type_to_count.items()
+            if block_type.startswith("equation") or block_type.startswith("formula")
+        )
+
+        block_total = self.repository.count_blocks_total(parse_version.id)
+        asset_block_count = self.repository.count_blocks_with_asset(parse_version.id)
+        bbox_block_count = self.repository.count_blocks_with_bbox(parse_version.id)
+        parsed_page_count = self.repository.count_parse_pages(parse_version.id)
+        issue_count = self.repository.count_parse_issues(parse_version.id)
+
+        volume = ParseEvidenceVolumeSummary(
+            page_count=parse_version.page_count or parsed_page_count,
+            parsed_page_count=parsed_page_count,
+            block_count=block_total,
+            issue_count=issue_count,
+            asset_block_count=asset_block_count,
+            bbox_block_count=bbox_block_count,
+            image_block_count=image_block_count,
+            table_block_count=table_block_count,
+            equation_block_count=equation_block_count,
+        )
+        block_type_counts = [
+            ParseEvidenceBlockTypeCount(block_type=block_type, count=count) for block_type, count in block_type_pairs
+        ]
+
+        strategy_params = MineruDocumentService.resolve_strategy(parse_version.strategy_code)
+        mineru_parameters = ParseEvidenceMineruParameterSummary(
+            strategy_code=parse_version.strategy_code,
+            model_version=parse_version.mineru_model or strategy_params.get("model_version"),
+            is_ocr=bool(strategy_params.get("is_ocr", False)),
+            enable_formula=bool(strategy_params.get("enable_formula", False)),
+            enable_table=bool(strategy_params.get("enable_table", False)),
+        )
+
+        sample_blocks = self._build_evidence_sample_blocks(parse_version.id, sample_size)
+
+        return ParseVersionEvidenceSummaryResponse(
+            parse_version_id=parse_version.id,
+            textbook_version_id=parse_version.textbook_version_id,
+            strategy_code=parse_version.strategy_code,
+            mineru_model=parse_version.mineru_model,
+            parse_status=parse_version.parse_status,
+            review_status=parse_version.review_status,
+            version_status=parse_version.version_status,
+            volume=volume,
+            block_type_counts=block_type_counts,
+            mineru_parameters=mineru_parameters,
+            sample_blocks=sample_blocks,
+        )
+
+    def _build_evidence_sample_blocks(self, parse_version_id: int, sample_size: int) -> list[ParseEvidenceSampleBlock]:
+        """挑选示例 block：优先覆盖不同类型，再按顺序补足。"""
+        target_size = max(min(sample_size, 10), 3)
+        candidates = self.repository.list_sample_blocks_with_page_no(parse_version_id, target_size)
+        diversified: list[tuple] = []
+        seen_block_ids: set[int] = set()
+        seen_types: set[str] = set()
+        for block, page_no in candidates:
+            if block.block_type in seen_types or len(diversified) >= target_size:
+                continue
+            diversified.append((block, page_no))
+            seen_types.add(block.block_type)
+            seen_block_ids.add(block.id)
+        if len(diversified) < target_size:
+            for block, page_no in candidates:
+                if len(diversified) >= target_size:
+                    break
+                if block.id in seen_block_ids:
+                    continue
+                diversified.append((block, page_no))
+                seen_block_ids.add(block.id)
+        diversified.sort(key=lambda item: (item[1], item[0].block_no))
+        return [self._build_evidence_sample_block(block, page_no) for block, page_no in diversified]
+
+    @staticmethod
+    def _build_evidence_sample_block(block, page_no: int) -> ParseEvidenceSampleBlock:
+        """构造单条证据示例 block。"""
+        source_text = block.text_content or block.markdown_content
+        excerpt: str | None = None
+        if source_text:
+            normalized_text = " ".join(source_text.split())
+            excerpt = normalized_text if len(normalized_text) <= 200 else normalized_text[:200] + "..."
+        return ParseEvidenceSampleBlock(
+            parse_page_id=block.parse_page_id,
+            parse_block_id=block.id,
+            page_no=page_no,
+            block_no=block.block_no,
+            block_type=block.block_type,
+            heading_level=block.heading_level,
+            text_excerpt=excerpt,
+            bbox_json=block.bbox_json,
+            asset_file_id=block.asset_file_id,
+        )
 
     def build_parse_version_response(self, parse_version) -> ParseVersionListItemResponse:
         """构造解析版本响应。"""

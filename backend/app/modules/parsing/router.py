@@ -20,6 +20,7 @@ from app.modules.parsing.schemas import (
     ParseReparseTaskCreateRequest,
     ParseTaskCreateRequest,
     ParseVersionDetailResponse,
+    ParseVersionEvidenceSummaryResponse,
     ParseVersionListItemResponse,
 )
 from app.modules.parsing.service import ParsingService
@@ -145,6 +146,35 @@ def confirm_parse_version(
     """确认解析版本。"""
     detail = service.confirm_parse_version(owner_user_id=current_user.id, parse_version_id=parse_version_id)
     return ResponseFactory.success(detail.model_dump(mode="json"), "确认解析版本成功")
+
+
+@router.get(
+    "/parse-versions/{parse_version_id}/evidence-summary",
+    summary="获取解析证据摘要",
+    description="聚合解析版本的页数、block 统计、类型分布、MinerU 参数与示例 block，证明教材 PDF 已被结构化拆解。",
+    operation_id="parsing_evidence_summary",
+    response_model=ApiResponse[ParseVersionEvidenceSummaryResponse],
+    status_code=status.HTTP_200_OK,
+)
+def get_parse_version_evidence_summary(
+    parse_version_id: int = Path(..., description="解析版本主键", examples=[1]),
+    sample_size: int = Query(
+        default=6,
+        ge=3,
+        le=10,
+        description="示例证据 block 数量，限制在 3-10 之间",
+        examples=[6],
+    ),
+    service: Annotated[ParsingService, Depends(get_parsing_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """获取解析证据摘要。"""
+    summary = service.get_parse_version_evidence_summary(
+        owner_user_id=current_user.id,
+        parse_version_id=parse_version_id,
+        sample_size=sample_size,
+    )
+    return ResponseFactory.success(summary.model_dump(mode="json"), "获取解析证据摘要成功")
 
 
 @router.get(
