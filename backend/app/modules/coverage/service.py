@@ -23,7 +23,7 @@ from app.modules.coverage.schemas import CoverageReportDetailResponse, CoverageR
 from app.modules.p0_models import CoverageReport, GenerationTrace
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.queue import dispatch_task
-from app.shared.utils import DateTimeUtil
+from app.shared.utils import DateTimeUtil, safe_int
 from app.shared.utils.chapter_range_util import build_chapter_range_selection, filter_knowledge_points_by_chapter_selection
 
 COVERAGE_REFERENCE_KEYS = {
@@ -409,7 +409,7 @@ class CoverageService:
             for slide_index, slide in enumerate(slides, start=1):
                 if not isinstance(slide, dict):
                     continue
-                slide_no = int(slide.get("slide_no") or slide_index)
+                slide_no = safe_int(slide.get("slide_no"), default=slide_index)
                 artifacts.append(
                     {
                         "artifact_type": "courseware_slide",
