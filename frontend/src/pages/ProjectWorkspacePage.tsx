@@ -244,6 +244,9 @@ function displayMetric(value: unknown) {
   if (value === undefined || value === null || value === "") {
     return "-";
   }
+  if (typeof value === "boolean") {
+    return value ? "是" : "否";
+  }
   return String(value);
 }
 
@@ -270,6 +273,49 @@ function EvidenceMetricGrid({ entries }: { entries: [string, unknown][] }) {
   );
 }
 
+function blockTypeEntries(summary?: ParseEvidenceSummary): [string, unknown][] {
+  if (summary?.block_type_counts?.length) {
+    return summary.block_type_counts.map((item) => [item.block_type, item.count]);
+  }
+  return recordEntries(summary?.block_type_stats);
+}
+
+function mediaEntries(summary?: ParseEvidenceSummary): [string, unknown][] {
+  const volume = summary?.volume;
+  if (volume) {
+    return [
+      ["图片类 Block", volume.image_block_count],
+      ["表格类 Block", volume.table_block_count],
+      ["公式类 Block", volume.equation_block_count],
+      ["带资源 Block", volume.asset_block_count],
+      ["带坐标 Block", volume.bbox_block_count],
+    ];
+  }
+  return recordEntries(summary?.media_stats);
+}
+
+function mineruParameterEntries(summary?: ParseEvidenceSummary): [string, unknown][] {
+  const params = summary?.mineru_parameters;
+  if (params) {
+    return [
+      ["策略编码", params.strategy_code],
+      ["模型版本", params.model_version],
+      ["启用 OCR", params.is_ocr],
+      ["启用公式解析", params.enable_formula],
+      ["启用表格解析", params.enable_table],
+    ];
+  }
+  return recordEntries(summary?.mineru_options);
+}
+
+function evidenceSampleValue(item: Record<string, unknown>, primaryKey: string, fallbackKey?: string) {
+  const value = item[primaryKey];
+  if (value !== undefined && value !== null && value !== "") {
+    return value;
+  }
+  return fallbackKey ? item[fallbackKey] : undefined;
+}
+
 function ParseEvidencePanel({
   parseVersion,
   summary,
@@ -285,18 +331,20 @@ function ParseEvidencePanel({
     return <EmptyState title="暂无解析证据" description="选择或生成解析版本后，这里会展示 MinerU 解析证据摘要。" />;
   }
 
-  const sampleEvidence = summary?.sample_evidence ?? [];
+  const sampleEvidence = (summary?.sample_blocks ?? summary?.sample_evidence ?? []) as Array<Record<string, unknown>>;
+  const volume = summary?.volume;
   const baseRows: [string, unknown][] = [
     ["解析版本", `#${summary?.parse_version_id ?? parseVersion.id}`],
     ["解析策略", summary?.strategy_code ?? parseVersion.strategy_code],
-    ["MinerU 模型", summary?.mineru_model ?? "等待后端接口"],
+    ["MinerU 模型", summary?.mineru_model ?? summary?.mineru_parameters?.model_version ?? "等待后端接口"],
     ["解析状态", summary?.parse_status ?? parseVersion.parse_status],
     ["复核状态", summary?.review_status ?? parseVersion.review_status],
   ];
   const scaleRows: [string, unknown][] = [
-    ["页数", summary?.page_count ?? parseVersion.page_count],
-    ["Block 总数", summary?.block_count],
-    ["Issue 数", summary?.issue_count ?? parseVersion.issue_count],
+    ["页数", volume?.page_count ?? summary?.page_count ?? parseVersion.page_count],
+    ["已解析页数", volume?.parsed_page_count],
+    ["Block 总数", volume?.block_count ?? summary?.block_count],
+    ["Issue 数", volume?.issue_count ?? summary?.issue_count ?? parseVersion.issue_count],
   ];
   const unavailable = !isLoading && !summary;
 
@@ -327,30 +375,35 @@ function ParseEvidencePanel({
         </div>
         <div>
           <div className="mb-2 text-xs font-semibold text-ink/45">Block 类型统计</div>
-          <EvidenceMetricGrid entries={recordEntries(summary?.block_type_stats)} />
+          <EvidenceMetricGrid entries={blockTypeEntries(summary)} />
         </div>
         <div>
           <div className="mb-2 text-xs font-semibold text-ink/45">多媒体与资源统计</div>
-          <EvidenceMetricGrid entries={recordEntries(summary?.media_stats)} />
+          <EvidenceMetricGrid entries={mediaEntries(summary)} />
         </div>
       </div>
       <div className="mt-4">
         <div className="mb-2 text-xs font-semibold text-ink/45">MinerU 参数摘要</div>
-        <EvidenceMetricGrid entries={recordEntries(summary?.mineru_options)} />
+        <EvidenceMetricGrid entries={mineruParameterEntries(summary)} />
       </div>
       <div className="mt-4">
         <div className="mb-2 text-xs font-semibold text-ink/45">示例证据</div>
         {sampleEvidence.length ? (
           <div className="space-y-2">
             {sampleEvidence.slice(0, 5).map((item, index) => (
-              <div className="rounded-md border border-line bg-white px-3 py-2 text-sm" key={`${item.block_id ?? item.block_no ?? index}`}>
+              <div
+                className="rounded-md border border-line bg-white px-3 py-2 text-sm"
+                key={`${evidenceSampleValue(item, "parse_block_id", "block_id") ?? evidenceSampleValue(item, "block_no") ?? index}`}
+              >
                 <div className="flex flex-wrap gap-2 text-xs font-semibold text-ink/50">
-                  <span>页码 {displayMetric(item.page_no)}</span>
-                  <span>Block {displayMetric(item.block_no ?? item.block_id)}</span>
-                  <span>类型 {displayMetric(item.block_type)}</span>
-                  <span>资源 {displayMetric(item.resource_file_id)}</span>
+                  <span>页码 {displayMetric(evidenceSampleValue(item, "page_no"))}</span>
+                  <span>Block {displayMetric(evidenceSampleValue(item, "block_no", "parse_block_id"))}</span>
+                  <span>类型 {displayMetric(evidenceSampleValue(item, "block_type"))}</span>
+                  <span>资源 {displayMetric(evidenceSampleValue(item, "asset_file_id", "resource_file_id"))}</span>
                 </div>
-                <div className="mt-1 line-clamp-2 break-words text-ink/70">{displayMetric(item.text_snippet)}</div>
+                <div className="mt-1 line-clamp-2 break-words text-ink/70">
+                  {displayMetric(evidenceSampleValue(item, "text_excerpt", "text_snippet"))}
+                </div>
               </div>
             ))}
           </div>

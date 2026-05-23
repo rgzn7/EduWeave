@@ -140,12 +140,56 @@ export type ParseEvidenceExample = {
   resource_file_id?: number | null;
 };
 
+export type ParseEvidenceVolume = {
+  page_count: number;
+  parsed_page_count: number;
+  block_count: number;
+  issue_count: number;
+  asset_block_count: number;
+  bbox_block_count: number;
+  image_block_count: number;
+  table_block_count: number;
+  equation_block_count: number;
+};
+
+export type ParseEvidenceBlockTypeCount = {
+  block_type: string;
+  count: number;
+};
+
+export type ParseEvidenceMineruParameters = {
+  strategy_code: string;
+  model_version?: string | null;
+  is_ocr: boolean;
+  enable_formula: boolean;
+  enable_table: boolean;
+};
+
+export type ParseEvidenceSampleBlock = {
+  parse_page_id: number;
+  parse_block_id: number;
+  page_no: number;
+  block_no: number;
+  block_type: string;
+  heading_level?: number | null;
+  text_excerpt?: string | null;
+  bbox_json?: JsonRecord | null;
+  asset_file_id?: number | null;
+};
+
 export type ParseEvidenceSummary = {
   parse_version_id: number;
+  textbook_version_id?: number;
   strategy_code?: string | null;
   mineru_model?: string | null;
   parse_status?: string | null;
   review_status?: string | null;
+  version_status?: string | null;
+  volume?: ParseEvidenceVolume;
+  block_type_counts?: ParseEvidenceBlockTypeCount[];
+  mineru_parameters?: ParseEvidenceMineruParameters;
+  sample_blocks?: ParseEvidenceSampleBlock[];
+  /** Legacy placeholder shape kept so older mocked/dev responses do not break the page. */
   page_count?: number | null;
   block_count?: number | null;
   issue_count?: number | null;
