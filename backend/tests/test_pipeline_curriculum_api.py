@@ -27,7 +27,7 @@ from app.modules.knowledge.schemas import (
     KnowledgeExtractionPointDraft,
 )
 from app.modules.lesson_plan.schemas import LessonPlanGenerationResult
-from app.modules.p0_models import ChapterNode, KnowledgePoint, LessonPlan, QuestionItem
+from app.modules.p0_models import ChapterNode, CoursewareResult, KnowledgePoint, LessonPlan, QuestionItem
 from app.shared.llm import OpenAICompatibleEmbeddingService, OpenAICompatibleLlmService
 from app.shared.ppt import RaccoonPptJobState, RaccoonPptService
 from app.shared.vector import MilvusVectorService
@@ -710,6 +710,130 @@ def test_generation_batch_should_create_curriculum_lesson_plans_and_coverage(cli
     assert regenerated_payload["export_file_id"] is not None
     assert regenerated_payload["structure_json"]["pptx_stale"] is False
     assert len(regenerated_payload["structure_json"]["deck"]["slides"]) == 2
+
+
+def test_coverage_report_should_only_count_success_courseware(
+    client,
+    seeded_session_factory,
+    generation_test_stubs,
+) -> None:
+    """覆盖率报告的课件矩阵只应统计 result_status=success 的课件，非成功课件不计入。"""
+    _ = generation_test_stubs
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    knowledge_version_id = create_knowledge_version(client, headers, project_id)
+    learner_profile_version_id = create_learner_profile_version(client, headers, project_id)
+
+    batch_response = client.post(
+        "/api/v1/generation-batches",
+        headers=headers,
+        json={
+            "project_id": project_id,
+            "knowledge_version_id": knowledge_version_id,
+            "learner_profile_version_id": learner_profile_version_id,
+            "chapter_range_json": {"chapter_node_ids": []},
+            "course_count": 2,
+            "session_duration_minutes": 90,
+        },
+    )
+    assert batch_response.status_code == 201
+    batch_payload = batch_response.json()["data"]
+    generation_batch_id = batch_payload["id"]
+    lesson_plan_ids = batch_payload["lesson_plan_ids"]
+    assert len(lesson_plan_ids) == 2
+
+    courseware_response = client.post(
+        f"/api/v1/lesson-plans/{lesson_plan_ids[0]}/courseware-tasks",
+        headers=headers,
+    )
+    assert courseware_response.status_code == 201
+    assert courseware_response.json()["data"]["task_status"] == "success"
+
+    coverage_before_response = client.get(
+        f"/api/v1/coverage-reports?generation_batch_id={generation_batch_id}",
+        headers=headers,
+    )
+    assert coverage_before_response.status_code == 200
+    coverage_before = coverage_before_response.json()["data"]["items"][0]
+    courseware_before = coverage_before["report_json"]["artifact_coverage"]["courseware_slide"]
+    success_item_count = courseware_before["item_count"]
+    success_covered_ids = list(courseware_before["covered_knowledge_point_ids"])
+    assert success_item_count == 3
+    assert success_covered_ids, "成功课件应至少覆盖一个知识点用于对照"
+
+    fake_kp_id = max(success_covered_ids) + 10000
+    leak_slides = [
+        {
+            "slide_no": 1,
+            "slide_type": "cover",
+            "title": "未完成课件",
+            "bullet_points": [],
+            "knowledge_point_refs": [fake_kp_id],
+        },
+        {
+            "slide_no": 2,
+            "slide_type": "knowledge",
+            "title": "未完成讲解",
+            "bullet_points": ["占位"],
+            "knowledge_point_refs": success_covered_ids,
+        },
+    ]
+
+    session = seeded_session_factory()
+    try:
+        leaked_courseware = CoursewareResult(
+            generation_batch_id=generation_batch_id,
+            lesson_plan_id=lesson_plan_ids[1],
+            template_code="raccoon_default",
+            template_version="openapi_v2",
+            result_status="processing",
+            page_count=len(leak_slides),
+            page_type_stats_json={"cover": 1, "knowledge": 1},
+            structure_json={"deck": {"deck_title": "未完成课件", "slides": leak_slides}},
+        )
+        session.add(leaked_courseware)
+        session.commit()
+        leaked_courseware_id = leaked_courseware.id
+    finally:
+        session.close()
+
+    refresh_processing_response = client.post(
+        f"/api/v1/generation-batches/{generation_batch_id}/coverage-reports/refresh",
+        headers=headers,
+    )
+    assert refresh_processing_response.status_code == 200
+    courseware_after_processing = refresh_processing_response.json()["data"]["report_json"]["artifact_coverage"][
+        "courseware_slide"
+    ]
+    assert courseware_after_processing["item_count"] == success_item_count
+    assert fake_kp_id not in courseware_after_processing["covered_knowledge_point_ids"]
+    assert courseware_after_processing["covered_knowledge_point_ids"] == success_covered_ids
+    assert all(
+        item["courseware_result_id"] != leaked_courseware_id for item in courseware_after_processing["items"]
+    )
+
+    session = seeded_session_factory()
+    try:
+        leaked_courseware = session.get(CoursewareResult, leaked_courseware_id)
+        leaked_courseware.result_status = "failure"
+        session.add(leaked_courseware)
+        session.commit()
+    finally:
+        session.close()
+
+    refresh_failure_response = client.post(
+        f"/api/v1/generation-batches/{generation_batch_id}/coverage-reports/refresh",
+        headers=headers,
+    )
+    assert refresh_failure_response.status_code == 200
+    courseware_after_failure = refresh_failure_response.json()["data"]["report_json"]["artifact_coverage"][
+        "courseware_slide"
+    ]
+    assert courseware_after_failure["item_count"] == success_item_count
+    assert fake_kp_id not in courseware_after_failure["covered_knowledge_point_ids"]
+    assert all(
+        item["courseware_result_id"] != leaked_courseware_id for item in courseware_after_failure["items"]
+    )
 
 
 def test_curriculum_prompt_should_use_chapter_range_scope(

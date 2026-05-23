@@ -7,7 +7,7 @@
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from app.core.constants import COVERAGE_ANALYZE_TASK_TYPE, COVERAGE_MODULE_CODE
+from app.core.constants import COVERAGE_ANALYZE_TASK_TYPE, COVERAGE_MODULE_CODE, TASK_STATUS_SUCCESS
 from app.modules.p0_models import (
     ChapterNode,
     CoursewareResult,
@@ -116,10 +116,13 @@ class CoverageRepository:
         return self.session.scalar(statement)
 
     def list_courseware_results_by_batch(self, generation_batch_id: int) -> list[CoursewareResult]:
-        """查询批次下全部课件结果。"""
+        """查询批次下有效课件结果（仅 result_status=success），作为覆盖率统计输入。"""
         statement = (
             select(CoursewareResult)
-            .where(CoursewareResult.generation_batch_id == generation_batch_id)
+            .where(
+                CoursewareResult.generation_batch_id == generation_batch_id,
+                CoursewareResult.result_status == TASK_STATUS_SUCCESS,
+            )
             .order_by(CoursewareResult.lesson_plan_id.asc(), CoursewareResult.id.asc())
         )
         return list(self.session.scalars(statement))
