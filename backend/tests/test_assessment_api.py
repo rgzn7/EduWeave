@@ -155,6 +155,146 @@ def test_assessment_apis_should_query_results_and_protect_owner(
     assert forbidden_paper_response.json()["errors"][0]["code"] == "PAPER_RESULT_NOT_FOUND"
 
 
+def test_question_item_list_should_filter_and_protect_owner(
+    client,
+    seeded_session_factory,
+    generation_test_stubs,
+) -> None:
+    """题库题目列表接口应支持多维筛选并隔离其他教师访问。"""
+    _ = generation_test_stubs
+    headers = build_auth_headers(client)
+    project_id, knowledge_version_id, learner_profile_version_id = create_generation_baseline(client, headers)
+    batch_payload = create_generation_batch(client, headers, project_id, knowledge_version_id, learner_profile_version_id)
+    create_assessment_task(client, headers, batch_payload["curriculum_plan_id"])
+
+    paper_list_response = client.get(
+        f"/api/v1/paper-results?generation_batch_id={batch_payload['id']}&scene_type=unit_test",
+        headers=headers,
+    )
+    assert paper_list_response.status_code == 200
+    paper_id = paper_list_response.json()["data"]["items"][0]["id"]
+
+    base_response = client.get("/api/v1/question-items", headers=headers)
+    assert base_response.status_code == 200
+    base_payload = base_response.json()["data"]
+    assert base_payload["pagination"]["total_count"] == 10
+    assert len(base_payload["items"]) == 10
+    first_item = base_payload["items"][0]
+    assert first_item["paper_title"]
+    assert first_item["scene_type"] == "unit_test"
+    assert first_item["paper_result_id"] == paper_id
+    assert first_item["generation_batch_id"] == batch_payload["id"]
+    knowledge_point_id = first_item["knowledge_point_id"]
+
+    batch_response = client.get(
+        f"/api/v1/question-items?generation_batch_id={batch_payload['id']}",
+        headers=headers,
+    )
+    assert batch_response.status_code == 200
+    assert batch_response.json()["data"]["pagination"]["total_count"] == 10
+
+    typed_response = client.get(
+        f"/api/v1/question-items?paper_result_id={paper_id}&question_type=single_choice&scene_type=unit_test",
+        headers=headers,
+    )
+    assert typed_response.status_code == 200
+    typed_payload = typed_response.json()["data"]
+    assert typed_payload["pagination"]["total_count"] >= 1
+    for item in typed_payload["items"]:
+        assert item["question_type"] == "single_choice"
+        assert item["scene_type"] == "unit_test"
+        assert item["paper_result_id"] == paper_id
+
+    paged_response = client.get(
+        "/api/v1/question-items?page=1&page_size=3",
+        headers=headers,
+    )
+    assert paged_response.status_code == 200
+    paged_payload = paged_response.json()["data"]
+    assert paged_payload["pagination"]["page_size"] == 3
+    assert paged_payload["pagination"]["total_count"] == 10
+    assert paged_payload["pagination"]["total_pages"] == 4
+    assert len(paged_payload["items"]) == 3
+
+    knowledge_response = client.get(
+        f"/api/v1/question-items?knowledge_point_id={knowledge_point_id}",
+        headers=headers,
+    )
+    assert knowledge_response.status_code == 200
+    for item in knowledge_response.json()["data"]["items"]:
+        assert item["knowledge_point_id"] == knowledge_point_id
+
+    invalid_batch_response = client.get(
+        "/api/v1/question-items?generation_batch_id=999999",
+        headers=headers,
+    )
+    assert invalid_batch_response.status_code == 404
+    assert invalid_batch_response.json()["errors"][0]["code"] == "GENERATION_BATCH_NOT_FOUND"
+
+    invalid_paper_response = client.get(
+        "/api/v1/question-items?paper_result_id=999999",
+        headers=headers,
+    )
+    assert invalid_paper_response.status_code == 404
+    assert invalid_paper_response.json()["errors"][0]["code"] == "PAPER_RESULT_NOT_FOUND"
+
+    other_headers = build_other_auth_headers(client, seeded_session_factory)
+    isolated_response = client.get("/api/v1/question-items", headers=other_headers)
+    assert isolated_response.status_code == 200
+    assert isolated_response.json()["data"]["pagination"]["total_count"] == 0
+
+    forbidden_paper_response = client.get(
+        f"/api/v1/question-items?paper_result_id={paper_id}",
+        headers=other_headers,
+    )
+    assert forbidden_paper_response.status_code == 404
+    assert forbidden_paper_response.json()["errors"][0]["code"] == "PAPER_RESULT_NOT_FOUND"
+
+
+def test_question_item_list_should_reject_invalid_query_params(client) -> None:
+    """题库题目列表接口应对非法查询参数返回 422。"""
+    headers = build_auth_headers(client)
+
+    invalid_question_type_response = client.get(
+        "/api/v1/question-items?question_type=multi_choice",
+        headers=headers,
+    )
+    assert invalid_question_type_response.status_code == 422
+
+    invalid_scene_type_response = client.get(
+        "/api/v1/question-items?scene_type=mock_exam",
+        headers=headers,
+    )
+    assert invalid_scene_type_response.status_code == 422
+
+    for param in ("generation_batch_id", "paper_result_id", "knowledge_point_id"):
+        zero_response = client.get(f"/api/v1/question-items?{param}=0", headers=headers)
+        assert zero_response.status_code == 422, f"{param}=0 应返回 422"
+        negative_response = client.get(f"/api/v1/question-items?{param}=-1", headers=headers)
+        assert negative_response.status_code == 422, f"{param}=-1 应返回 422"
+
+    low_difficulty_response = client.get(
+        "/api/v1/question-items?difficulty_level=0",
+        headers=headers,
+    )
+    assert low_difficulty_response.status_code == 422
+
+    high_difficulty_response = client.get(
+        "/api/v1/question-items?difficulty_level=6",
+        headers=headers,
+    )
+    assert high_difficulty_response.status_code == 422
+
+    invalid_page_response = client.get("/api/v1/question-items?page=0", headers=headers)
+    assert invalid_page_response.status_code == 422
+
+    oversized_page_size_response = client.get(
+        "/api/v1/question-items?page_size=101",
+        headers=headers,
+    )
+    assert oversized_page_size_response.status_code == 422
+
+
 def test_assessment_prompt_should_apply_scene_preset(
     client,
     generation_test_stubs,

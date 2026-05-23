@@ -2854,6 +2854,76 @@
 
 ---
 
+### GET `/api/v1/question-items`
+
+**获取题库题目列表**
+
+按批次、试卷、知识点、题型、难度、测练场景筛选当前教师可见的题目，支持分页。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| query | `generation_batch_id` | string | 否 | 生成批次主键 |
+| query | `paper_result_id` | string | 否 | 试卷结果主键 |
+| query | `knowledge_point_id` | string | 否 | 知识点主键 |
+| query | `question_type` | string | 否 | 题型：single_choice=单选题，fill_blank=填空题，short_answer=简答题 |
+| query | `difficulty_level` | string | 否 | 难度等级（1-5） |
+| query | `scene_type` | string | 否 | 测练场景类型：homework=课后作业，unit_test=单元测试，final_exam=期末综合测 |
+| query | `page` | integer | 否 | 页码 |
+| query | `page_size` | integer | 否 | 每页大小 |
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    items: array[{
+      id: integer  # 题目主键
+      generation_batch_id: integer  # 生成批次主键
+      paper_result_id: integer  # 试卷结果主键
+      knowledge_point_id?: object  # 知识点主键
+      question_no: integer  # 题号
+      question_type: string  # 题型
+      difficulty_level?: object  # 难度等级
+      score_value?: object  # 分值
+      stem_text: object  # 题干
+      options_json?: object  # 选项
+      answer_text?: object  # 答案
+      analysis_text?: object  # 解析
+      source_trace_json?: object  # 来源摘要
+      created_at: object  # 创建时间
+      updated_at: object  # 更新时间
+      paper_title: string  # 所属试卷标题
+      scene_type: string  # 所属测练场景
+    }]
+    pagination: {
+      total_count: integer  # 总记录数
+      page: integer  # 当前页码
+      page_size: integer  # 每页大小
+      total_pages: integer  # 总页数
+      has_previous: boolean  # 是否存在上一页
+      has_next: boolean  # 是否存在下一页
+    }
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
 ### POST `/api/v1/paper-results/{paper_result_id}/export-docx`
 
 **导出试卷结果 DOCX**

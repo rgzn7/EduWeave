@@ -266,6 +266,80 @@ class AssessmentRepository:
         )
         return list(self.session.scalars(statement))
 
+    def list_question_items_for_owner(
+        self,
+        owner_user_id: int,
+        *,
+        generation_batch_id: int | None,
+        paper_result_id: int | None,
+        knowledge_point_id: int | None,
+        question_type: str | None,
+        difficulty_level: int | None,
+        scene_type: str | None,
+        offset: int,
+        limit: int,
+    ) -> list[tuple[QuestionItem, PaperResult]]:
+        """分页查询当前教师可见的题目与所属试卷。"""
+        statement = (
+            select(QuestionItem, PaperResult)
+            .join(PaperResult, PaperResult.id == QuestionItem.paper_result_id)
+            .join(GenerationBatch, GenerationBatch.id == QuestionItem.generation_batch_id)
+            .join(Project, Project.id == GenerationBatch.project_id)
+            .where(Project.owner_user_id == owner_user_id)
+        )
+        if generation_batch_id is not None:
+            statement = statement.where(QuestionItem.generation_batch_id == generation_batch_id)
+        if paper_result_id is not None:
+            statement = statement.where(QuestionItem.paper_result_id == paper_result_id)
+        if knowledge_point_id is not None:
+            statement = statement.where(QuestionItem.knowledge_point_id == knowledge_point_id)
+        if question_type:
+            statement = statement.where(QuestionItem.question_type == question_type)
+        if difficulty_level is not None:
+            statement = statement.where(QuestionItem.difficulty_level == difficulty_level)
+        if scene_type:
+            statement = statement.where(PaperResult.scene_type == scene_type)
+        statement = (
+            statement.order_by(QuestionItem.created_at.desc(), QuestionItem.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return [(row[0], row[1]) for row in self.session.execute(statement).all()]
+
+    def count_question_items_for_owner(
+        self,
+        owner_user_id: int,
+        *,
+        generation_batch_id: int | None,
+        paper_result_id: int | None,
+        knowledge_point_id: int | None,
+        question_type: str | None,
+        difficulty_level: int | None,
+        scene_type: str | None,
+    ) -> int:
+        """统计当前教师可见的题目数量。"""
+        statement = (
+            select(func.count())
+            .select_from(QuestionItem)
+            .join(PaperResult, PaperResult.id == QuestionItem.paper_result_id)
+            .join(GenerationBatch, GenerationBatch.id == QuestionItem.generation_batch_id)
+            .join(Project, Project.id == GenerationBatch.project_id)
+            .where(Project.owner_user_id == owner_user_id)
+        )
+        if generation_batch_id is not None:
+            statement = statement.where(QuestionItem.generation_batch_id == generation_batch_id)
+        if paper_result_id is not None:
+            statement = statement.where(QuestionItem.paper_result_id == paper_result_id)
+        if knowledge_point_id is not None:
+            statement = statement.where(QuestionItem.knowledge_point_id == knowledge_point_id)
+        if question_type:
+            statement = statement.where(QuestionItem.question_type == question_type)
+        if difficulty_level is not None:
+            statement = statement.where(QuestionItem.difficulty_level == difficulty_level)
+        if scene_type:
+            statement = statement.where(PaperResult.scene_type == scene_type)
+        return int(self.session.scalar(statement) or 0)
+
     def save(self, instance) -> None:
         """保存实体。"""
         self.session.add(instance)

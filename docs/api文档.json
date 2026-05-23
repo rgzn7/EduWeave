@@ -3138,6 +3138,203 @@
         }
       }
     },
+    "/api/v1/question-items": {
+      "get": {
+        "tags": [
+          "测评"
+        ],
+        "summary": "获取题库题目列表",
+        "description": "按批次、试卷、知识点、题型、难度、测练场景筛选当前教师可见的题目，支持分页。",
+        "operationId": "question_item_list",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "generation_batch_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "生成批次主键",
+              "examples": [
+                1
+              ],
+              "title": "Generation Batch Id"
+            },
+            "description": "生成批次主键"
+          },
+          {
+            "name": "paper_result_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "试卷结果主键",
+              "examples": [
+                1
+              ],
+              "title": "Paper Result Id"
+            },
+            "description": "试卷结果主键"
+          },
+          {
+            "name": "knowledge_point_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "知识点主键",
+              "examples": [
+                1
+              ],
+              "title": "Knowledge Point Id"
+            },
+            "description": "知识点主键"
+          },
+          {
+            "name": "question_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/QuestionType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "题型：single_choice=单选题，fill_blank=填空题，short_answer=简答题",
+              "examples": [
+                "single_choice"
+              ],
+              "title": "Question Type"
+            },
+            "description": "题型：single_choice=单选题，fill_blank=填空题，short_answer=简答题"
+          },
+          {
+            "name": "difficulty_level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 5,
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "难度等级（1-5）",
+              "examples": [
+                3
+              ],
+              "title": "Difficulty Level"
+            },
+            "description": "难度等级（1-5）"
+          },
+          {
+            "name": "scene_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SceneType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "测练场景类型：homework=课后作业，unit_test=单元测试，final_exam=期末综合测",
+              "examples": [
+                "unit_test"
+              ],
+              "title": "Scene Type"
+            },
+            "description": "测练场景类型：homework=课后作业，unit_test=单元测试，final_exam=期末综合测"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "页码",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "页码"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "每页大小",
+              "default": 20,
+              "title": "Page Size"
+            },
+            "description": "每页大小"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_PaginatedData_QuestionItemListItemResponse__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/paper-results/{paper_result_id}/export-docx": {
       "post": {
         "tags": [
@@ -5528,6 +5725,61 @@
           "request_id"
         ],
         "title": "ApiResponse[PaginatedData[ProjectListItemResponse]]"
+      },
+      "ApiResponse_PaginatedData_QuestionItemListItemResponse__": {
+        "properties": {
+          "success": {
+            "title": "Success",
+            "description": "请求是否成功",
+            "examples": [
+              true
+            ]
+          },
+          "code": {
+            "title": "Code",
+            "description": "业务响应状态码",
+            "examples": [
+              200
+            ]
+          },
+          "message": {
+            "title": "Message",
+            "description": "响应消息",
+            "examples": [
+              "操作成功"
+            ]
+          },
+          "data": {
+            "description": "业务数据"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "description": "响应时间，UTC ISO8601 格式",
+            "examples": [
+              "2026-04-11T10:00:00.000000Z"
+            ]
+          },
+          "request_id": {
+            "title": "Request Id",
+            "description": "请求追踪 ID",
+            "examples": [
+              "a5c0f6b6-1234-5678-9abc-def012345678"
+            ]
+          },
+          "errors": {
+            "title": "Errors",
+            "description": "错误明细列表"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "code",
+          "message",
+          "timestamp",
+          "request_id"
+        ],
+        "title": "ApiResponse[PaginatedData[QuestionItemListItemResponse]]"
       },
       "ApiResponse_PaginatedData_TaskListItemResponse__": {
         "properties": {
@@ -10317,6 +10569,23 @@
         ],
         "title": "PaginatedData[ProjectListItemResponse]"
       },
+      "PaginatedData_QuestionItemListItemResponse_": {
+        "properties": {
+          "items": {
+            "title": "Items",
+            "description": "分页数据列表"
+          },
+          "pagination": {
+            "description": "分页元数据"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "pagination"
+        ],
+        "title": "PaginatedData[QuestionItemListItemResponse]"
+      },
       "PaginatedData_TaskListItemResponse_": {
         "properties": {
           "items": {
@@ -12348,6 +12617,114 @@
         "title": "ProjectListItemResponse",
         "description": "项目列表项响应。"
       },
+      "QuestionItemListItemResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "description": "题目主键",
+            "examples": [
+              1
+            ]
+          },
+          "generation_batch_id": {
+            "title": "Generation Batch Id",
+            "description": "生成批次主键",
+            "examples": [
+              1
+            ]
+          },
+          "paper_result_id": {
+            "title": "Paper Result Id",
+            "description": "试卷结果主键",
+            "examples": [
+              1
+            ]
+          },
+          "knowledge_point_id": {
+            "title": "Knowledge Point Id",
+            "description": "知识点主键"
+          },
+          "question_no": {
+            "title": "Question No",
+            "description": "题号",
+            "examples": [
+              1
+            ]
+          },
+          "question_type": {
+            "title": "Question Type",
+            "description": "题型",
+            "examples": [
+              "single_choice"
+            ]
+          },
+          "difficulty_level": {
+            "title": "Difficulty Level",
+            "description": "难度等级"
+          },
+          "score_value": {
+            "title": "Score Value",
+            "description": "分值"
+          },
+          "stem_text": {
+            "title": "Stem Text",
+            "description": "题干"
+          },
+          "options_json": {
+            "title": "Options Json",
+            "description": "选项"
+          },
+          "answer_text": {
+            "title": "Answer Text",
+            "description": "答案"
+          },
+          "analysis_text": {
+            "title": "Analysis Text",
+            "description": "解析"
+          },
+          "source_trace_json": {
+            "title": "Source Trace Json",
+            "description": "来源摘要"
+          },
+          "created_at": {
+            "title": "Created At",
+            "description": "创建时间"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "description": "更新时间"
+          },
+          "paper_title": {
+            "title": "Paper Title",
+            "description": "所属试卷标题",
+            "examples": [
+              "乘法单元测试"
+            ]
+          },
+          "scene_type": {
+            "title": "Scene Type",
+            "description": "所属测练场景",
+            "examples": [
+              "unit_test"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "generation_batch_id",
+          "paper_result_id",
+          "question_no",
+          "question_type",
+          "stem_text",
+          "created_at",
+          "updated_at",
+          "paper_title",
+          "scene_type"
+        ],
+        "title": "QuestionItemListItemResponse",
+        "description": "题库题目列表项响应。"
+      },
       "QuestionItemResponse": {
         "properties": {
           "id": {
@@ -12439,6 +12816,16 @@
         ],
         "title": "QuestionItemResponse",
         "description": "题目明细响应。"
+      },
+      "QuestionType": {
+        "type": "string",
+        "enum": [
+          "single_choice",
+          "fill_blank",
+          "short_answer"
+        ],
+        "title": "QuestionType",
+        "description": "题型类型。"
       },
       "ReadyResponse": {
         "properties": {
