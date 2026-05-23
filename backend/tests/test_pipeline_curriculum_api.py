@@ -27,7 +27,7 @@ from app.modules.knowledge.schemas import (
     KnowledgeExtractionPointDraft,
 )
 from app.modules.lesson_plan.schemas import LessonPlanGenerationResult
-from app.modules.p0_models import ChapterNode, KnowledgePoint, LessonPlan
+from app.modules.p0_models import ChapterNode, KnowledgePoint, LessonPlan, QuestionItem
 from app.shared.llm import OpenAICompatibleEmbeddingService, OpenAICompatibleLlmService
 from app.shared.ppt import RaccoonPptJobState, RaccoonPptService
 from app.shared.vector import MilvusVectorService
@@ -564,7 +564,13 @@ def test_generation_batch_should_create_curriculum_lesson_plans_and_coverage(cli
     assert coverage_payload["warning_count"] == 0
     assert coverage_payload["report_json"]["total_knowledge_point_count"] == 1
     assert coverage_payload["report_json"]["covered_knowledge_point_ids"]
-    assert len(coverage_payload["report_json"]["artifact_coverage"]) == 3
+    artifact_coverage = coverage_payload["report_json"]["artifact_coverage"]
+    assert set(artifact_coverage) == {"curriculum_plan", "lesson_plan", "question_item", "courseware_slide"}
+    assert artifact_coverage["curriculum_plan"]["covered_knowledge_point_ids"]
+    assert artifact_coverage["lesson_plan"]["item_count"] == 2
+    assert artifact_coverage["question_item"]["item_count"] == 0
+    assert artifact_coverage["courseware_slide"]["item_count"] == 0
+    assert coverage_payload["report_json"]["assessment_quality"]["question_count"] == 0
 
     coverage_detail_response = client.get(f"/api/v1/coverage-reports/{coverage_payload['id']}", headers=headers)
     assert coverage_detail_response.status_code == 200
@@ -605,6 +611,22 @@ def test_generation_batch_should_create_curriculum_lesson_plans_and_coverage(cli
     assert paper_detail_response.status_code == 200
     assert len(paper_detail_response.json()["data"]["questions"]) == 10
 
+    coverage_after_assessment_response = client.get(
+        f"/api/v1/coverage-reports?generation_batch_id={batch_payload['id']}",
+        headers=headers,
+    )
+    coverage_after_assessment = coverage_after_assessment_response.json()["data"]["items"][0]
+    assessment_quality = coverage_after_assessment["report_json"]["assessment_quality"]
+    assert assessment_quality["question_count"] == 10
+    assert assessment_quality["question_type_distribution"] == {
+        "single_choice": 4,
+        "fill_blank": 3,
+        "short_answer": 3,
+    }
+    assert assessment_quality["difficulty_distribution"] == {"1": 0, "2": 4, "3": 3, "4": 3, "5": 0}
+    assert assessment_quality["strategy_checks"][0]["passed"] is True
+    assert coverage_after_assessment["report_json"]["artifact_coverage"]["question_item"]["item_count"] == 10
+
     courseware_task_response = client.post(
         f"/api/v1/lesson-plans/{batch_payload['lesson_plan_ids'][0]}/courseware-tasks",
         headers=headers,
@@ -640,6 +662,18 @@ def test_generation_batch_should_create_curriculum_lesson_plans_and_coverage(cli
     assert len(structure["deck"]["slides"]) == 3
     assert structure["deck"]["slides"][0]["slide_type"] == "cover"
     assert courseware_payload["page_count"] == 3
+
+    coverage_after_courseware_response = client.get(
+        f"/api/v1/coverage-reports?generation_batch_id={batch_payload['id']}",
+        headers=headers,
+    )
+    courseware_coverage = coverage_after_courseware_response.json()["data"]["items"][0]["report_json"]["artifact_coverage"][
+        "courseware_slide"
+    ]
+    assert courseware_coverage["item_count"] == 3
+    assert courseware_coverage["covered_knowledge_point_ids"]
+    assert courseware_coverage["items"][1]["slide_no"] == 2
+    assert courseware_coverage["items"][1]["valid_knowledge_point_ids"]
 
     slides_update_response = client.put(
         f"/api/v1/courseware-results/{courseware_result_id}/slides",
@@ -1051,30 +1085,12 @@ def test_coverage_report_should_protect_owner(client, generation_test_stubs, see
     assert forbidden_detail_response.json()["errors"][0]["code"] == "COVERAGE_REPORT_NOT_FOUND"
 
 
-def test_coverage_report_should_ignore_on_demand_courseware_refs(
+def test_coverage_report_should_include_on_demand_courseware_refs_after_refresh(
     client,
     generation_test_stubs,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """自动覆盖率只统计课程大纲和本批次教案，不纳入后续按需课件。"""
+    """覆盖率应纳入按需课件页面引用，并支持手动刷新识别非法引用。"""
     _ = generation_test_stubs
-
-    def invalid_ref_create_job(self, *, prompt: str, role: str, scene: str, audience: str):  # noqa: ANN001
-        _ = (self, prompt, role, scene, audience)
-        return RaccoonPptJobState(
-            job_id="ppt-job-invalid-ref",
-            status="succeeded",
-            download_url="https://raccoon.test.example.com/courseware.pptx",
-            raw_payload={
-                "data": {
-                    "job_id": "ppt-job-invalid-ref",
-                    "status": "succeeded",
-                    "knowledge_point_refs": [999999],
-                }
-            },
-        )
-
-    monkeypatch.setattr(RaccoonPptService, "create_job_and_short_poll", invalid_ref_create_job)
     headers = build_auth_headers(client)
     project_id = create_project(client, headers)
     knowledge_version_id = create_knowledge_version(client, headers, project_id)
@@ -1102,12 +1118,14 @@ def test_coverage_report_should_ignore_on_demand_courseware_refs(
     coverage_payload = coverage_response.json()["data"]["items"][0]
     assert coverage_payload["coverage_rate"] == 100.0
     assert coverage_payload["warning_count"] == 0
+    assert coverage_payload["report_json"]["artifact_coverage"]["courseware_slide"]["item_count"] == 0
 
     courseware_task_response = client.post(
         f"/api/v1/lesson-plans/{batch_payload['lesson_plan_ids'][0]}/courseware-tasks",
         headers=headers,
     )
     assert courseware_task_response.status_code == 201
+    courseware_result_id = courseware_task_response.json()["data"]["result_json"]["courseware_result_id"]
 
     refreshed_coverage_response = client.get(
         f"/api/v1/coverage-reports?generation_batch_id={batch_payload['id']}",
@@ -1115,7 +1133,97 @@ def test_coverage_report_should_ignore_on_demand_courseware_refs(
     )
     refreshed_coverage_payload = refreshed_coverage_response.json()["data"]["items"][0]
     assert refreshed_coverage_payload["warning_count"] == 0
-    assert refreshed_coverage_payload["report_json"]["warnings"] == []
+    assert refreshed_coverage_payload["report_json"]["artifact_coverage"]["courseware_slide"]["item_count"] == 3
+
+    slides_update_response = client.put(
+        f"/api/v1/courseware-results/{courseware_result_id}/slides",
+        headers=headers,
+        json={
+            "deck_title": "含非法引用的课件",
+            "slides": [
+                {"slide_no": 1, "slide_type": "cover", "title": "封面", "bullet_points": []},
+                {
+                    "slide_no": 2,
+                    "slide_type": "knowledge",
+                    "title": "非法引用页",
+                    "bullet_points": ["用于刷新校验"],
+                    "knowledge_point_refs": [999999],
+                },
+            ],
+        },
+    )
+    assert slides_update_response.status_code == 200
+
+    manual_refresh_response = client.post(
+        f"/api/v1/generation-batches/{batch_payload['id']}/coverage-reports/refresh",
+        headers=headers,
+    )
+    assert manual_refresh_response.status_code == 200
+    refreshed_report = manual_refresh_response.json()["data"]["report_json"]
+    assert refreshed_report["artifact_coverage"]["courseware_slide"]["invalid_knowledge_point_ids"] == [999999]
+    assert refreshed_report["warnings"][0]["code"] == "INVALID_KNOWLEDGE_POINT_REF"
+
+
+def test_coverage_refresh_should_warn_when_question_difficulty_out_of_strategy(
+    client,
+    seeded_session_factory,
+    generation_test_stubs,
+) -> None:
+    """覆盖率刷新应校验题目难度是否落在测评场景预设范围内。"""
+    _ = generation_test_stubs
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    knowledge_version_id = create_knowledge_version(client, headers, project_id)
+    learner_profile_version_id = create_learner_profile_version(client, headers, project_id)
+
+    response = client.post(
+        "/api/v1/generation-batches",
+        headers=headers,
+        json={
+            "project_id": project_id,
+            "knowledge_version_id": knowledge_version_id,
+            "learner_profile_version_id": learner_profile_version_id,
+            "course_count": 1,
+            "session_duration_minutes": 90,
+        },
+    )
+    assert response.status_code == 201
+    batch_payload = response.json()["data"]
+
+    assessment_task_response = client.post(
+        f"/api/v1/curriculum-plans/{batch_payload['curriculum_plan_id']}/assessment-tasks",
+        headers=headers,
+        json={},
+    )
+    assert assessment_task_response.status_code == 201
+
+    session = seeded_session_factory()
+    try:
+        question = (
+            session.query(QuestionItem)
+            .filter(QuestionItem.generation_batch_id == batch_payload["id"])
+            .order_by(QuestionItem.question_no.asc())
+            .first()
+        )
+        question.difficulty_level = 5
+        session.commit()
+        out_of_range_question_id = question.id
+    finally:
+        session.close()
+
+    manual_refresh_response = client.post(
+        f"/api/v1/generation-batches/{batch_payload['id']}/coverage-reports/refresh",
+        headers=headers,
+    )
+    assert manual_refresh_response.status_code == 200
+    report_json = manual_refresh_response.json()["data"]["report_json"]
+    warning_codes = [warning["code"] for warning in report_json["warnings"]]
+    assert "QUESTION_DIFFICULTY_OUT_OF_RANGE" in warning_codes
+    assert report_json["assessment_quality"]["difficulty_distribution"]["5"] == 1
+    assert report_json["assessment_quality"]["strategy_checks"][0]["passed"] is False
+    assert report_json["assessment_quality"]["strategy_checks"][0]["out_of_range_question_item_ids"] == [
+        out_of_range_question_id
+    ]
 
 
 def test_courseware_refresh_should_finalize_pending_raccoon_job(

@@ -4,7 +4,7 @@
 @Discription: 覆盖率分析模块数据访问层
 """
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.constants import COVERAGE_ANALYZE_TASK_TYPE, COVERAGE_MODULE_CODE
@@ -92,6 +92,15 @@ class CoverageRepository:
         )
         return self.session.scalar(statement)
 
+    def list_paper_results_by_batch(self, generation_batch_id: int) -> list[PaperResult]:
+        """查询批次下全部试卷结果。"""
+        statement = (
+            select(PaperResult)
+            .where(PaperResult.generation_batch_id == generation_batch_id)
+            .order_by(PaperResult.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
     def list_question_items_by_batch(self, generation_batch_id: int) -> list[QuestionItem]:
         """查询批次下题目明细。"""
         statement = (
@@ -105,6 +114,15 @@ class CoverageRepository:
         """查询批次课件结果。"""
         statement = select(CoursewareResult).where(CoursewareResult.generation_batch_id == generation_batch_id)
         return self.session.scalar(statement)
+
+    def list_courseware_results_by_batch(self, generation_batch_id: int) -> list[CoursewareResult]:
+        """查询批次下全部课件结果。"""
+        statement = (
+            select(CoursewareResult)
+            .where(CoursewareResult.generation_batch_id == generation_batch_id)
+            .order_by(CoursewareResult.lesson_plan_id.asc(), CoursewareResult.id.asc())
+        )
+        return list(self.session.scalars(statement))
 
     def get_coverage_report_by_batch(self, generation_batch_id: int) -> CoverageReport | None:
         """查询批次覆盖率报告。"""
@@ -177,6 +195,16 @@ class CoverageRepository:
         self.session.add(generation_trace)
         self.session.flush()
         return generation_trace
+
+    def delete_generation_traces_for_report(self, coverage_report_id: int) -> None:
+        """删除指定覆盖率报告的旧追溯记录。"""
+        self.session.execute(
+            delete(GenerationTrace).where(
+                GenerationTrace.target_type == "coverage_report",
+                GenerationTrace.target_id == coverage_report_id,
+            )
+        )
+        self.session.flush()
 
     def save(self, instance) -> None:
         """保存实体。"""

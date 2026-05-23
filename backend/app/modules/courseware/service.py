@@ -23,6 +23,7 @@ from app.core.constants import (
 )
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.core.middleware import get_request_id
+from app.modules.coverage.service import CoverageService
 from app.modules.courseware.repository import CoursewareRepository
 from app.modules.courseware.schemas import (
     CoursewareResultDetailResponse,
@@ -348,6 +349,7 @@ class CoursewareService:
                     step_status=TASK_STATUS_SUCCESS,
                     export_file_id=courseware_result.export_file_id,
                 )
+            CoverageService(self.session).refresh_coverage_report_by_batch(courseware_result.generation_batch_id)
         elif normalized_status in {"failed", "canceled"}:
             courseware_result.result_status = TASK_STATUS_FAILURE
             if task is not None:

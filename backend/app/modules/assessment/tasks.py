@@ -20,6 +20,7 @@ from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.assessment.presets import resolve_assessment_strategy
 from app.modules.assessment.repository import AssessmentRepository
 from app.modules.assessment.schemas import AssessmentGenerationResult, AssessmentKnowledgeWeightDraft
+from app.modules.coverage.service import CoverageService
 from app.modules.p0_models import AssessmentBlueprint, PaperResult, QuestionItem
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
@@ -189,6 +190,7 @@ def run_generate_assessment_task(payload: dict) -> dict[str, int | str]:
                 for question in generation_result.questions
             ]
         )
+        CoverageService(session).refresh_coverage_report_by_batch(generation_batch.id)
         _mark_step(
             step_map["persist_assessment_result"],
             TASK_STATUS_SUCCESS,

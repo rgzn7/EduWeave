@@ -28,7 +28,7 @@ def get_coverage_service(session: Annotated[Session, Depends(get_db_session)]) -
 @router.get(
     "/coverage-reports",
     summary="获取覆盖率报告列表",
-    description="分页获取指定生成批次下的覆盖率分析报告。",
+    description="分页获取指定生成批次下的覆盖率分析报告，报告会展示课程大纲、教案、试卷题目与课件页面的知识点覆盖矩阵。",
     operation_id="coverage_report_list",
     response_model=ApiResponse[PaginatedData[CoverageReportListItemResponse]],
     status_code=status.HTTP_200_OK,
@@ -75,3 +75,24 @@ def get_coverage_report_detail(
         coverage_report_id=coverage_report_id,
     )
     return ResponseFactory.success(detail.model_dump(mode="json"), "获取覆盖率报告详情成功")
+
+
+@router.post(
+    "/generation-batches/{generation_batch_id}/coverage-reports/refresh",
+    summary="重新分析覆盖率报告",
+    description="重新汇总指定生成批次下课程大纲、教案、试卷题目与课件页面的知识点引用，并刷新覆盖率报告和质量告警。",
+    operation_id="coverage_report_refresh",
+    response_model=ApiResponse[CoverageReportDetailResponse],
+    status_code=status.HTTP_200_OK,
+)
+def refresh_coverage_report(
+    generation_batch_id: int = Path(..., description="生成批次主键", examples=[1]),
+    service: Annotated[CoverageService, Depends(get_coverage_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """重新分析覆盖率报告。"""
+    detail = service.refresh_coverage_report(
+        owner_user_id=current_user.id,
+        generation_batch_id=generation_batch_id,
+    )
+    return ResponseFactory.success(detail.model_dump(mode="json"), "重新分析覆盖率报告成功")

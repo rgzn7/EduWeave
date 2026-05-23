@@ -3248,7 +3248,7 @@
 
 **获取覆盖率报告列表**
 
-分页获取指定生成批次下的覆盖率分析报告。
+分页获取指定生成批次下的覆盖率分析报告，报告会展示课程大纲、教案、试卷题目与课件页面的知识点覆盖矩阵。
 
 **参数**
 
@@ -3313,6 +3313,52 @@
 | 位置 | 名称 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- | --- |
 | path | `coverage_report_id` | integer | 是 | 覆盖率报告主键 |
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    id: integer  # 覆盖率报告主键
+    generation_batch_id: integer  # 生成批次主键
+    report_status: string  # 报告状态
+    coverage_rate?: number  # 覆盖率百分比
+    warning_count: integer  # 告警数量
+    coverage_summary_json?: object  # 覆盖摘要
+    report_json: object  # 覆盖率报告内容
+    export_file_id?: object  # 导出文件主键
+    created_at: object  # 创建时间
+    updated_at: object  # 更新时间
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+### POST `/api/v1/generation-batches/{generation_batch_id}/coverage-reports/refresh`
+
+**重新分析覆盖率报告**
+
+重新汇总指定生成批次下课程大纲、教案、试卷题目与课件页面的知识点引用，并刷新覆盖率报告和质量告警。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `generation_batch_id` | integer | 是 | 生成批次主键 |
 
 **响应**
 

@@ -3545,7 +3545,7 @@
           "覆盖率"
         ],
         "summary": "获取覆盖率报告列表",
-        "description": "分页获取指定生成批次下的覆盖率分析报告。",
+        "description": "分页获取指定生成批次下的覆盖率分析报告，报告会展示课程大纲、教案、试卷题目与课件页面的知识点覆盖矩阵。",
         "operationId": "coverage_report_list",
         "security": [
           {
@@ -3646,6 +3646,59 @@
               "title": "Coverage Report Id"
             },
             "description": "覆盖率报告主键"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_CoverageReportDetailResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/generation-batches/{generation_batch_id}/coverage-reports/refresh": {
+      "post": {
+        "tags": [
+          "覆盖率"
+        ],
+        "summary": "重新分析覆盖率报告",
+        "description": "重新汇总指定生成批次下课程大纲、教案、试卷题目与课件页面的知识点引用，并刷新覆盖率报告和质量告警。",
+        "operationId": "coverage_report_refresh",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "generation_batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "生成批次主键",
+              "examples": [
+                1
+              ],
+              "title": "Generation Batch Id"
+            },
+            "description": "生成批次主键"
           }
         ],
         "responses": {
