@@ -10,9 +10,12 @@ import type {
   CurriculumPlan,
   FileDownloadUrl,
   GenerationBatch,
+  KnowledgeChapter,
+  KnowledgePoint,
   KnowledgeVersion,
   LearnerProfileFile,
   LearnerProfileVersion,
+  LearnerProfileVersionDetail,
   LessonPlan,
   LoginResult,
   PageResult,
@@ -209,6 +212,9 @@ export const api = {
       { page: 1, page_size: 20 },
     );
   },
+  getLearnerProfileVersion(profileVersionId: number) {
+    return request<LearnerProfileVersionDetail>(`/api/v1/learner-profile-versions/${profileVersionId}`);
+  },
   createKnowledgeTask(parseVersionId: number, payload: { force_regenerate?: boolean } = {}) {
     return request<Task>(`/api/v1/parse-versions/${parseVersionId}/knowledge-tasks`, {
       method: "POST",
@@ -220,6 +226,16 @@ export const api = {
       `/api/v1/parse-versions/${parseVersionId}/knowledge-versions`,
       {},
       { page: 1, page_size: 20 },
+    );
+  },
+  listKnowledgeChapters(knowledgeVersionId: number) {
+    return request<KnowledgeChapter[]>(`/api/v1/knowledge-versions/${knowledgeVersionId}/chapters`);
+  },
+  listKnowledgePoints(knowledgeVersionId: number, query?: { chapter_node_id?: number; keyword?: string; page?: number; page_size?: number }) {
+    return request<PageResult<KnowledgePoint>>(
+      `/api/v1/knowledge-versions/${knowledgeVersionId}/points`,
+      {},
+      { page: 1, page_size: 20, ...query },
     );
   },
   createGenerationBatch(payload: CreateGenerationBatchPayload) {

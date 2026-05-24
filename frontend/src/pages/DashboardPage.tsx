@@ -1,12 +1,22 @@
 import { FormEvent, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, CheckCircle2, FileText, Loader2, UploadCloud } from "lucide-react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { api } from "../lib/api";
 import { cn, formatDate } from "../utils";
-import type { Project } from "../types";
+import type { GenerationBatch, Project } from "../types";
+
+type ProjectCaseState = "completed" | "processing" | "failed" | "ready_to_generate" | "incomplete";
+
+type ProjectCase = {
+  project: Project;
+  state: ProjectCaseState;
+  statusLabel: string;
+  actionLabel: string;
+  href: string;
+};
 
 const gradeNameMap: Array<[string, string]> = [
   ["一年级", "grade_1"],
@@ -70,17 +80,104 @@ function inferGradeCode(filename: string) {
   return matched?.[1] ?? "grade_3";
 }
 
-function getCaseStatus(project: Project) {
+function getCaseState(project: Project, batch?: GenerationBatch, hasBatchError?: boolean): ProjectCaseState {
   if (project.latest_generation_batch_id) {
-    return "已完成";
+    const batchStatus = String(batch?.batch_status ?? "").toLowerCase();
+    if (batchStatus === "success") {
+      return "completed";
+    }
+    if (hasBatchError || ["failure", "failed", "error"].includes(batchStatus)) {
+      return "failed";
+    }
+    return "processing";
   }
   if (project.current_textbook_version_id && project.current_learner_profile_version_id) {
+    return "ready_to_generate";
+  }
+  return "incomplete";
+}
+
+function getCaseStatusLabel(project: Project, state: ProjectCaseState) {
+  if (state === "completed") {
+    return "已完成";
+  }
+  if (state === "processing") {
     return "生成中";
+  }
+  if (state === "failed") {
+    return "需要处理";
+  }
+  if (state === "ready_to_generate") {
+    return "待生成";
   }
   if (project.current_textbook_version_id || project.current_learner_profile_version_id) {
     return "待补充";
   }
   return "未开始";
+}
+
+function getCaseActionLabel(project: Project, state: ProjectCaseState) {
+  if (state === "completed") {
+    return "查看资源";
+  }
+  if (state === "processing" || state === "ready_to_generate") {
+    return "继续生成";
+  }
+  if (state === "failed") {
+    return "需要处理";
+  }
+  if (project.current_textbook_version_id || project.current_learner_profile_version_id) {
+    return "继续补充";
+  }
+  return "等待处理";
+}
+
+function getCaseLink(project: Project, state: ProjectCaseState) {
+  if (state === "completed" && project.latest_generation_batch_id) {
+    return `/projects/${project.id}/batches/${project.latest_generation_batch_id}`;
+  }
+  return `/projects/${project.id}`;
+}
+
+function buildProjectCase(project: Project, batch?: GenerationBatch, hasBatchError?: boolean): ProjectCase {
+  const state = getCaseState(project, batch, hasBatchError);
+  return {
+    project,
+    state,
+    statusLabel: getCaseStatusLabel(project, state),
+    actionLabel: getCaseActionLabel(project, state),
+    href: getCaseLink(project, state),
+  };
+}
+
+function getProjectTime(project: Project) {
+  return new Date(project.last_activity_at ?? project.updated_at).getTime();
+}
+
+function getRecentPriority(item: ProjectCase) {
+  if (item.state === "processing") {
+    return 0;
+  }
+  if (item.state === "ready_to_generate") {
+    return 1;
+  }
+  if (item.state === "failed") {
+    return 2;
+  }
+  if (item.state === "incomplete") {
+    return 3;
+  }
+  return 4;
+}
+
+function sortRecentCases(items: ProjectCase[]) {
+  return [...items].sort((left, right) => {
+    const priorityDiff = getRecentPriority(left) - getRecentPriority(right);
+    if (priorityDiff !== 0) {
+      return priorityDiff;
+    }
+    return getProjectTime(right.project) - getProjectTime(left.project);
+  });
 }
 
 function ComposerMaterialRow({
@@ -157,7 +254,7 @@ function LessonPrepComposer({
       <ComposerMaterialRow
         accept="application/pdf,.pdf"
         actionLabel="选择教材"
-        description="基于教材生成课程方案、教案、PPT 课件和配套测练。"
+        description="基于教材生成课程方案和多课教案；PPT 课件与配套测练可在资源页按需生成。"
         file={textbookFile}
         step={1}
         title="上传教材 PDF"
@@ -195,29 +292,27 @@ function CaseStatusPill({ label }: { label: string }) {
   );
 }
 
-function CaseCard({ project }: { project: Project }) {
-  const status = getCaseStatus(project);
-
+function CaseCard({ item }: { item: ProjectCase }) {
   return (
-    <Link className="group block rounded-[20px] border border-line bg-white/88 p-4 shadow-panel transition hover:-translate-y-0.5 hover:border-ink/20 hover:bg-white" to={`/projects/${project.id}`}>
+    <Link className="group block rounded-[20px] border border-line bg-white/88 p-4 shadow-panel transition hover:-translate-y-0.5 hover:border-ink/20 hover:bg-white" to={item.href}>
       <div className="flex items-start gap-3">
         <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#f2f2f2] text-ink/72">
           <FileText size={18} />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex items-start justify-between gap-3">
-            <h3 className="line-clamp-2 text-sm font-semibold leading-5 text-ink">{project.name}</h3>
-            <CaseStatusPill label={status} />
+            <h3 className="line-clamp-2 text-sm font-semibold leading-5 text-ink">{item.project.name}</h3>
+            <CaseStatusPill label={item.statusLabel} />
           </div>
           <div className="mt-3 flex flex-wrap gap-1.5 text-xs font-medium text-ink/45">
-            <span>{subjectLabels[project.subject_code] ?? project.subject_code}</span>
+            <span>{subjectLabels[item.project.subject_code] ?? item.project.subject_code}</span>
             <span>/</span>
-            <span>{gradeLabels[project.grade_code] ?? project.grade_code}</span>
+            <span>{gradeLabels[item.project.grade_code] ?? item.project.grade_code}</span>
           </div>
           <div className="mt-5 flex items-center justify-between border-t border-line/70 pt-3 text-xs">
-            <span className="text-ink/38">{formatDate(project.last_activity_at ?? project.updated_at)}</span>
+            <span className="text-ink/38">{formatDate(item.project.last_activity_at ?? item.project.updated_at)}</span>
             <span className="inline-flex items-center gap-1 font-semibold text-ink/72">
-              查看过程
+              {item.actionLabel}
               <ArrowRight className="transition group-hover:translate-x-0.5" size={14} />
             </span>
           </div>
@@ -227,26 +322,13 @@ function CaseCard({ project }: { project: Project }) {
   );
 }
 
-function getVisibleCases(projects: Project[]) {
-  if (projects.length >= 3) {
-    return projects.slice(0, 3);
-  }
-  if (!projects.length) {
-    return [];
-  }
-
-  const cases = [...projects];
-  while (cases.length < 3) {
-    cases.push(projects[0]);
-  }
-  return cases;
-}
-
 export function DashboardPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   const [textbookFile, setTextbookFile] = useState<File | null>(null);
   const [profileFile, setProfileFile] = useState<File | null>(null);
+  const isHistoryPage = location.pathname === "/history";
 
   const projectsQuery = useQuery({
     queryKey: ["projects"],
@@ -285,7 +367,20 @@ export function DashboardPage() {
   });
 
   const projects = projectsQuery.data?.items ?? [];
-  const visibleCases = getVisibleCases(projects);
+  const batchQueries = useQueries({
+    queries: projects.map((project) => ({
+      queryKey: ["generation-batch", project.latest_generation_batch_id, "dashboard-card"],
+      queryFn: () => api.getGenerationBatch(project.latest_generation_batch_id!),
+      enabled: Boolean(project.latest_generation_batch_id),
+      retry: false,
+    })),
+  });
+  const projectCases = projects.map((project, index) => {
+    const batchQuery = batchQueries[index];
+    return buildProjectCase(project, batchQuery?.data as GenerationBatch | undefined, batchQuery?.isError);
+  });
+  const sortedCases = sortRecentCases(projectCases);
+  const visibleCases = isHistoryPage ? sortedCases : sortedCases.slice(0, 3);
 
   function handleTextbookChange(file: File | null) {
     setTextbookFile(file);
@@ -299,6 +394,34 @@ export function DashboardPage() {
     if (textbookFile && profileFile) {
       startLessonPrep.mutate();
     }
+  }
+
+  if (isHistoryPage) {
+    return (
+      <div className="mx-auto min-h-screen w-full max-w-5xl pb-16 pt-20 md:pt-28">
+        <section className="space-y-5">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-[-0.03em] text-ink md:text-4xl">备课记录</h1>
+            <p className="mt-3 text-sm text-ink/45">查看所有备课，包括正在生成、待处理和已完成的记录。</p>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            {projectsQuery.isLoading ? (
+              <div className="panel col-span-full flex h-28 items-center justify-center text-sm text-ink/50">
+                <Loader2 className="mr-2 animate-spin" size={17} />
+                正在加载
+              </div>
+            ) : visibleCases.length ? (
+              visibleCases.map((item) => <CaseCard item={item} key={item.project.id} />)
+            ) : (
+              <div className="col-span-full">
+                <EmptyState title="暂无备课记录" description="上传教材和学情后，备课记录会显示在这里。" />
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+    );
   }
 
   return (
@@ -320,10 +443,15 @@ export function DashboardPage() {
         </form>
       </section>
 
-      <section className="mx-auto mt-24 w-full max-w-5xl space-y-5" id="cases">
-        <div>
-          <h2 className="text-base font-semibold text-ink/82">示例备课</h2>
-          <p className="mt-2 text-sm text-ink/42">打开已有记录，查看从材料到成果的完整处理过程。</p>
+      <section className="mx-auto mt-24 w-full max-w-5xl space-y-5" id="recent">
+        <div className="flex items-end justify-between gap-4">
+          <div>
+            <h2 className="text-base font-semibold text-ink/82">最近备课</h2>
+            <p className="mt-2 text-sm text-ink/42">继续未完成的备课，或快速打开最近生成好的资源。</p>
+          </div>
+          <Link className="shrink-0 text-sm font-semibold text-ink/58 transition hover:text-ink" to="/history">
+            查看更多
+          </Link>
         </div>
 
         <div className="grid gap-3 md:grid-cols-3">
@@ -333,10 +461,10 @@ export function DashboardPage() {
               正在加载
             </div>
           ) : visibleCases.length ? (
-            visibleCases.map((project, index) => <CaseCard key={`${project.id}-${index}`} project={project} />)
+            visibleCases.map((item) => <CaseCard item={item} key={item.project.id} />)
           ) : (
             <div className="col-span-full">
-              <EmptyState title="暂无示例备课" description="上传教材和学情后，可以在这里回到已有记录。" />
+              <EmptyState title="暂无备课记录" description="上传教材和学情后，最近备课会显示在这里。" />
             </div>
           )}
         </div>

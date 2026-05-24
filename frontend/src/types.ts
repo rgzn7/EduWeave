@@ -104,15 +104,49 @@ export type LearnerProfileVersion = {
   id: number;
   project_id: number;
   profile_file_id: number;
+  parent_version_id?: number | null;
   version_no: number;
+  textbook_version_hint_id?: number | null;
   grade_code?: string | null;
   subject_scope?: string | null;
   extract_status: string;
   review_status: string;
   version_status: string;
   summary_text?: string | null;
+  raw_result_json?: JsonRecord | null;
+  source_snapshot_json?: JsonRecord | null;
+  created_by?: number | null;
   created_at: string;
   updated_at: string;
+};
+
+export type LearnerProfileRecord = {
+  id: number;
+  project_id: number;
+  profile_version_id: number;
+  student_key: string;
+  student_name?: string | null;
+  is_anonymous: boolean;
+  region_name?: string | null;
+  grade_code?: string | null;
+  subject_code: string;
+  textbook_version_hint_id?: number | null;
+  score_value?: number | null;
+  advantage_tags_json?: JsonRecord | null;
+  weakness_tags_json?: JsonRecord | null;
+  ability_tags_json?: JsonRecord | null;
+  habit_tags_json?: JsonRecord | null;
+  behavior_traits_json?: JsonRecord | null;
+  time_plan_json?: JsonRecord | null;
+  summary_text?: string | null;
+  evidence_json?: JsonRecord | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type LearnerProfileVersionDetail = LearnerProfileVersion & {
+  records: LearnerProfileRecord[];
 };
 
 export type ParseVersion = {
@@ -208,6 +242,44 @@ export type KnowledgeVersion = {
   summary_json?: JsonRecord | null;
   chapter_count: number;
   point_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type KnowledgeChapter = {
+  id: number;
+  knowledge_version_id: number;
+  parent_id?: number | null;
+  node_path: string;
+  node_no: number;
+  node_level: number;
+  node_type: string;
+  title: string;
+  summary_text?: string | null;
+  page_start?: number | null;
+  page_end?: number | null;
+  line_start?: number | null;
+  line_end?: number | null;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type KnowledgePoint = {
+  id: number;
+  knowledge_version_id: number;
+  chapter_node_id?: number | null;
+  chapter_title?: string | null;
+  point_code?: string | null;
+  point_name: string;
+  point_type: string;
+  importance_level?: number | null;
+  difficulty_level?: number | null;
+  mastery_level_hint?: string | null;
+  tags_json?: JsonRecord | null;
+  summary_text?: string | null;
+  sort_order: number;
+  evidence_count: number;
   created_at: string;
   updated_at: string;
 };

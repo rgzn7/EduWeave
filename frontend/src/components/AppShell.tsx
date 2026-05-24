@@ -8,6 +8,8 @@ export function AppShell() {
   const navigate = useNavigate();
   const clearSession = useAuthStore((state) => state.clearSession);
   const isDashboard = location.pathname === "/";
+  const isProcessPage = /^\/projects\/[^/]+$/.test(location.pathname);
+  const useQuietHeader = isDashboard || isProcessPage;
 
   return (
     <div className="min-h-screen bg-paper text-ink">
@@ -29,10 +31,16 @@ export function AppShell() {
             <PenLine size={18} />
             开始备课
           </Link>
-          <a className="flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold text-ink/58 transition hover:bg-white hover:text-ink" href="/#cases">
+          <Link
+            className={cn(
+              "flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold text-ink/58 transition hover:bg-white hover:text-ink",
+              location.pathname === "/history" && "bg-white text-ink shadow-panel",
+            )}
+            to="/history"
+          >
             <History size={18} />
-            历史备课
-          </a>
+            备课记录
+          </Link>
         </nav>
         <div className="mt-auto px-3 pb-4">
           <button
@@ -53,7 +61,7 @@ export function AppShell() {
         <header
           className={cn(
             "sticky top-0 z-10 flex h-14 items-center bg-paper/88 px-4 backdrop-blur lg:px-8",
-            isDashboard ? "border-b-0 lg:hidden" : "border-b border-line",
+            useQuietHeader ? "border-b-0 lg:hidden" : "border-b border-line",
           )}
         >
           <div className="flex items-center gap-3">

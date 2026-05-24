@@ -16,6 +16,40 @@ body {
   margin: 0;
 }
 
+.process-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 1.5rem;
+}
+
+.process-reveal {
+  animation: process-reveal 360ms ease-out both;
+}
+
+@keyframes process-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (min-width: 1536px) {
+  .process-layout {
+    grid-template-columns: minmax(0, 1fr) 360px;
+  }
+}
+
+@media (max-width: 760px) {
+  .process-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
 button,
 input,
 select,

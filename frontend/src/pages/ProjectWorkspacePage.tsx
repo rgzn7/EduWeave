@@ -1,35 +1,61 @@
-import { FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
   BookOpen,
-  Brain,
-  ChevronLeft,
-  CircleDot,
-  ClipboardList,
+  Check,
+  Circle,
+  ExternalLink,
   FileText,
-  Layers,
   Loader2,
-  Play,
-  RefreshCw,
+  Sparkles,
+  Target,
   Upload,
   Wand2,
   type LucideIcon,
 } from "lucide-react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorNotice } from "../components/ErrorNotice";
-import { ProgressBar } from "../components/ProgressBar";
-import { StatusBadge } from "../components/StatusBadge";
-import { TaskTable } from "../components/TaskTable";
 import { isTaskActiveStatus } from "../hooks/useTaskPolling";
 import { api } from "../lib/api";
-import type { KnowledgeVersion, LearnerProfileVersion, ParseEvidenceSummary, ParseVersion, Task, TextbookVersion } from "../types";
-import { cn, formatDate, getErrorMessage, toNumberId } from "../utils";
+import type {
+  CoursewareResult,
+  CoverageReport,
+  GenerationBatch,
+  JsonRecord,
+  KnowledgeChapter,
+  KnowledgePoint,
+  KnowledgeVersion,
+  LearnerProfileFile,
+  LearnerProfileVersion,
+  LearnerProfileVersionDetail,
+  PageResult,
+  PaperResult,
+  ParseEvidenceSummary,
+  ParseVersion,
+  Project,
+  Task,
+  TextbookVersion,
+} from "../types";
+import { cn, getErrorMessage, toNumberId } from "../utils";
 
 const READY_STATUS = "ready";
 const SUCCESS_STATUS = "success";
 const CONFIRMED_STATUS = "confirmed";
+const PROCESS_STEP_COUNT = 5;
+
+type ProcessState = "complete" | "current" | "waiting";
+
+type ActionConfig = {
+  title: string;
+  message: string;
+  buttonLabel?: string;
+  buttonIcon?: LucideIcon;
+  disabled?: boolean;
+  loading?: boolean;
+  onClick?: () => void;
+};
 
 function latestById<T extends { id: number }>(items: T[] | undefined) {
   return [...(items ?? [])].sort((a, b) => b.id - a.id)[0];
@@ -52,387 +78,465 @@ function isConfirmedParseVersion(parseVersion?: ParseVersion) {
   return parseVersion?.parse_status === SUCCESS_STATUS && parseVersion.review_status === CONFIRMED_STATUS;
 }
 
-function isReadyProfileVersion(profileVersion?: LearnerProfileVersion) {
+function isReadyProfileVersion(profileVersion?: LearnerProfileVersion | LearnerProfileVersionDetail) {
   return profileVersion?.extract_status === SUCCESS_STATUS && isReadyVersion(profileVersion);
 }
 
-function describeTask(task?: Task) {
-  if (!task) {
-    return "暂无任务";
-  }
-  return `${task.module_code} / ${task.task_type}`;
+function isCompleteStatus(status?: string | null) {
+  return ["success", "completed", "complete", "ready", "done"].includes(String(status ?? "").toLowerCase());
 }
 
-function QueryError({ error, title }: { error: unknown; title: string }) {
-  if (!error) {
-    return null;
-  }
-  return <ErrorNotice title={title} message={getErrorMessage(error)} />;
-}
-
-function ActionHint({ reason }: { reason?: string | null }) {
-  if (!reason) {
-    return null;
-  }
-  return (
-    <div className="flex items-start gap-2 rounded-md border border-line bg-paper/70 px-3 py-2 text-xs font-semibold text-ink/55">
-      <CircleDot className="mt-0.5 shrink-0" size={14} />
-      <span>{reason}</span>
-    </div>
-  );
-}
-
-function SelectRow<T extends { id: number }>({
-  items,
-  selectedId,
-  onChange,
-  renderLabel,
-}: {
-  items: T[];
-  selectedId: number | null;
-  onChange: (id: number) => void;
-  renderLabel: (item: T) => string;
-}) {
-  if (!items.length) {
-    return null;
-  }
-  return (
-    <select className="field" value={selectedId ?? ""} onChange={(event) => onChange(Number(event.target.value))}>
-      {items.map((item) => (
-        <option key={item.id} value={item.id}>
-          {renderLabel(item)}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-function VersionList<T extends { id: number; version_no?: number; created_at: string; updated_at: string }>({
-  items,
-  title,
-  selectedId,
-  onSelect,
-  renderStatus,
-  renderMeta,
-  renderTitle,
-}: {
-  items: T[];
-  title: string;
-  selectedId: number | null;
-  onSelect: (id: number) => void;
-  renderStatus: (item: T) => string | null | undefined;
-  renderMeta?: (item: T) => string;
-  renderTitle?: (item: T) => string;
-}) {
-  if (!items.length) {
-    return <EmptyState title={`暂无${title}`} />;
-  }
-  return (
-    <div className="divide-y divide-line rounded-md border border-line">
-      {items.map((item) => (
-        <button
-          className={cn(
-            "flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition hover:bg-paper",
-            selectedId === item.id ? "bg-accent/10" : "bg-white",
-          )}
-          key={item.id}
-          onClick={() => onSelect(item.id)}
-          type="button"
-        >
-          <div className="min-w-0">
-            <div className="truncate text-sm font-bold">{renderTitle?.(item) ?? `${title} #${item.version_no ?? item.id}`}</div>
-            <div className="mt-1 text-xs text-ink/50">{renderMeta?.(item) ?? formatDate(item.updated_at)}</div>
-          </div>
-          <StatusBadge status={renderStatus(item)} />
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function WorkflowSection({
-  icon: Icon,
-  iconTone,
-  title,
-  subtitle,
-  status,
-  task,
-  children,
-}: {
-  icon: LucideIcon;
-  iconTone: string;
-  title: string;
-  subtitle: string;
-  status?: string | null;
-  task?: Task;
-  children: ReactNode;
-}) {
-  return (
-    <section className="panel overflow-hidden">
-      <div className="panel-header">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-md", iconTone)}>
-            <Icon size={20} />
-          </div>
-          <div className="min-w-0">
-            <h2 className="truncate text-lg font-bold">{title}</h2>
-            <div className="truncate text-sm text-ink/55">{subtitle}</div>
-          </div>
-        </div>
-        {status ? <StatusBadge status={status} /> : null}
-      </div>
-      <div className="grid gap-5 p-5 xl:grid-cols-[minmax(0,1fr)_320px]">
-        <div className="space-y-5">{children}</div>
-        <RecentTaskCard task={task} />
-      </div>
-    </section>
-  );
-}
-
-function RecentTaskCard({ task }: { task?: Task }) {
-  return (
-    <aside className="rounded-md border border-line bg-paper/60 p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <div className="label">最近任务</div>
-          <div className="mt-1 text-sm font-bold text-ink">{task ? `#${task.id}` : "-"}</div>
-        </div>
-        {task ? <StatusBadge status={task.task_status} /> : <span className="text-xs font-semibold text-ink/35">无任务</span>}
-      </div>
-      <div className="mt-3 text-xs text-ink/55">{describeTask(task)}</div>
-      {task ? (
-        <>
-          <div className="mt-4">
-            <ProgressBar value={task.progress_percent} />
-          </div>
-          {task.last_error_message ? (
-            <div className="mt-3 line-clamp-3 text-xs font-semibold text-coral">{task.last_error_message}</div>
-          ) : null}
-          <Link className="btn btn-secondary mt-4 h-9 w-full text-xs" to={`/tasks/${task.id}`}>
-            任务详情
-            <ArrowRight size={14} />
-          </Link>
-        </>
-      ) : null}
-    </aside>
-  );
-}
-
-function BaselineRow({
-  label,
-  value,
-  status,
-  ready,
-}: {
-  label: string;
-  value?: string | number | null;
-  status?: string | null;
-  ready: boolean;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-3 border-b border-line pb-3 last:border-0 last:pb-0">
-      <div className="min-w-0">
-        <div className="text-xs font-semibold text-ink/45">{label}</div>
-        <div className="mt-1 truncate text-sm font-bold text-ink">{value ?? "-"}</div>
-      </div>
-      <StatusBadge status={ready ? READY_STATUS : status ?? "pending"} />
-    </div>
-  );
-}
-
-function displayMetric(value: unknown) {
-  if (value === undefined || value === null || value === "") {
-    return "-";
-  }
-  if (typeof value === "boolean") {
-    return value ? "是" : "否";
-  }
-  return String(value);
-}
-
-function recordEntries(value: unknown) {
+function valueAsRecord(value: unknown): JsonRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return value as JsonRecord;
+}
+
+function stringValue(value: unknown) {
+  if (typeof value === "string" && value.trim()) {
+    return value.trim();
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+  return "";
+}
+
+function fileNameFrom(source: unknown, fallback?: string | null) {
+  const record = valueAsRecord(source);
+  const candidates = [
+    record?.original_filename,
+    record?.filename,
+    record?.file_name,
+    record?.name,
+    record?.object_key,
+    record?.key,
+    fallback,
+  ];
+  return candidates.map(stringValue).find(Boolean) ?? "已上传文件";
+}
+
+function extractTagItems(value: unknown): string[] {
+  if (!value) {
     return [];
   }
-  return Object.entries(value as Record<string, unknown>).filter(([, item]) => item !== undefined && item !== null && item !== "");
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => extractTagItems(item)).filter(Boolean);
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    return [String(value)];
+  }
+  const record = valueAsRecord(value);
+  if (!record) {
+    return [];
+  }
+  const preferred = record.items ?? record.tags ?? record.values ?? record.list;
+  if (preferred) {
+    return extractTagItems(preferred);
+  }
+  return Object.values(record)
+    .flatMap((item) => extractTagItems(item))
+    .filter(Boolean);
 }
 
-function EvidenceMetricGrid({ entries }: { entries: [string, unknown][] }) {
-  if (!entries.length) {
-    return <div className="text-sm text-ink/45">等待后端 evidence-summary 接口返回统计。</div>;
+function uniqueItems(items: string[], limit = 5) {
+  return [...new Set(items.map((item) => item.trim()).filter(Boolean))].slice(0, limit);
+}
+
+function scoreLabel(score?: number | null) {
+  if (score === undefined || score === null) {
+    return "已完成分析";
+  }
+  if (score >= 85) {
+    return `基础扎实，约 ${score} 分`;
+  }
+  if (score >= 70) {
+    return `中等偏上，约 ${score} 分`;
+  }
+  if (score >= 60) {
+    return `基础待稳固，约 ${score} 分`;
+  }
+  return `需要重点帮扶，约 ${score} 分`;
+}
+
+function displayCount(value: number | null | undefined, fallback = "-") {
+  return value === undefined || value === null ? fallback : String(value);
+}
+
+function stripKnownFileExtension(value: string) {
+  return value.replace(/\.(pdf|docx?|pptx?)$/i, "");
+}
+
+function StepStatusIcon({ state }: { state: ProcessState }) {
+  if (state === "complete") {
+    return (
+      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-ink text-white">
+        <Check size={14} strokeWidth={2.4} />
+      </span>
+    );
+  }
+  if (state === "current") {
+    return (
+      <span className="flex h-6 w-6 items-center justify-center rounded-full border border-ink/15 bg-white">
+        <span className="h-2.5 w-2.5 rounded-full bg-ink" />
+      </span>
+    );
   }
   return (
-    <div className="grid gap-3 md:grid-cols-2">
-      {entries.map(([key, value]) => (
-        <div className="rounded-md border border-line bg-white px-3 py-2" key={key}>
-          <div className="text-xs font-semibold text-ink/45">{key}</div>
-          <div className="mt-1 break-words text-sm font-bold text-ink">{displayMetric(value)}</div>
+    <span className="flex h-6 w-6 items-center justify-center rounded-full border border-line bg-[#f5f5f5] text-ink/25">
+      <Circle size={8} fill="currentColor" />
+    </span>
+  );
+}
+
+function ProcessStepCard({
+  state,
+  icon: Icon,
+  title,
+  waitingText,
+  currentText,
+  children,
+}: {
+  state: ProcessState;
+  icon: LucideIcon;
+  title: string;
+  waitingText: string;
+  currentText?: string;
+  children: ReactNode;
+}) {
+  const isOpen = state === "complete";
+
+  return (
+    <article className={cn("process-reveal relative rounded-[18px] border bg-white p-5 shadow-panel", state === "waiting" ? "border-line/70 opacity-72" : "border-line")}>
+      <div className="flex items-start gap-4">
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#f4f4f4] text-ink">
+          <Icon size={21} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold tracking-[-0.01em] text-ink">{title}</h2>
+            {state === "current" ? <Loader2 className="animate-spin text-ink/45" size={16} /> : null}
+          </div>
+          {!isOpen ? <p className="mt-2 text-sm leading-6 text-ink/48">{state === "current" ? currentText ?? waitingText : waitingText}</p> : null}
+          {isOpen ? <div className="mt-4">{children}</div> : null}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function ProcessTimeline({ children }: { children: ReactNode }) {
+  return (
+    <div className="relative space-y-4">
+      <div className="absolute left-3 top-4 hidden h-[calc(100%-2rem)] w-px bg-line md:block" />
+      {children}
+    </div>
+  );
+}
+
+function FilePill({ icon: Icon, label, fileName }: { icon: LucideIcon; label: string; fileName: string }) {
+  return (
+    <div className="flex min-w-0 items-center gap-3 rounded-2xl border border-line bg-[#fbfbfb] px-4 py-3">
+      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-ink shadow-[0_1px_8px_rgba(17,17,17,0.04)]">
+        <Icon size={19} />
+      </div>
+      <div className="min-w-0">
+        <div className="text-sm font-semibold text-ink">{label}</div>
+        <div className="mt-1 truncate text-sm text-ink/52">{fileName}</div>
+      </div>
+    </div>
+  );
+}
+
+function SoftNotice({ children }: { children: ReactNode }) {
+  return <div className="rounded-2xl border border-line bg-[#f7f7f7] px-4 py-3 text-sm leading-6 text-ink/55">{children}</div>;
+}
+
+function MetricStrip({ items }: { items: Array<{ label: string; value: string | number }> }) {
+  return (
+    <div className="grid divide-y divide-line rounded-2xl border border-line bg-[#fbfbfb] md:grid-cols-4 md:divide-x md:divide-y-0">
+      {items.map((item) => (
+        <div className="px-4 py-3 text-center" key={item.label}>
+          <div className="text-xl font-semibold text-ink">{item.value}</div>
+          <div className="mt-1 text-xs text-ink/45">{item.label}</div>
         </div>
       ))}
     </div>
   );
 }
 
-function blockTypeEntries(summary?: ParseEvidenceSummary): [string, unknown][] {
-  if (summary?.block_type_counts?.length) {
-    return summary.block_type_counts.map((item) => [item.block_type, item.count]);
+function ChipList({ items, emptyText }: { items: string[]; emptyText: string }) {
+  if (!items.length) {
+    return <span className="text-sm text-ink/45">{emptyText}</span>;
   }
-  return recordEntries(summary?.block_type_stats);
+  return (
+    <div className="flex flex-wrap gap-2">
+      {items.map((item) => (
+        <span className="rounded-full bg-[#f1f1f1] px-3 py-1 text-xs font-medium text-ink/64" key={item}>
+          {item}
+        </span>
+      ))}
+    </div>
+  );
 }
 
-function mediaEntries(summary?: ParseEvidenceSummary): [string, unknown][] {
-  const volume = summary?.volume;
-  if (volume) {
-    return [
-      ["图片类 Block", volume.image_block_count],
-      ["表格类 Block", volume.table_block_count],
-      ["公式类 Block", volume.equation_block_count],
-      ["带资源 Block", volume.asset_block_count],
-      ["带坐标 Block", volume.bbox_block_count],
-    ];
-  }
-  return recordEntries(summary?.media_stats);
-}
-
-function mineruParameterEntries(summary?: ParseEvidenceSummary): [string, unknown][] {
-  const params = summary?.mineru_parameters;
-  if (params) {
-    return [
-      ["策略编码", params.strategy_code],
-      ["模型版本", params.model_version],
-      ["启用 OCR", params.is_ocr],
-      ["启用公式解析", params.enable_formula],
-      ["启用表格解析", params.enable_table],
-    ];
-  }
-  return recordEntries(summary?.mineru_options);
-}
-
-function evidenceSampleValue(item: Record<string, unknown>, primaryKey: string, fallbackKey?: string) {
-  const value = item[primaryKey];
-  if (value !== undefined && value !== null && value !== "") {
-    return value;
-  }
-  return fallbackKey ? item[fallbackKey] : undefined;
-}
-
-function ParseEvidencePanel({
+function ParseSummaryCard({
   parseVersion,
   summary,
   isLoading,
-  error,
 }: {
   parseVersion?: ParseVersion;
   summary?: ParseEvidenceSummary;
   isLoading: boolean;
-  error: unknown;
 }) {
-  if (!parseVersion) {
-    return <EmptyState title="暂无解析证据" description="选择或生成解析版本后，这里会展示 MinerU 解析证据摘要。" />;
-  }
-
-  const sampleEvidence = (summary?.sample_blocks ?? summary?.sample_evidence ?? []) as Array<Record<string, unknown>>;
   const volume = summary?.volume;
-  const baseRows: [string, unknown][] = [
-    ["解析版本", `#${summary?.parse_version_id ?? parseVersion.id}`],
-    ["解析策略", summary?.strategy_code ?? parseVersion.strategy_code],
-    ["MinerU 模型", summary?.mineru_model ?? summary?.mineru_parameters?.model_version ?? "等待后端接口"],
-    ["解析状态", summary?.parse_status ?? parseVersion.parse_status],
-    ["复核状态", summary?.review_status ?? parseVersion.review_status],
-  ];
-  const scaleRows: [string, unknown][] = [
-    ["页数", volume?.page_count ?? summary?.page_count ?? parseVersion.page_count],
-    ["已解析页数", volume?.parsed_page_count],
-    ["Block 总数", volume?.block_count ?? summary?.block_count],
-    ["Issue 数", volume?.issue_count ?? summary?.issue_count ?? parseVersion.issue_count],
-  ];
-  const unavailable = !isLoading && !summary;
+  const sampleBlocks = summary?.sample_blocks ?? [];
 
   return (
-    <section className="rounded-md border border-line bg-paper/60 p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="label">解析证据摘要</div>
-          <h3 className="mt-1 text-sm font-bold text-ink">MinerU 结构化能力展示</h3>
-        </div>
-        <StatusBadge status={summary?.parse_status ?? parseVersion.parse_status} />
-      </div>
-      {isLoading ? <div className="mt-3 text-xs font-semibold text-ink/45">正在读取 evidence-summary...</div> : null}
-      {unavailable ? (
-        <div className="mt-3 rounded-md border border-dashed border-line bg-white px-3 py-2 text-xs font-semibold leading-5 text-ink/50">
-          等待后端 evidence-summary 接口；当前仅展示解析版本基础信息，不展示虚构的 block、图片、表格或公式统计。
-          {error ? <span className="block text-coral">接口返回：{getErrorMessage(error)}</span> : null}
-        </div>
-      ) : null}
-      <div className="mt-4 grid gap-4 xl:grid-cols-2">
-        <div>
-          <div className="mb-2 text-xs font-semibold text-ink/45">版本基础信息</div>
-          <EvidenceMetricGrid entries={baseRows} />
-        </div>
-        <div>
-          <div className="mb-2 text-xs font-semibold text-ink/45">规模统计</div>
-          <EvidenceMetricGrid entries={scaleRows} />
-        </div>
-        <div>
-          <div className="mb-2 text-xs font-semibold text-ink/45">Block 类型统计</div>
-          <EvidenceMetricGrid entries={blockTypeEntries(summary)} />
-        </div>
-        <div>
-          <div className="mb-2 text-xs font-semibold text-ink/45">多媒体与资源统计</div>
-          <EvidenceMetricGrid entries={mediaEntries(summary)} />
-        </div>
-      </div>
-      <div className="mt-4">
-        <div className="mb-2 text-xs font-semibold text-ink/45">MinerU 参数摘要</div>
-        <EvidenceMetricGrid entries={mineruParameterEntries(summary)} />
-      </div>
-      <div className="mt-4">
-        <div className="mb-2 text-xs font-semibold text-ink/45">示例证据</div>
-        {sampleEvidence.length ? (
-          <div className="space-y-2">
-            {sampleEvidence.slice(0, 5).map((item, index) => (
-              <div
-                className="rounded-md border border-line bg-white px-3 py-2 text-sm"
-                key={`${evidenceSampleValue(item, "parse_block_id", "block_id") ?? evidenceSampleValue(item, "block_no") ?? index}`}
-              >
-                <div className="flex flex-wrap gap-2 text-xs font-semibold text-ink/50">
-                  <span>页码 {displayMetric(evidenceSampleValue(item, "page_no"))}</span>
-                  <span>Block {displayMetric(evidenceSampleValue(item, "block_no", "parse_block_id"))}</span>
-                  <span>类型 {displayMetric(evidenceSampleValue(item, "block_type"))}</span>
-                  <span>资源 {displayMetric(evidenceSampleValue(item, "asset_file_id", "resource_file_id"))}</span>
-                </div>
-                <div className="mt-1 line-clamp-2 break-words text-ink/70">
-                  {displayMetric(evidenceSampleValue(item, "text_excerpt", "text_snippet"))}
-                </div>
+    <div className="space-y-3">
+      <MetricStrip
+        items={[
+          { label: "页数", value: displayCount(volume?.page_count ?? summary?.page_count ?? parseVersion?.page_count) },
+          { label: "图片", value: displayCount(volume?.image_block_count) },
+          { label: "表格", value: displayCount(volume?.table_block_count) },
+          { label: "公式", value: displayCount(volume?.equation_block_count) },
+        ]}
+      />
+      {summary ? (
+        <div className="space-y-2 rounded-2xl border border-line bg-[#fbfbfb] p-3">
+          {sampleBlocks.slice(0, 2).map((block) => (
+            <div className="flex gap-3 rounded-xl bg-white px-3 py-2 text-sm text-ink/62" key={block.parse_block_id}>
+              <FileText className="mt-0.5 shrink-0 text-ink/38" size={16} />
+              <div className="line-clamp-2">
+                {block.text_excerpt || `第 ${block.page_no} 页 ${block.block_type || "内容"} 已完成结构化识别。`}
               </div>
-            ))}
-          </div>
-        ) : (
-          <div className="text-sm text-ink/45">等待后端返回页码、block 编号、文本片段与资源文件 ID。</div>
-        )}
-      </div>
-    </section>
+            </div>
+          ))}
+          {!sampleBlocks.length ? <div className="text-sm text-ink/45">教材结构已经完成识别，证据片段正在同步。</div> : null}
+        </div>
+      ) : (
+        <SoftNotice>{isLoading ? "正在读取教材理解结果。" : "教材理解结果已完成，结构化证据正在同步。"}</SoftNotice>
+      )}
+    </div>
   );
 }
 
-function UploadError({ error, title }: { error: unknown; title: string }) {
-  if (!error) {
-    return null;
+function LearnerSummaryCard({
+  detail,
+  fallback,
+  isLoading,
+}: {
+  detail?: LearnerProfileVersionDetail;
+  fallback?: LearnerProfileVersion;
+  isLoading: boolean;
+}) {
+  const records = detail?.records ?? [];
+  const targetRecord = records[0];
+  const weaknesses = uniqueItems(records.flatMap((record) => extractTagItems(record.weakness_tags_json)), 4);
+  const habits = uniqueItems(records.flatMap((record) => [...extractTagItems(record.habit_tags_json), ...extractTagItems(record.behavior_traits_json)]), 4);
+  const timePlans = uniqueItems(records.flatMap((record) => extractTagItems(record.time_plan_json)), 3);
+
+  if (!detail && fallback?.summary_text) {
+    return <SoftNotice>{fallback.summary_text}</SoftNotice>;
   }
-  return <ErrorNotice title={title} message={getErrorMessage(error)} />;
+
+  if (!detail) {
+    return <SoftNotice>{isLoading ? "正在读取学情分析结果。" : "学情分析已完成，摘要正在同步。"}</SoftNotice>;
+  }
+
+  return (
+    <div className="grid gap-3 md:grid-cols-2">
+      <div className="rounded-2xl border border-line bg-[#fbfbfb] p-4">
+        <div className="text-xs font-medium text-ink/42">学生基础</div>
+        <div className="mt-2 text-sm font-semibold text-ink">{scoreLabel(targetRecord?.score_value)}</div>
+      </div>
+      <div className="rounded-2xl border border-line bg-[#fbfbfb] p-4">
+        <div className="text-xs font-medium text-ink/42">薄弱点</div>
+        <div className="mt-2">
+          <ChipList items={weaknesses} emptyText="未识别到明确薄弱点" />
+        </div>
+      </div>
+      <div className="rounded-2xl border border-line bg-[#fbfbfb] p-4">
+        <div className="text-xs font-medium text-ink/42">学习习惯</div>
+        <div className="mt-2">
+          <ChipList items={habits} emptyText="暂无学习习惯摘要" />
+        </div>
+      </div>
+      <div className="rounded-2xl border border-line bg-[#fbfbfb] p-4">
+        <div className="text-xs font-medium text-ink/42">课时安排</div>
+        <div className="mt-2">
+          <ChipList items={timePlans} emptyText="暂无课时安排摘要" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KnowledgeSummaryCard({
+  knowledgeVersion,
+  chapters,
+  points,
+  isLoading,
+}: {
+  knowledgeVersion?: KnowledgeVersion;
+  chapters?: KnowledgeChapter[];
+  points?: PageResult<KnowledgePoint>;
+  isLoading: boolean;
+}) {
+  const pointItems = points?.items ?? [];
+  const keyPoints = uniqueItems(pointItems.map((point) => point.point_name), 6);
+
+  return (
+    <div className="space-y-3">
+      <MetricStrip
+        items={[
+          { label: "章节", value: displayCount(chapters?.length ?? knowledgeVersion?.chapter_count) },
+          { label: "知识点", value: displayCount(points?.pagination?.total_count ?? knowledgeVersion?.point_count) },
+          { label: "重点内容", value: keyPoints.length || "-" },
+          { label: "证据来源", value: pointItems.reduce((total, point) => total + (point.evidence_count ?? 0), 0) || "-" },
+        ]}
+      />
+      <div className="rounded-2xl border border-line bg-[#fbfbfb] p-4">
+        <div className="text-xs font-medium text-ink/42">重点知识</div>
+        <div className="mt-3">
+          <ChipList items={keyPoints} emptyText={isLoading ? "正在读取知识点" : "暂无知识点摘要"} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ResourceChecklist({
+  batch,
+  lessonPlans,
+  paperResults,
+  coursewareResults,
+  coverageReports,
+}: {
+  batch?: GenerationBatch;
+  lessonPlans?: PageResult<{ id: number }>;
+  paperResults?: PageResult<PaperResult>;
+  coursewareResults?: PageResult<CoursewareResult>;
+  coverageReports?: PageResult<CoverageReport>;
+}) {
+  const paperSceneCount = new Set((paperResults?.items ?? []).map((item) => item.scene_type)).size;
+  const hasCoverage = (coverageReports?.items ?? []).some((item) => isCompleteStatus(item.report_status));
+  const lessonCount = lessonPlans?.pagination?.total_count ?? 0;
+  const coursewareCount = coursewareResults?.pagination?.total_count ?? 0;
+
+  const rows = [
+    { label: "课程方案", value: batch?.curriculum_plan_id ? "已生成" : "准备中" },
+    { label: "教案", value: lessonCount ? `${lessonCount} 份` : "准备中" },
+    { label: "PPT 课件", value: coursewareCount ? `${coursewareCount} 份` : lessonCount ? "可按课生成" : "等待教案" },
+    { label: "配套测练", value: paperSceneCount ? `${paperSceneCount} 类` : batch?.curriculum_plan_id ? "可按场景生成" : "等待课程方案" },
+    { label: "覆盖报告", value: hasCoverage ? "已完成" : "准备中" },
+  ];
+
+  return (
+    <div className="divide-y divide-line">
+      {rows.map((row) => (
+        <div className="flex items-center justify-between gap-4 py-3 text-sm" key={row.label}>
+          <span className="text-ink/62">{row.label}</span>
+          <span className="font-semibold text-ink">{row.value}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function GeneratedResourcesSummary({
+  batch,
+  lessonPlans,
+  paperResults,
+  coursewareResults,
+  coverageReports,
+}: {
+  batch?: GenerationBatch;
+  lessonPlans?: PageResult<{ id: number }>;
+  paperResults?: PageResult<PaperResult>;
+  coursewareResults?: PageResult<CoursewareResult>;
+  coverageReports?: PageResult<CoverageReport>;
+}) {
+  if (!batch) {
+    return <SoftNotice>整理好教学重点后，就可以生成课程方案和多课教案；PPT 课件与配套测练可在资源页按需生成。</SoftNotice>;
+  }
+
+  return (
+    <div className="rounded-2xl border border-line bg-[#fbfbfb] px-4 py-2">
+      <ResourceChecklist
+        batch={batch}
+        lessonPlans={lessonPlans}
+        paperResults={paperResults}
+        coursewareResults={coursewareResults}
+        coverageReports={coverageReports}
+      />
+    </div>
+  );
+}
+
+function CurrentActionPanel({
+  action,
+  batch,
+  lessonPlans,
+  paperResults,
+  coursewareResults,
+  coverageReports,
+}: {
+  action: ActionConfig;
+  batch?: GenerationBatch;
+  lessonPlans?: PageResult<{ id: number }>;
+  paperResults?: PageResult<PaperResult>;
+  coursewareResults?: PageResult<CoursewareResult>;
+  coverageReports?: PageResult<CoverageReport>;
+}) {
+  const ButtonIcon = action.buttonIcon ?? ArrowRight;
+
+  return (
+    <aside className="sticky top-8 space-y-4">
+      <section className="rounded-[18px] border border-line bg-white p-5 shadow-panel">
+        <div className="flex items-start gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[#f4f4f4] text-ink">
+            <Sparkles size={21} />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold text-ink">{action.title}</h2>
+            <p className="mt-2 text-sm leading-6 text-ink/55">{action.message}</p>
+          </div>
+        </div>
+        {action.buttonLabel ? (
+          <button
+            className="btn btn-primary mt-5 h-12 w-full rounded-full"
+            disabled={action.disabled || action.loading}
+            onClick={action.onClick}
+            type="button"
+          >
+            {action.loading ? <Loader2 className="animate-spin" size={17} /> : <ButtonIcon size={17} />}
+            {action.buttonLabel}
+          </button>
+        ) : null}
+        <div className="mt-5 border-t border-line pt-2">
+          <ResourceChecklist
+            batch={batch}
+            lessonPlans={lessonPlans}
+            paperResults={paperResults}
+            coursewareResults={coursewareResults}
+            coverageReports={coverageReports}
+          />
+        </div>
+      </section>
+    </aside>
+  );
+}
+
+function projectTitle(project?: Project, textbook?: TextbookVersion) {
+  return stripKnownFileExtension(textbook?.textbook_name || project?.name || "备课资源");
 }
 
 export function ProjectWorkspacePage() {
-  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const projectId = toNumberId(useParams().projectId);
-  const [textbookFile, setTextbookFile] = useState<File | null>(null);
-  const [textbookName, setTextbookName] = useState("");
-  const [profileFile, setProfileFile] = useState<File | null>(null);
-  const [profileTitle, setProfileTitle] = useState("");
-  const [batchName, setBatchName] = useState("第一轮课程规划");
-  const [courseCount, setCourseCount] = useState(12);
-  const [duration, setDuration] = useState(90);
+  const [visibleStepCount, setVisibleStepCount] = useState(1);
   const [selectedTextbookId, setSelectedTextbookId] = useState<number | null>(null);
   const [selectedProfileFileId, setSelectedProfileFileId] = useState<number | null>(null);
   const [selectedProfileVersionId, setSelectedProfileVersionId] = useState<number | null>(null);
@@ -443,13 +547,6 @@ export function ProjectWorkspacePage() {
     queryKey: ["project", projectId],
     queryFn: () => api.getProject(projectId),
     enabled: projectId > 0,
-  });
-
-  const dashboardQuery = useQuery({
-    queryKey: ["project-dashboard", projectId],
-    queryFn: () => api.getProjectDashboard(projectId),
-    enabled: projectId > 0,
-    refetchInterval: 10_000,
   });
 
   const textbooksQuery = useQuery({
@@ -476,6 +573,13 @@ export function ProjectWorkspacePage() {
     queryFn: () => api.listLearnerProfileVersions(projectId, selectedProfileFileId!),
     enabled: Boolean(projectId && selectedProfileFileId),
     refetchInterval: 8_000,
+  });
+
+  const profileDetailQuery = useQuery({
+    queryKey: ["learner-profile-version-detail", selectedProfileVersionId],
+    queryFn: () => api.getLearnerProfileVersion(selectedProfileVersionId!),
+    enabled: Boolean(selectedProfileVersionId),
+    retry: false,
   });
 
   const knowledgeVersionsQuery = useQuery({
@@ -571,11 +675,15 @@ export function ProjectWorkspacePage() {
     if (!selected || (readyVersion && selected.id !== readyVersion.id)) {
       setSelectedKnowledgeVersionId(preferred.id);
     }
-  }, [knowledgeVersions]);
+  }, [knowledgeVersions, selectedKnowledgeVersionId]);
 
   const selectedTextbook = useMemo(
     () => textbooks.find((item) => item.id === selectedTextbookId) ?? latestById(textbooks),
     [selectedTextbookId, textbooks],
+  );
+  const selectedProfileFile = useMemo(
+    () => learnerProfiles.find((item) => item.id === selectedProfileFileId) ?? latestById(learnerProfiles),
+    [learnerProfiles, selectedProfileFileId],
   );
   const selectedParseVersion = useMemo(
     () => parseVersions.find((item) => item.id === selectedParseVersionId) ?? latestById(parseVersions),
@@ -589,8 +697,49 @@ export function ProjectWorkspacePage() {
     () => knowledgeVersions.find((item) => item.id === selectedKnowledgeVersionId) ?? latestById(knowledgeVersions),
     [knowledgeVersions, selectedKnowledgeVersionId],
   );
-  const hasKnowledgeVersion = knowledgeVersions.length > 0;
-  const hasReadyKnowledgeVersion = knowledgeVersions.some(isReadyVersion);
+  const latestBatch = useMemo(() => latestById(generationBatches), [generationBatches]);
+
+  const knowledgeChaptersQuery = useQuery({
+    queryKey: ["knowledge-chapters", selectedKnowledgeVersion?.id],
+    queryFn: () => api.listKnowledgeChapters(selectedKnowledgeVersion!.id),
+    enabled: Boolean(selectedKnowledgeVersion?.id && isReadyVersion(selectedKnowledgeVersion)),
+    retry: false,
+  });
+
+  const knowledgePointsQuery = useQuery({
+    queryKey: ["knowledge-points", selectedKnowledgeVersion?.id, "phase2"],
+    queryFn: () => api.listKnowledgePoints(selectedKnowledgeVersion!.id, { page: 1, page_size: 20 }),
+    enabled: Boolean(selectedKnowledgeVersion?.id && isReadyVersion(selectedKnowledgeVersion)),
+    retry: false,
+  });
+
+  const lessonPlansQuery = useQuery({
+    queryKey: ["lesson-plans", latestBatch?.curriculum_plan_id, "phase2"],
+    queryFn: () => api.listLessonPlans(latestBatch!.curriculum_plan_id!, { page: 1, page_size: 100 }),
+    enabled: Boolean(latestBatch?.curriculum_plan_id),
+    retry: false,
+  });
+
+  const paperResultsQuery = useQuery({
+    queryKey: ["paper-results", latestBatch?.id, "phase2"],
+    queryFn: () => api.listPaperResults(latestBatch!.id, { page: 1, page_size: 100 }),
+    enabled: Boolean(latestBatch?.id),
+    retry: false,
+  });
+
+  const coursewareResultsQuery = useQuery({
+    queryKey: ["courseware-results", latestBatch?.id, "phase2"],
+    queryFn: () => api.listCoursewareResults(latestBatch!.id, { page: 1, page_size: 100 }),
+    enabled: Boolean(latestBatch?.id),
+    retry: false,
+  });
+
+  const coverageReportsQuery = useQuery({
+    queryKey: ["coverage-reports", latestBatch?.id, "phase2"],
+    queryFn: () => api.listCoverageReports(latestBatch!.id, { page: 1, page_size: 20 }),
+    enabled: Boolean(latestBatch?.id),
+    retry: false,
+  });
 
   const parsingTask = useMemo(
     () => latestTaskBy(tasks, (task) => task.module_code === "parsing" || task.task_type === "textbook_parse"),
@@ -604,8 +753,6 @@ export function ProjectWorkspacePage() {
     () => latestTaskBy(tasks, (task) => task.module_code === "knowledge" || task.task_type === "knowledge_extract"),
     [tasks],
   );
-  const knowledgeTaskActive = isTaskActiveStatus(knowledgeTask?.task_status);
-  const knowledgeActionLabel = hasKnowledgeVersion ? "重新抽取知识" : "抽取知识";
   const generationTask = useMemo(
     () =>
       latestTaskBy(tasks, (task) =>
@@ -614,9 +761,24 @@ export function ProjectWorkspacePage() {
     [tasks],
   );
 
+  const materialComplete = Boolean(selectedTextbook && selectedProfileFile);
+  const parseComplete = isConfirmedParseVersion(selectedParseVersion);
+  const profileComplete = isReadyProfileVersion(profileDetailQuery.data ?? selectedProfileVersion);
+  const knowledgeComplete = isReadyVersion(selectedKnowledgeVersion);
+  const generationActive = isTaskActiveStatus(generationTask?.task_status) || isTaskActiveStatus(latestBatch?.batch_status);
+  const generationComplete = isCompleteStatus(latestBatch?.batch_status);
+  const parseActive = isTaskActiveStatus(parsingTask?.task_status) || Boolean(selectedParseVersion && !parseComplete);
+  const profileActive = isTaskActiveStatus(profileTask?.task_status) || Boolean(selectedProfileVersion && !profileComplete);
+  const knowledgeActive = isTaskActiveStatus(knowledgeTask?.task_status) || Boolean(selectedKnowledgeVersion && !knowledgeComplete);
+
+  const materialState: ProcessState = materialComplete ? "complete" : "current";
+  const parseState: ProcessState = parseComplete ? "complete" : selectedTextbook ? "current" : "waiting";
+  const profileState: ProcessState = profileComplete ? "complete" : selectedProfileFile ? "current" : "waiting";
+  const knowledgeState: ProcessState = knowledgeComplete ? "complete" : parseComplete ? "current" : "waiting";
+  const generationState: ProcessState = generationComplete ? "complete" : knowledgeComplete && profileComplete ? "current" : "waiting";
+
   const invalidateWorkspace = () => {
     queryClient.invalidateQueries({ queryKey: ["project", projectId] });
-    queryClient.invalidateQueries({ queryKey: ["project-dashboard", projectId] });
     queryClient.invalidateQueries({ queryKey: ["textbooks", projectId] });
     queryClient.invalidateQueries({ queryKey: ["learner-profiles", projectId] });
     queryClient.invalidateQueries({ queryKey: ["tasks", projectId] });
@@ -631,24 +793,19 @@ export function ProjectWorkspacePage() {
     if (selectedProfileFileId) {
       queryClient.invalidateQueries({ queryKey: ["learner-profile-versions", projectId, selectedProfileFileId] });
     }
+    if (selectedProfileVersionId) {
+      queryClient.invalidateQueries({ queryKey: ["learner-profile-version-detail", selectedProfileVersionId] });
+    }
+    if (selectedKnowledgeVersion?.id) {
+      queryClient.invalidateQueries({ queryKey: ["knowledge-chapters", selectedKnowledgeVersion.id] });
+      queryClient.invalidateQueries({ queryKey: ["knowledge-points", selectedKnowledgeVersion.id] });
+    }
+    if (latestBatch?.id) {
+      queryClient.invalidateQueries({ queryKey: ["paper-results", latestBatch.id] });
+      queryClient.invalidateQueries({ queryKey: ["courseware-results", latestBatch.id] });
+      queryClient.invalidateQueries({ queryKey: ["coverage-reports", latestBatch.id] });
+    }
   };
-
-  const uploadTextbook = useMutation({
-    mutationFn: () =>
-      api.uploadTextbook(projectId, {
-        file: textbookFile!,
-        textbook_name: textbookName || textbookFile?.name,
-        set_as_current: true,
-      }),
-    onSuccess: (textbook) => {
-      setTextbookFile(null);
-      setTextbookName("");
-      setSelectedTextbookId(textbook.id);
-      setSelectedParseVersionId(null);
-      setSelectedKnowledgeVersionId(null);
-      invalidateWorkspace();
-    },
-  });
 
   const createParseTask = useMutation({
     mutationFn: () => api.createParseTask(selectedTextbook!.id),
@@ -663,25 +820,8 @@ export function ProjectWorkspacePage() {
     },
   });
 
-  const uploadProfile = useMutation({
-    mutationFn: () =>
-      api.uploadLearnerProfile(projectId, {
-        file: profileFile!,
-        title: profileTitle || profileFile?.name,
-        auto_extract: true,
-        set_as_current: true,
-      }),
-    onSuccess: (profile) => {
-      setProfileFile(null);
-      setProfileTitle("");
-      setSelectedProfileFileId(profile.id);
-      setSelectedProfileVersionId(null);
-      invalidateWorkspace();
-    },
-  });
-
   const createKnowledgeTask = useMutation({
-    mutationFn: () => api.createKnowledgeTask(selectedParseVersion!.id, { force_regenerate: hasReadyKnowledgeVersion }),
+    mutationFn: () => api.createKnowledgeTask(selectedParseVersion!.id, { force_regenerate: knowledgeComplete }),
     onSuccess: invalidateWorkspace,
   });
 
@@ -691,88 +831,133 @@ export function ProjectWorkspacePage() {
         project_id: projectId,
         knowledge_version_id: selectedKnowledgeVersion!.id,
         learner_profile_version_id: selectedProfileVersion!.id,
-        batch_name: batchName.trim(),
-        course_count: courseCount,
-        session_duration_minutes: duration,
+        batch_name: `${projectTitle(projectQuery.data, selectedTextbook)}备课资源`,
+        course_count: 12,
+        session_duration_minutes: 90,
       }),
-    onSuccess: (batch) => {
-      invalidateWorkspace();
-      navigate(`/projects/${projectId}/batches/${batch.id}`);
-    },
+    onSuccess: invalidateWorkspace,
   });
 
-  const uploadTextbookReason = !textbookFile ? "请选择 PDF 教材文件" : uploadTextbook.isPending ? "正在上传教材" : null;
-  const parseReason = !selectedTextbook ? "缺少教材版本" : createParseTask.isPending ? "正在创建解析任务" : null;
-  const confirmParseReason = !selectedParseVersion
-    ? "缺少解析版本"
-    : selectedParseVersion.parse_status !== SUCCESS_STATUS
-      ? `解析状态为 ${selectedParseVersion.parse_status}`
-      : selectedParseVersion.review_status === CONFIRMED_STATUS
-        ? "解析版本已确认"
-        : confirmParseVersion.isPending
-          ? "正在确认解析版本"
-          : null;
-  const uploadProfileReason = !profileFile ? "请选择学情 doc/docx 文件" : uploadProfile.isPending ? "正在上传学情" : null;
-  const knowledgeReason = !selectedParseVersion
-    ? "缺少解析版本"
-    : selectedParseVersion.parse_status !== SUCCESS_STATUS
-      ? `解析状态为 ${selectedParseVersion.parse_status}`
-      : selectedParseVersion.review_status !== CONFIRMED_STATUS
-        ? "请先确认解析版本"
-        : knowledgeTaskActive
-          ? "知识抽取任务运行中"
-          : createKnowledgeTask.isPending
-            ? "正在创建知识抽取任务"
-            : null;
-  const batchReason = !selectedKnowledgeVersion
-    ? "缺少知识版本"
-    : !isReadyVersion(selectedKnowledgeVersion)
-      ? "知识版本未就绪"
-      : !selectedProfileVersion
-        ? "缺少学情版本"
-        : !isReadyProfileVersion(selectedProfileVersion)
-          ? "学情版本未成功抽取"
-          : !batchName.trim()
-            ? "请输入批次名称"
-            : courseCount <= 0
-              ? "课次必须大于 0"
-              : duration <= 0
-                ? "课时分钟必须大于 0"
-                : createBatch.isPending
-                  ? "正在创建生成批次"
-                  : null;
-
-  function handleTextbookSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!uploadTextbookReason) {
-      uploadTextbook.mutate();
+  const action: ActionConfig = useMemo(() => {
+    if (!selectedTextbook || !selectedProfileFile) {
+      return {
+        title: "请先补齐材料",
+        message: "上传教材 PDF 和学情分析 DOCX 后，EduWeave 会开始理解教材和分析学情。",
+      };
     }
-  }
-
-  function handleProfileSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!uploadProfileReason) {
-      uploadProfile.mutate();
+    if (!selectedParseVersion || selectedParseVersion.parse_status !== SUCCESS_STATUS) {
+      return {
+        title: parseActive ? "正在理解教材" : "可以理解教材了",
+        message: parseActive ? "教材结构正在识别，完成后会展示页数、图表、公式和证据片段。" : "先让系统读懂教材结构，再继续整理知识点。",
+        buttonLabel: parseActive ? "正在理解教材" : "理解教材",
+        buttonIcon: parseActive ? Loader2 : BookOpen,
+        disabled: parseActive || createParseTask.isPending,
+        loading: createParseTask.isPending || parseActive,
+        onClick: () => createParseTask.mutate(),
+      };
     }
-  }
-
-  function handleBatchSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!batchReason) {
-      createBatch.mutate();
+    if (selectedParseVersion.review_status !== CONFIRMED_STATUS) {
+      return {
+        title: "请确认教材理解结果",
+        message: "确认后，系统会基于这份教材理解结果整理教学重点。",
+        buttonLabel: "确认教材理解结果",
+        buttonIcon: Check,
+        disabled: confirmParseVersion.isPending,
+        loading: confirmParseVersion.isPending,
+        onClick: () => confirmParseVersion.mutate(),
+      };
     }
-  }
+    if (!profileComplete) {
+      return {
+        title: profileActive ? "正在分析学情" : "等待学情分析",
+        message: "学情会用于调整讲解重点和练习难度，完成后继续整理教学重点。",
+        buttonLabel: profileActive ? "正在分析学情" : undefined,
+        buttonIcon: Loader2,
+        disabled: true,
+        loading: profileActive,
+      };
+    }
+    if (!knowledgeComplete) {
+      return {
+        title: knowledgeActive ? "正在整理教学重点" : "可以整理教学重点了",
+        message: "系统会把教材内容整理成章节、知识点和重点讲解线索。",
+        buttonLabel: knowledgeActive ? "正在整理教学重点" : "整理教学重点",
+        buttonIcon: knowledgeActive ? Loader2 : Target,
+        disabled: knowledgeActive || createKnowledgeTask.isPending,
+        loading: knowledgeActive || createKnowledgeTask.isPending,
+        onClick: () => createKnowledgeTask.mutate(),
+      };
+    }
+    if (generationActive) {
+      return {
+        title: "正在生成备课资源",
+        message: "课程方案、多课教案和覆盖报告正在准备中；PPT 课件与配套测练可在资源页按需生成。",
+        buttonLabel: "正在生成",
+        buttonIcon: Loader2,
+        disabled: true,
+        loading: true,
+      };
+    }
+    if (generationComplete && latestBatch) {
+      return {
+        title: "备课资源已生成",
+        message: "课程方案、教案和覆盖报告已准备好；PPT 可按课生成，测练可按场景生成。",
+        buttonLabel: "查看备课资源",
+        buttonIcon: ExternalLink,
+        onClick: () => window.location.assign(`/projects/${projectId}/batches/${latestBatch.id}`),
+      };
+    }
+    return {
+      title: latestBatch ? "可以重新生成" : "可以生成备课资源了",
+      message: "将基于教材、学情和教学重点生成课程方案和多课教案；PPT 课件与配套测练可在资源页按需生成。",
+      buttonLabel: "生成备课资源",
+      buttonIcon: Wand2,
+      disabled: createBatch.isPending,
+      loading: createBatch.isPending,
+      onClick: () => createBatch.mutate(),
+    };
+  }, [
+    confirmParseVersion,
+    createBatch,
+    createKnowledgeTask,
+    createParseTask,
+    generationActive,
+    generationComplete,
+    knowledgeActive,
+    knowledgeComplete,
+    latestBatch,
+    parseActive,
+    profileActive,
+    profileComplete,
+    projectId,
+    selectedParseVersion,
+    selectedProfileFile,
+    selectedTextbook,
+  ]);
 
-  const stats = dashboardQuery.data?.stats ?? {};
-  const statEntries = Object.entries(stats).slice(0, 4);
+  useEffect(() => {
+    setVisibleStepCount(1);
+    const timers = Array.from({ length: PROCESS_STEP_COUNT - 1 }, (_, index) =>
+      window.setTimeout(() => setVisibleStepCount(index + 2), (index + 1) * 420),
+    );
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [
+    projectId,
+    projectQuery.data?.id,
+    selectedTextbook?.id,
+    selectedProfileFile?.id,
+    selectedParseVersion?.id,
+    selectedKnowledgeVersion?.id,
+    latestBatch?.id,
+  ]);
 
   if (projectId <= 0) {
-    return <EmptyState title="项目地址无效" action={<Link className="btn btn-secondary" to="/">返回总览</Link>} />;
+    return <EmptyState title="地址无效" action={<Link className="btn btn-secondary" to="/">返回首页</Link>} />;
   }
 
   if (projectQuery.isLoading) {
     return (
-      <div className="flex h-[60vh] items-center justify-center text-sm text-ink/55">
+      <div className="flex h-[70vh] items-center justify-center text-sm text-ink/55">
         <Loader2 className="mr-2 animate-spin" size={17} />
         加载中
       </div>
@@ -780,371 +965,148 @@ export function ProjectWorkspacePage() {
   }
 
   if (projectQuery.error && !projectQuery.data) {
-    return <ErrorNotice title="项目详情获取失败" message={getErrorMessage(projectQuery.error)} />;
+    return <ErrorNotice title="页面加载失败" message={getErrorMessage(projectQuery.error)} />;
   }
 
   if (!projectQuery.data) {
-    return <EmptyState title="项目不存在" action={<Link className="btn btn-secondary" to="/">返回总览</Link>} />;
+    return <EmptyState title="没有找到这次备课" action={<Link className="btn btn-secondary" to="/">返回首页</Link>} />;
   }
 
+  const sourceTitle = projectTitle(projectQuery.data, selectedTextbook);
+
   return (
-    <div className="space-y-6">
-      <section className="flex flex-col justify-between gap-4 xl:flex-row xl:items-end">
-        <div>
-          <Link className="mb-4 inline-flex items-center gap-2 text-sm font-semibold text-ink/55 hover:text-ink" to="/">
-            <ChevronLeft size={16} />
-            项目总览
-          </Link>
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-3xl font-bold">{projectQuery.data.name}</h1>
-            <StatusBadge status={projectQuery.data.status} />
-          </div>
-          <div className="mt-2 flex flex-wrap gap-2 text-sm text-ink/55">
-            <span>{projectQuery.data.subject_code}</span>
-            <span>/</span>
-            <span>{projectQuery.data.grade_code}</span>
-            <span>/</span>
-            <span>{formatDate(projectQuery.data.updated_at)}</span>
-          </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          {statEntries.length ? (
-            statEntries.map(([key, value]) => (
-              <div className="min-w-28 rounded-lg border border-line bg-white px-4 py-3" key={key}>
-                <div className="label">{key}</div>
-                <div className="mt-1 text-xl font-bold">{String(value ?? "-")}</div>
-              </div>
-            ))
-          ) : (
-            <div className="min-w-28 rounded-lg border border-line bg-white px-4 py-3">
-              <div className="label">任务数</div>
-              <div className="mt-1 text-xl font-bold">{tasks.length}</div>
-            </div>
-          )}
-          <button className="btn btn-secondary" disabled={tasksQuery.isFetching} onClick={invalidateWorkspace} type="button">
-            <RefreshCw className={tasksQuery.isFetching ? "animate-spin" : ""} size={16} />
-            刷新
-          </button>
-        </div>
-      </section>
+    <div className="-mx-4 min-h-screen bg-[#fbfbfb] px-4 pb-10 pt-10 lg:-mx-8 lg:px-10 lg:pt-12">
+      <div className="mx-auto max-w-[1500px]">
+        <header className="mb-10">
+          <h1 className="line-clamp-2 max-w-5xl text-3xl font-semibold tracking-[-0.035em] text-ink md:text-4xl">{sourceTitle}</h1>
+        </header>
 
-      <QueryError error={dashboardQuery.error} title="项目看板获取失败" />
-
-      <div className="space-y-6">
-        <WorkflowSection
-          icon={BookOpen}
-          iconTone="bg-accent/10 text-accent"
-          title="教材上传与解析"
-          subtitle={selectedTextbook?.textbook_name ?? "未选择教材版本"}
-          status={selectedParseVersion?.review_status ?? selectedTextbook?.parse_status}
-          task={parsingTask}
-        >
-          <QueryError error={textbooksQuery.error} title="教材列表获取失败" />
-          <QueryError error={parseVersionsQuery.error} title="解析版本获取失败" />
-          <form className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]" onSubmit={handleTextbookSubmit}>
-            <input className="field" placeholder="教材名称" value={textbookName} onChange={(event) => setTextbookName(event.target.value)} />
-            <input
-              className="file-field"
-              type="file"
-              accept="application/pdf,.pdf"
-              onChange={(event) => setTextbookFile(event.target.files?.[0] ?? null)}
-            />
-            <button className="btn btn-primary" disabled={Boolean(uploadTextbookReason)} type="submit">
-              {uploadTextbook.isPending ? <Loader2 className="animate-spin" size={17} /> : <Upload size={17} />}
-              上传教材
-            </button>
-          </form>
-          <ActionHint reason={uploadTextbookReason} />
-          <UploadError error={uploadTextbook.error} title="教材上传失败" />
-
-          <div className="grid gap-4 2xl:grid-cols-[280px_1fr]">
-            <div className="space-y-3">
-              <div className="label">教材版本</div>
-              <SelectRow<TextbookVersion>
-                items={textbooks}
-                selectedId={selectedTextbookId}
-                onChange={(id) => {
-                  setSelectedTextbookId(id);
-                  setSelectedParseVersionId(null);
-                  setSelectedKnowledgeVersionId(null);
-                }}
-                renderLabel={(item) => `v${item.version_no} ${item.textbook_name}`}
-              />
-              <button
-                className="btn btn-secondary w-full"
-                disabled={Boolean(parseReason)}
-                onClick={() => {
-                  if (!parseReason) {
-                    createParseTask.mutate();
-                  }
-                }}
-                type="button"
-              >
-                {createParseTask.isPending ? <Loader2 className="animate-spin" size={17} /> : <Play size={17} />}
-                发起解析
-              </button>
-              <ActionHint reason={parseReason} />
-              <UploadError error={createParseTask.error} title="解析任务创建失败" />
-            </div>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="label">解析版本</div>
-                <button
-                  className="btn btn-secondary h-8 px-3 text-xs"
-                  disabled={Boolean(confirmParseReason)}
-                  onClick={() => {
-                    if (!confirmParseReason) {
-                      confirmParseVersion.mutate();
-                    }
-                  }}
-                  type="button"
+        <div className="process-layout">
+          <main className="space-y-6">
+            <ProcessTimeline>
+              {visibleStepCount >= 1 ? (
+                <div className="relative md:pl-10">
+                <div className="absolute left-0 top-5 hidden md:block">
+                  <StepStatusIcon state={materialState} />
+                </div>
+                <ProcessStepCard
+                  state={materialState}
+                  icon={Upload}
+                  title="上传材料"
+                  waitingText="请上传教材 PDF 和学情分析 DOCX。"
+                  currentText="请先补齐教材 PDF 和学情分析 DOCX。"
                 >
-                  {confirmParseVersion.isPending ? <Loader2 className="animate-spin" size={14} /> : null}
-                  确认解析
-                </button>
-              </div>
-              <VersionList<ParseVersion>
-                items={parseVersions}
-                title="解析"
-                selectedId={selectedParseVersionId}
-                onSelect={(id) => {
-                  setSelectedParseVersionId(id);
-                  setSelectedKnowledgeVersionId(null);
-                }}
-                renderStatus={(item) => item.review_status || item.parse_status}
-                renderMeta={(item) => `${item.strategy_code} / ${item.page_count ?? "-"} 页 / ${formatDate(item.updated_at)}`}
-              />
-              <ActionHint reason={confirmParseReason} />
-              <UploadError error={confirmParseVersion.error} title="解析版本确认失败" />
-            </div>
-          </div>
-          <ParseEvidencePanel
-            parseVersion={selectedParseVersion}
-            summary={parseEvidenceSummaryQuery.data}
-            isLoading={parseEvidenceSummaryQuery.isLoading}
-            error={parseEvidenceSummaryQuery.error}
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    {selectedTextbook ? (
+                      <FilePill icon={BookOpen} label="教材 PDF" fileName={fileNameFrom(selectedTextbook.source_file, selectedTextbook.textbook_name)} />
+                    ) : (
+                      <SoftNotice>还没有教材 PDF。</SoftNotice>
+                    )}
+                    {selectedProfileFile ? (
+                      <FilePill icon={FileText} label="学情 DOCX" fileName={fileNameFrom(selectedProfileFile.source_file, selectedProfileFile.title)} />
+                    ) : (
+                      <SoftNotice>还没有学情分析 DOCX。</SoftNotice>
+                    )}
+                  </div>
+                </ProcessStepCard>
+                </div>
+              ) : null}
+
+              {visibleStepCount >= 2 ? (
+                <div className="relative md:pl-10">
+                <div className="absolute left-0 top-5 hidden md:block">
+                  <StepStatusIcon state={parseState} />
+                </div>
+                <ProcessStepCard
+                  state={parseState}
+                  icon={BookOpen}
+                  title="理解教材"
+                  waitingText="上传教材后，系统会先理解教材结构。"
+                  currentText={parseActive ? "正在理解教材结构，完成后会展示页数、图表、公式和证据片段。" : "可以开始理解教材。"}
+                >
+                  <ParseSummaryCard
+                    parseVersion={selectedParseVersion}
+                    summary={parseEvidenceSummaryQuery.data}
+                    isLoading={parseEvidenceSummaryQuery.isLoading}
+                  />
+                </ProcessStepCard>
+                </div>
+              ) : null}
+
+              {visibleStepCount >= 3 ? (
+                <div className="relative md:pl-10">
+                <div className="absolute left-0 top-5 hidden md:block">
+                  <StepStatusIcon state={profileState} />
+                </div>
+                <ProcessStepCard
+                  state={profileState}
+                  icon={FileText}
+                  title="分析学情"
+                  waitingText="上传学情后，系统会分析学生基础、薄弱点和课时安排。"
+                  currentText={profileActive ? "正在分析学情，用于调整讲解重点和练习难度。" : "等待学情分析完成。"}
+                >
+                  <LearnerSummaryCard detail={profileDetailQuery.data} fallback={selectedProfileVersion} isLoading={profileDetailQuery.isLoading} />
+                </ProcessStepCard>
+                </div>
+              ) : null}
+
+              {visibleStepCount >= 4 ? (
+                <div className="relative md:pl-10">
+                <div className="absolute left-0 top-5 hidden md:block">
+                  <StepStatusIcon state={knowledgeState} />
+                </div>
+                <ProcessStepCard
+                  state={knowledgeState}
+                  icon={Target}
+                  title="整理教学重点"
+                  waitingText="教材理解和学情分析完成后，系统会整理章节和知识点。"
+                  currentText={knowledgeActive ? "正在整理章节、知识点和重点讲解线索。" : "可以开始整理教学重点。"}
+                >
+                  <KnowledgeSummaryCard
+                    knowledgeVersion={selectedKnowledgeVersion}
+                    chapters={knowledgeChaptersQuery.data}
+                    points={knowledgePointsQuery.data}
+                    isLoading={knowledgeChaptersQuery.isLoading || knowledgePointsQuery.isLoading}
+                  />
+                </ProcessStepCard>
+                </div>
+              ) : null}
+
+              {visibleStepCount >= 5 ? (
+                <div className="relative md:pl-10">
+                <div className="absolute left-0 top-5 hidden md:block">
+                  <StepStatusIcon state={generationState} />
+                </div>
+                <ProcessStepCard
+                  state={generationState}
+                  icon={Sparkles}
+                  title="生成备课资源"
+                  waitingText="教学重点整理完成后，就可以生成可直接使用的备课资源。"
+                  currentText={generationActive ? "正在生成课程方案、多课教案和覆盖报告。" : "可以开始生成备课资源。"}
+                >
+                  <GeneratedResourcesSummary
+                    batch={latestBatch}
+                    lessonPlans={lessonPlansQuery.data}
+                    paperResults={paperResultsQuery.data}
+                    coursewareResults={coursewareResultsQuery.data}
+                    coverageReports={coverageReportsQuery.data}
+                  />
+                </ProcessStepCard>
+                </div>
+              ) : null}
+            </ProcessTimeline>
+          </main>
+
+          <CurrentActionPanel
+            action={action}
+            batch={latestBatch}
+            lessonPlans={lessonPlansQuery.data}
+            paperResults={paperResultsQuery.data}
+            coursewareResults={coursewareResultsQuery.data}
+            coverageReports={coverageReportsQuery.data}
           />
-        </WorkflowSection>
-
-        <WorkflowSection
-          icon={FileText}
-          iconTone="bg-coral/10 text-coral"
-          title="学情上传与抽取"
-          subtitle={selectedProfileVersion ? `学情版本 #${selectedProfileVersion.id}` : "未选择学情版本"}
-          status={selectedProfileVersion?.extract_status}
-          task={profileTask}
-        >
-          <QueryError error={learnerProfilesQuery.error} title="学情文件获取失败" />
-          <QueryError error={profileVersionsQuery.error} title="学情版本获取失败" />
-          <form className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]" onSubmit={handleProfileSubmit}>
-            <input className="field" placeholder="学情标题" value={profileTitle} onChange={(event) => setProfileTitle(event.target.value)} />
-            <input
-              className="file-field"
-              type="file"
-              accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-              onChange={(event) => setProfileFile(event.target.files?.[0] ?? null)}
-            />
-            <button className="btn btn-primary" disabled={Boolean(uploadProfileReason)} type="submit">
-              {uploadProfile.isPending ? <Loader2 className="animate-spin" size={17} /> : <Upload size={17} />}
-              上传学情
-            </button>
-          </form>
-          <ActionHint reason={uploadProfileReason} />
-          <UploadError error={uploadProfile.error} title="学情上传失败" />
-          <div className="grid gap-4 2xl:grid-cols-[280px_1fr]">
-            <div className="space-y-3">
-              <div className="label">学情文件</div>
-              <SelectRow
-                items={learnerProfiles}
-                selectedId={selectedProfileFileId}
-                onChange={(id) => {
-                  setSelectedProfileFileId(id);
-                  setSelectedProfileVersionId(null);
-                }}
-                renderLabel={(item) => `${item.id} ${item.title}`}
-              />
-              <div className="rounded-md border border-line bg-paper/60 px-4 py-3 text-sm">
-                <div className="text-xs font-semibold text-ink/45">当前文件状态</div>
-                <div className="mt-2">
-                  {learnerProfiles.find((item) => item.id === selectedProfileFileId)?.file_status ? (
-                    <StatusBadge status={learnerProfiles.find((item) => item.id === selectedProfileFileId)?.file_status} />
-                  ) : (
-                    <span className="text-sm font-semibold text-ink/40">-</span>
-                  )}
-                </div>
-              </div>
-            </div>
-            <div className="space-y-3">
-              <div className="label">学情版本</div>
-              <VersionList<LearnerProfileVersion>
-                items={profileVersions}
-                title="学情"
-                selectedId={selectedProfileVersionId}
-                onSelect={setSelectedProfileVersionId}
-                renderStatus={(item) => item.extract_status || item.review_status}
-                renderMeta={(item) => `${item.subject_scope ?? "-"} / ${formatDate(item.updated_at)}`}
-              />
-            </div>
-          </div>
-        </WorkflowSection>
-
-        <WorkflowSection
-          icon={Brain}
-          iconTone="bg-leaf/10 text-leaf"
-          title="知识抽取"
-          subtitle={selectedKnowledgeVersion ? `${selectedKnowledgeVersion.point_count} 个知识点` : "未选择知识版本"}
-          status={selectedKnowledgeVersion?.version_status}
-          task={knowledgeTask}
-        >
-          <QueryError error={knowledgeVersionsQuery.error} title="知识版本获取失败" />
-          <div className="grid gap-4 2xl:grid-cols-[280px_1fr]">
-            <div className="space-y-3">
-              <div className="rounded-md border border-line bg-paper/60 px-4 py-3 text-sm">
-                <div className="label">输入解析版本</div>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <strong>{selectedParseVersion ? `#${selectedParseVersion.id}` : "-"}</strong>
-                  {selectedParseVersion ? <StatusBadge status={selectedParseVersion.review_status ?? selectedParseVersion.parse_status} /> : null}
-                </div>
-              </div>
-              <button
-                className="btn btn-secondary w-full"
-                disabled={Boolean(knowledgeReason)}
-                onClick={() => {
-                  if (!knowledgeReason) {
-                    createKnowledgeTask.mutate();
-                  }
-                }}
-                type="button"
-              >
-                {createKnowledgeTask.isPending ? <Loader2 className="animate-spin" size={17} /> : <Wand2 size={17} />}
-                {knowledgeActionLabel}
-              </button>
-              <ActionHint reason={knowledgeReason} />
-              <UploadError error={createKnowledgeTask.error} title="知识抽取任务创建失败" />
-            </div>
-            <div className="space-y-3">
-              <div className="label">知识版本</div>
-              <VersionList<KnowledgeVersion>
-                items={knowledgeVersions}
-                title="知识"
-                selectedId={selectedKnowledgeVersionId}
-                onSelect={setSelectedKnowledgeVersionId}
-                renderStatus={(item) => item.version_status}
-                renderMeta={(item) => `${item.chapter_count} 章 / ${item.point_count} 点 / ${formatDate(item.updated_at)}`}
-              />
-            </div>
-          </div>
-        </WorkflowSection>
-
-        <WorkflowSection
-          icon={ClipboardList}
-          iconTone="bg-ink/10 text-ink"
-          title="生成批次"
-          subtitle={generationBatches.length ? `${generationBatches.length} 个批次` : "暂无批次"}
-          status={generationBatches[0]?.batch_status}
-          task={generationTask}
-        >
-          <QueryError error={generationBatchesQuery.error} title="生成批次获取失败" />
-          <div className="grid gap-5 xl:grid-cols-[340px_1fr]">
-            <form className="space-y-4" onSubmit={handleBatchSubmit}>
-              <div className="rounded-md border border-line bg-paper/60 p-4">
-                <div className="label">基线状态</div>
-                <div className="mt-4 space-y-3">
-                  <BaselineRow
-                    label="知识版本"
-                    value={selectedKnowledgeVersion ? `#${selectedKnowledgeVersion.id}` : null}
-                    status={selectedKnowledgeVersion?.version_status}
-                    ready={isReadyVersion(selectedKnowledgeVersion)}
-                  />
-                  <BaselineRow
-                    label="学情版本"
-                    value={selectedProfileVersion ? `#${selectedProfileVersion.id}` : null}
-                    status={selectedProfileVersion?.extract_status}
-                    ready={isReadyProfileVersion(selectedProfileVersion)}
-                  />
-                </div>
-              </div>
-              <label className="block">
-                <span className="label">批次名称</span>
-                <input className="field mt-2" value={batchName} onChange={(event) => setBatchName(event.target.value)} />
-              </label>
-              <div className="grid grid-cols-2 gap-3">
-                <label className="block">
-                  <span className="label">课次</span>
-                  <input
-                    className="field mt-2"
-                    min={1}
-                    type="number"
-                    value={courseCount}
-                    onChange={(event) => setCourseCount(Number(event.target.value))}
-                  />
-                </label>
-                <label className="block">
-                  <span className="label">分钟</span>
-                  <input className="field mt-2" min={1} type="number" value={duration} onChange={(event) => setDuration(Number(event.target.value))} />
-                </label>
-              </div>
-              <button className="btn btn-primary w-full" disabled={Boolean(batchReason)} type="submit">
-                {createBatch.isPending ? <Loader2 className="animate-spin" size={17} /> : <Play size={17} />}
-                创建批次
-              </button>
-              <ActionHint reason={batchReason} />
-              <UploadError error={createBatch.error} title="生成批次创建失败" />
-            </form>
-
-            {generationBatches.length ? (
-              <div className="divide-y divide-line rounded-md border border-line">
-                {generationBatches.map((batch) => (
-                  <Link
-                    className="flex flex-col gap-3 bg-white px-4 py-3 transition hover:bg-paper md:flex-row md:items-center md:justify-between"
-                    key={batch.id}
-                    to={`/projects/${projectId}/batches/${batch.id}`}
-                  >
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-bold">{batch.batch_name ?? `批次 #${batch.batch_no}`}</div>
-                      <div className="mt-1 text-xs text-ink/50">
-                        {batch.course_count ?? "-"} 课次 / {batch.session_duration_minutes ?? "-"} 分钟 / {formatDate(batch.updated_at)}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <StatusBadge status={batch.batch_status} />
-                      <ArrowRight className="text-ink/35" size={16} />
-                    </div>
-                  </Link>
-                ))}
-              </div>
-            ) : (
-              <EmptyState title="暂无生成批次" />
-            )}
-          </div>
-        </WorkflowSection>
-      </div>
-
-      <section className="panel overflow-hidden">
-        <div className="panel-header">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-gold/10 text-gold">
-              <Layers size={20} />
-            </div>
-            <div>
-              <h2 className="text-lg font-bold">任务中心</h2>
-              <div className="text-sm text-ink/55">{tasks.length} 条记录</div>
-            </div>
-          </div>
-          <button className="btn btn-secondary" disabled={tasksQuery.isFetching} onClick={() => tasksQuery.refetch()} type="button">
-            <RefreshCw className={tasksQuery.isFetching ? "animate-spin" : ""} size={16} />
-            刷新
-          </button>
         </div>
-        <QueryError error={tasksQuery.error} title="任务列表获取失败" />
-        {tasks.length ? (
-          <TaskTable tasks={tasks} />
-        ) : (
-          <div className="p-5">
-            <EmptyState title="暂无任务" />
-          </div>
-        )}
-      </section>
+      </div>
     </div>
   );
 }
