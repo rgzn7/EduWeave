@@ -5,16 +5,16 @@ export default {
   theme: {
     extend: {
       colors: {
-        ink: "#132022",
-        paper: "#f7f5ef",
-        line: "#d8d6cf",
-        accent: "#0f8b8d",
-        coral: "#d96846",
-        leaf: "#3f7d58",
-        gold: "#c79b33",
+        ink: "#111111",
+        paper: "#ffffff",
+        line: "#e6e6e6",
+        accent: "#111111",
+        coral: "#b54708",
+        leaf: "#111111",
+        gold: "#a16207",
       },
       boxShadow: {
-        panel: "0 18px 50px rgba(19, 32, 34, 0.08)",
+        panel: "0 18px 48px rgba(17, 17, 17, 0.055)",
       },
     },
   },

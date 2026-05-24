@@ -1,54 +1,283 @@
 import { FormEvent, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, FolderPlus, Loader2, Search } from "lucide-react";
+import { ArrowRight, CheckCircle2, FileText, Loader2, UploadCloud } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { EmptyState } from "../components/EmptyState";
-import { StatusBadge } from "../components/StatusBadge";
-import { TaskTable } from "../components/TaskTable";
+import { ErrorNotice } from "../components/ErrorNotice";
 import { api } from "../lib/api";
-import { formatDate } from "../utils";
+import { cn, formatDate } from "../utils";
+import type { Project } from "../types";
 
-const subjectOptions = [
-  { value: "math", label: "数学" },
-  { value: "chinese", label: "语文" },
-  { value: "english", label: "英语" },
-  { value: "science", label: "科学" },
+const gradeNameMap: Array<[string, string]> = [
+  ["一年级", "grade_1"],
+  ["二年级", "grade_2"],
+  ["三年级", "grade_3"],
+  ["四年级", "grade_4"],
+  ["五年级", "grade_5"],
+  ["六年级", "grade_6"],
+  ["七年级", "grade_7"],
+  ["八年级", "grade_8"],
+  ["九年级", "grade_9"],
+  ["1年级", "grade_1"],
+  ["2年级", "grade_2"],
+  ["3年级", "grade_3"],
+  ["4年级", "grade_4"],
+  ["5年级", "grade_5"],
+  ["6年级", "grade_6"],
+  ["7年级", "grade_7"],
+  ["8年级", "grade_8"],
+  ["9年级", "grade_9"],
 ];
 
-const gradeOptions = [
-  { value: "grade_1", label: "一年级" },
-  { value: "grade_2", label: "二年级" },
-  { value: "grade_3", label: "三年级" },
-  { value: "grade_4", label: "四年级" },
-  { value: "grade_5", label: "五年级" },
-  { value: "grade_6", label: "六年级" },
-  { value: "grade_7", label: "七年级" },
-  { value: "grade_8", label: "八年级" },
-  { value: "grade_9", label: "九年级" },
-];
+const subjectLabels: Record<string, string> = {
+  math: "数学",
+  chinese: "语文",
+  english: "英语",
+  science: "科学",
+};
+
+const gradeLabels: Record<string, string> = {
+  grade_1: "一年级",
+  grade_2: "二年级",
+  grade_3: "三年级",
+  grade_4: "四年级",
+  grade_5: "五年级",
+  grade_6: "六年级",
+  grade_7: "七年级",
+  grade_8: "八年级",
+  grade_9: "九年级",
+};
+
+function stripExtension(filename: string) {
+  return filename.replace(/\.[^.]+$/u, "").trim();
+}
+
+function inferSubjectCode(filename: string) {
+  if (filename.includes("语文")) {
+    return "chinese";
+  }
+  if (filename.includes("英语")) {
+    return "english";
+  }
+  if (filename.includes("科学")) {
+    return "science";
+  }
+  return "math";
+}
+
+function inferGradeCode(filename: string) {
+  const matched = gradeNameMap.find(([keyword]) => filename.includes(keyword));
+  return matched?.[1] ?? "grade_3";
+}
+
+function getCaseStatus(project: Project) {
+  if (project.latest_generation_batch_id) {
+    return "已完成";
+  }
+  if (project.current_textbook_version_id && project.current_learner_profile_version_id) {
+    return "生成中";
+  }
+  if (project.current_textbook_version_id || project.current_learner_profile_version_id) {
+    return "待补充";
+  }
+  return "未开始";
+}
+
+function ComposerMaterialRow({
+  step,
+  title,
+  description,
+  accept,
+  file,
+  disabled,
+  onChange,
+  actionLabel,
+}: {
+  step: 1 | 2;
+  title: string;
+  description: string;
+  accept: string;
+  file: File | null;
+  disabled?: boolean;
+  onChange: (file: File | null) => void;
+  actionLabel: string;
+}) {
+  return (
+    <div className={cn("flex flex-col gap-4 px-3 py-5 transition md:flex-row md:items-center md:justify-between", disabled && "opacity-45")}>
+      <div className="flex min-w-0 gap-4">
+        <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#f3f3f3] text-sm font-semibold text-ink/58">{step}</div>
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold text-ink">{title}</h2>
+          <p className="mt-1 text-sm leading-6 text-ink/52">{description}</p>
+          {file ? (
+            <div className="mt-3 flex min-w-0 items-center gap-2 text-sm font-medium text-ink">
+              <CheckCircle2 className="shrink-0" size={16} />
+              <span className="truncate">{file.name}</span>
+            </div>
+          ) : null}
+        </div>
+      </div>
+
+      <label
+        className={cn(
+          "inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-full border border-line bg-white px-5 text-sm font-semibold text-ink transition",
+          disabled ? "cursor-not-allowed" : "cursor-pointer hover:border-ink/25 hover:bg-[#f7f7f7]",
+        )}
+        aria-disabled={disabled}
+      >
+        <input
+          className="sr-only"
+          type="file"
+          accept={accept}
+          disabled={disabled}
+          onChange={(event) => onChange(event.target.files?.[0] ?? null)}
+        />
+        <UploadCloud size={16} />
+        {file ? "更换" : actionLabel}
+      </label>
+    </div>
+  );
+}
+
+function LessonPrepComposer({
+  textbookFile,
+  profileFile,
+  isPending,
+  onTextbookChange,
+  onProfileChange,
+}: {
+  textbookFile: File | null;
+  profileFile: File | null;
+  isPending: boolean;
+  onTextbookChange: (file: File | null) => void;
+  onProfileChange: (file: File | null) => void;
+}) {
+  return (
+    <div className="rounded-[28px] border border-line bg-white px-4 py-2 shadow-panel">
+      <ComposerMaterialRow
+        accept="application/pdf,.pdf"
+        actionLabel="选择教材"
+        description="基于教材生成课程方案、教案、PPT 课件和配套测练。"
+        file={textbookFile}
+        step={1}
+        title="上传教材 PDF"
+        onChange={onTextbookChange}
+      />
+      <div className="mx-3 border-t border-line/75" />
+      <ComposerMaterialRow
+        accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        actionLabel="选择学情"
+        description="根据学生基础、薄弱点和课时安排，调整讲解重点和练习难度。"
+        disabled={!textbookFile}
+        file={profileFile}
+        step={2}
+        title="补充学情分析 DOCX"
+        onChange={onProfileChange}
+      />
+      {textbookFile && profileFile ? (
+        <div className="mx-3 flex border-t border-line/75 py-4 md:justify-end">
+          <button className="btn btn-primary h-12 w-full shrink-0 rounded-full px-6 md:w-auto" disabled={isPending} type="submit">
+            {isPending ? <Loader2 className="animate-spin" size={17} /> : <ArrowRight size={17} />}
+            {isPending ? "正在生成" : "开始生成"}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CaseStatusPill({ label }: { label: string }) {
+  const isDone = label === "已完成";
+  return (
+    <span className={isDone ? "rounded-full bg-ink px-2.5 py-1 text-xs font-semibold text-white" : "rounded-full bg-[#f2f2f2] px-2.5 py-1 text-xs font-semibold text-ink/58"}>
+      {label}
+    </span>
+  );
+}
+
+function CaseCard({ project }: { project: Project }) {
+  const status = getCaseStatus(project);
+
+  return (
+    <Link className="group block rounded-[20px] border border-line bg-white/88 p-4 shadow-panel transition hover:-translate-y-0.5 hover:border-ink/20 hover:bg-white" to={`/projects/${project.id}`}>
+      <div className="flex items-start gap-3">
+        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#f2f2f2] text-ink/72">
+          <FileText size={18} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <h3 className="line-clamp-2 text-sm font-semibold leading-5 text-ink">{project.name}</h3>
+            <CaseStatusPill label={status} />
+          </div>
+          <div className="mt-3 flex flex-wrap gap-1.5 text-xs font-medium text-ink/45">
+            <span>{subjectLabels[project.subject_code] ?? project.subject_code}</span>
+            <span>/</span>
+            <span>{gradeLabels[project.grade_code] ?? project.grade_code}</span>
+          </div>
+          <div className="mt-5 flex items-center justify-between border-t border-line/70 pt-3 text-xs">
+            <span className="text-ink/38">{formatDate(project.last_activity_at ?? project.updated_at)}</span>
+            <span className="inline-flex items-center gap-1 font-semibold text-ink/72">
+              查看过程
+              <ArrowRight className="transition group-hover:translate-x-0.5" size={14} />
+            </span>
+          </div>
+        </div>
+      </div>
+    </Link>
+  );
+}
+
+function getVisibleCases(projects: Project[]) {
+  if (projects.length >= 3) {
+    return projects.slice(0, 3);
+  }
+  if (!projects.length) {
+    return [];
+  }
+
+  const cases = [...projects];
+  while (cases.length < 3) {
+    cases.push(projects[0]);
+  }
+  return cases;
+}
 
 export function DashboardPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [keyword, setKeyword] = useState("");
-  const [name, setName] = useState("小学数学秋季提升班");
-  const [subjectCode, setSubjectCode] = useState("math");
-  const [gradeCode, setGradeCode] = useState("grade_3");
-  const [target, setTarget] = useState("基础巩固与能力提升");
+  const [textbookFile, setTextbookFile] = useState<File | null>(null);
+  const [profileFile, setProfileFile] = useState<File | null>(null);
 
   const projectsQuery = useQuery({
     queryKey: ["projects"],
     queryFn: () => api.listProjects({ page: 1, page_size: 50 }),
   });
 
-  const tasksQuery = useQuery({
-    queryKey: ["tasks", "recent"],
-    queryFn: () => api.listTasks({ page: 1, page_size: 8 }),
-    refetchInterval: 5_000,
-  });
-
-  const createProject = useMutation({
-    mutationFn: api.createProject,
+  const startLessonPrep = useMutation({
+    mutationFn: async () => {
+      if (!textbookFile || !profileFile) {
+        throw new Error("MATERIAL_REQUIRED");
+      }
+      const textbookName = stripExtension(textbookFile.name);
+      const project = await api.createProject({
+        name: textbookName || "AI 备课",
+        subject_code: inferSubjectCode(textbookFile.name),
+        grade_code: inferGradeCode(textbookFile.name),
+        applicable_target: "基于教材与学情生成个性化教学资源",
+      });
+      await api.uploadTextbook(project.id, {
+        file: textbookFile,
+        textbook_name: textbookName || textbookFile.name,
+        set_as_current: true,
+      });
+      await api.uploadLearnerProfile(project.id, {
+        file: profileFile,
+        title: stripExtension(profileFile.name) || profileFile.name,
+        auto_extract: true,
+        set_as_current: true,
+      });
+      return project;
+    },
     onSuccess: (project) => {
       queryClient.invalidateQueries({ queryKey: ["projects"] });
       navigate(`/projects/${project.id}`);
@@ -56,150 +285,61 @@ export function DashboardPage() {
   });
 
   const projects = projectsQuery.data?.items ?? [];
-  const filteredProjects = projects.filter((project) => {
-    const haystack = `${project.name} ${project.subject_code} ${project.grade_code}`.toLowerCase();
-    return haystack.includes(keyword.trim().toLowerCase());
-  });
+  const visibleCases = getVisibleCases(projects);
+
+  function handleTextbookChange(file: File | null) {
+    setTextbookFile(file);
+    if (!file) {
+      setProfileFile(null);
+    }
+  }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    createProject.mutate({
-      name,
-      subject_code: subjectCode,
-      grade_code: gradeCode,
-      applicable_target: target,
-    });
+    if (textbookFile && profileFile) {
+      startLessonPrep.mutate();
+    }
   }
 
   return (
-    <div className="space-y-6">
-      <section className="flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
-        <div>
-          <div className="text-sm font-semibold text-accent">EduWeave</div>
-          <h1 className="mt-1 text-3xl font-bold">项目总览</h1>
+    <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col pb-16 pt-24 md:pt-32">
+      <section className="mx-auto w-full max-w-[760px]">
+        <div className="text-center">
+          <h1 className="font-serif text-[42px] font-medium leading-tight tracking-normal text-ink md:text-[56px]">上传材料，生成备课资源</h1>
         </div>
-        <div className="relative w-full lg:w-80">
-          <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink/35" size={17} />
-          <input
-            className="field pl-10"
-            placeholder="搜索项目"
-            value={keyword}
-            onChange={(event) => setKeyword(event.target.value)}
+
+        <form className="mt-8" onSubmit={handleSubmit}>
+          <LessonPrepComposer
+            isPending={startLessonPrep.isPending}
+            profileFile={profileFile}
+            textbookFile={textbookFile}
+            onProfileChange={setProfileFile}
+            onTextbookChange={handleTextbookChange}
           />
-        </div>
-      </section>
-
-      <section className="grid gap-6 xl:grid-cols-[380px_1fr]">
-        <form className="panel p-5" onSubmit={handleSubmit}>
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-accent/10 text-accent">
-              <FolderPlus size={20} />
-            </div>
-            <div>
-              <h2 className="text-lg font-bold">新建项目</h2>
-              <div className="text-sm text-ink/55">Project</div>
-            </div>
-          </div>
-
-          <div className="mt-5 space-y-4">
-            <label className="block">
-              <span className="label">项目名称</span>
-              <input className="field mt-2" value={name} onChange={(event) => setName(event.target.value)} required />
-            </label>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="block">
-                <span className="label">学科</span>
-                <select className="field mt-2" value={subjectCode} onChange={(event) => setSubjectCode(event.target.value)}>
-                  {subjectOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block">
-                <span className="label">年级</span>
-                <select className="field mt-2" value={gradeCode} onChange={(event) => setGradeCode(event.target.value)}>
-                  {gradeOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <label className="block">
-              <span className="label">适用对象</span>
-              <input className="field mt-2" value={target} onChange={(event) => setTarget(event.target.value)} />
-            </label>
-          </div>
-
-          {createProject.error ? <div className="mt-4 text-sm font-semibold text-coral">{createProject.error.message}</div> : null}
-          <button className="btn btn-primary mt-5 w-full" disabled={createProject.isPending || !name.trim()} type="submit">
-            {createProject.isPending ? <Loader2 className="animate-spin" size={17} /> : <FolderPlus size={17} />}
-            创建项目
-          </button>
+          {startLessonPrep.error ? <ErrorNotice title="暂时无法开始生成" message="请确认材料格式正确，或稍后再试。" /> : null}
         </form>
-
-        <div className="panel overflow-hidden">
-          <div className="panel-header">
-            <div>
-              <h2 className="text-lg font-bold">项目列表</h2>
-              <div className="text-sm text-ink/55">{projects.length} 个项目</div>
-            </div>
-          </div>
-          <div className="grid gap-3 p-5 md:grid-cols-2 xl:grid-cols-3">
-            {projectsQuery.isLoading ? (
-              <div className="col-span-full flex h-36 items-center justify-center text-sm text-ink/55">
-                <Loader2 className="mr-2 animate-spin" size={17} />
-                加载中
-              </div>
-            ) : filteredProjects.length ? (
-              filteredProjects.map((project) => (
-                <Link
-                  className="group flex min-h-40 flex-col justify-between rounded-lg border border-line bg-paper/75 p-4 transition hover:border-accent/45 hover:bg-white"
-                  key={project.id}
-                  to={`/projects/${project.id}`}
-                >
-                  <div>
-                    <div className="flex items-start justify-between gap-3">
-                      <h3 className="line-clamp-2 text-base font-bold text-ink">{project.name}</h3>
-                      <StatusBadge status={project.status} />
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-ink/55">
-                      <span className="rounded-md bg-white px-2 py-1">{project.subject_code}</span>
-                      <span className="rounded-md bg-white px-2 py-1">{project.grade_code}</span>
-                    </div>
-                  </div>
-                  <div className="mt-5 flex items-center justify-between text-sm text-ink/55">
-                    <span>{formatDate(project.last_activity_at ?? project.updated_at)}</span>
-                    <ArrowRight className="transition group-hover:translate-x-1" size={18} />
-                  </div>
-                </Link>
-              ))
-            ) : (
-              <div className="col-span-full">
-                <EmptyState title="暂无项目" />
-              </div>
-            )}
-          </div>
-        </div>
       </section>
 
-      <section className="panel overflow-hidden">
-        <div className="panel-header">
-          <div>
-            <h2 className="text-lg font-bold">最近任务</h2>
-            <div className="text-sm text-ink/55">{tasksQuery.data?.items?.length ?? 0} 条记录</div>
-          </div>
+      <section className="mx-auto mt-24 w-full max-w-5xl space-y-5" id="cases">
+        <div>
+          <h2 className="text-base font-semibold text-ink/82">示例备课</h2>
+          <p className="mt-2 text-sm text-ink/42">打开已有记录，查看从材料到成果的完整处理过程。</p>
         </div>
-        {tasksQuery.data?.items?.length ? (
-          <TaskTable tasks={tasksQuery.data.items} />
-        ) : (
-          <div className="p-5">
-            <EmptyState title="暂无任务" />
-          </div>
-        )}
+
+        <div className="grid gap-3 md:grid-cols-3">
+          {projectsQuery.isLoading ? (
+            <div className="panel col-span-full flex h-28 items-center justify-center text-sm text-ink/50">
+              <Loader2 className="mr-2 animate-spin" size={17} />
+              正在加载
+            </div>
+          ) : visibleCases.length ? (
+            visibleCases.map((project, index) => <CaseCard key={`${project.id}-${index}`} project={project} />)
+          ) : (
+            <div className="col-span-full">
+              <EmptyState title="暂无示例备课" description="上传教材和学情后，可以在这里回到已有记录。" />
+            </div>
+          )}
+        </div>
       </section>
     </div>
   );
