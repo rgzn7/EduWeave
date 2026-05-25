@@ -74,6 +74,7 @@ from app.shared.storage import ObsStorageClient
 
 TEST_PASSWORD = "Teacher@123"
 SCHEMA_SQL_PATH = Path(__file__).resolve().parents[2] / "sql" / "20260430_eduweave_mysql_28_tables.sql"
+HOMEWORK_SCHEMA_SQL_PATH = Path(__file__).resolve().parents[2] / "sql" / "20260525_eduweave_homework_tables.sql"
 
 
 def build_mysql_uri(database_name: str) -> str:
@@ -86,7 +87,7 @@ def build_mysql_uri(database_name: str) -> str:
 
 
 def execute_schema_sql(database_name: str) -> None:
-    """向指定 MySQL 数据库执行 28 张表初始化脚本。"""
+    """向指定 MySQL 数据库执行基础 28 张表 + homework 增量 schema 脚本。"""
     settings = get_settings()
     connection = pymysql.connect(
         host=settings.mysql_host,
@@ -98,28 +99,32 @@ def execute_schema_sql(database_name: str) -> None:
         autocommit=True,
     )
     try:
-        raw_script = SCHEMA_SQL_PATH.read_text(encoding="utf-8")
-        filtered_lines: list[str] = []
-        skip_database_block = False
-
-        for line in raw_script.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("--"):
-                continue
-            if stripped.startswith("CREATE DATABASE IF NOT EXISTS"):
-                skip_database_block = True
-                continue
-            if skip_database_block:
-                if stripped.endswith(";"):
-                    skip_database_block = False
-                continue
-            if stripped.startswith("USE "):
-                continue
-            filtered_lines.append(line)
-
-        statements = [statement.strip() for statement in "\n".join(filtered_lines).split(";") if statement.strip()]
+        all_statements: list[str] = []
+        for schema_path in (SCHEMA_SQL_PATH, HOMEWORK_SCHEMA_SQL_PATH):
+            raw_script = schema_path.read_text(encoding="utf-8")
+            filtered_lines: list[str] = []
+            skip_database_block = False
+            for line in raw_script.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("--"):
+                    continue
+                if stripped.startswith("CREATE DATABASE IF NOT EXISTS"):
+                    skip_database_block = True
+                    continue
+                if skip_database_block:
+                    if stripped.endswith(";"):
+                        skip_database_block = False
+                    continue
+                if stripped.startswith("USE "):
+                    continue
+                filtered_lines.append(line)
+            all_statements.extend(
+                statement.strip()
+                for statement in "\n".join(filtered_lines).split(";")
+                if statement.strip()
+            )
         with connection.cursor() as cursor:
-            for statement in statements:
+            for statement in all_statements:
                 cursor.execute(statement)
     finally:
         connection.close()
@@ -180,6 +185,9 @@ def seeded_session_factory(mysql_session_factory):
             "task_step_record",
             "task_record",
             "coverage_report",
+            "homework_question",
+            "homework_result",
+            "homework_blueprint",
             "question_item",
             "paper_result",
             "courseware_result",

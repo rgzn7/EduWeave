@@ -13,6 +13,7 @@ from app.core.constants import (
     COVERAGE_ANALYZE_TASK_TYPE,
     CURRICULUM_GENERATE_TASK_TYPE,
     EXTERNAL_WAIT_TASK_STAGES,
+    HOMEWORK_GENERATE_TASK_TYPE,
     KNOWLEDGE_EXTRACT_TASK_TYPE,
     LESSON_PLAN_GENERATE_TASK_TYPE,
     PROFILE_EXTRACT_TASK_TYPE,
@@ -46,6 +47,7 @@ TASK_HANDLER_REGISTRY: dict[str, str] = {
     CURRICULUM_GENERATE_TASK_TYPE: "app.modules.curriculum.tasks.run_generate_curriculum_task",
     LESSON_PLAN_GENERATE_TASK_TYPE: "app.modules.lesson_plan.tasks.run_generate_lesson_plan_task",
     ASSESSMENT_GENERATE_TASK_TYPE: "app.modules.assessment.tasks.run_generate_assessment_task",
+    HOMEWORK_GENERATE_TASK_TYPE: "app.modules.homework.tasks.run_generate_homework_task",
     COURSEWARE_GENERATE_TASK_TYPE: "app.modules.courseware.tasks.run_generate_courseware_task",
     COVERAGE_ANALYZE_TASK_TYPE: "app.modules.coverage.tasks.run_analyze_coverage_task",
 }

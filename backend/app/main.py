@@ -19,6 +19,7 @@ from app.modules.courseware.router import router as courseware_router
 from app.modules.coverage.router import router as coverage_router
 from app.modules.curriculum.router import router as curriculum_router
 from app.modules.file_asset.router import router as file_asset_router
+from app.modules.homework.router import router as homework_router
 from app.modules.knowledge.router import router as knowledge_router
 from app.modules.learner_profile.router import router as learner_profile_router
 from app.modules.lesson_plan.router import router as lesson_plan_router
@@ -76,6 +77,7 @@ app.include_router(pipeline_router, prefix=settings.api_v1_prefix)
 app.include_router(curriculum_router, prefix=settings.api_v1_prefix)
 app.include_router(lesson_plan_router, prefix=settings.api_v1_prefix)
 app.include_router(assessment_router, prefix=settings.api_v1_prefix)
+app.include_router(homework_router, prefix=settings.api_v1_prefix)
 app.include_router(courseware_router, prefix=settings.api_v1_prefix)
 app.include_router(coverage_router, prefix=settings.api_v1_prefix)
 app.include_router(task_center_router, prefix=settings.api_v1_prefix)

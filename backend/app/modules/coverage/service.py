@@ -38,6 +38,7 @@ ARTIFACT_BUCKETS = {
     "curriculum_plan": "课程大纲",
     "lesson_plan": "教案",
     "question_item": "试卷题目",
+    "homework_question": "作业题目",
     "courseware_slide": "课件页面",
 }
 
@@ -350,9 +351,13 @@ class CoverageService:
         artifacts: list[dict[str, Any]] = []
         curriculum_plan = self.repository.get_curriculum_plan(generation_batch.curriculum_plan_id)
         lesson_plans = self.repository.list_lesson_plans_by_batch(generation_batch_id)
+        lesson_plan_map = {lesson_plan.id: lesson_plan for lesson_plan in lesson_plans}
         paper_results = self.repository.list_paper_results_by_batch(generation_batch_id)
         paper_result_map = {paper_result.id: paper_result for paper_result in paper_results}
         question_items = self.repository.list_question_items_by_batch(generation_batch_id)
+        homework_results = self.repository.list_homework_results_by_batch(generation_batch_id)
+        homework_result_map = {homework_result.id: homework_result for homework_result in homework_results}
+        homework_questions = self.repository.list_homework_questions_by_batch(generation_batch_id)
         courseware_results = self.repository.list_courseware_results_by_batch(generation_batch_id)
 
         if curriculum_plan is not None:
@@ -392,11 +397,39 @@ class CoverageService:
                     "metadata": {
                         "question_item_id": question.id,
                         "paper_result_id": question.paper_result_id,
+                        "source_type": "paper_result",
+                        "source_id": question.paper_result_id,
                         "question_no": question.question_no,
                         "question_type": question.question_type,
                         "difficulty_level": question.difficulty_level,
                         "scene_type": scene_type,
                         "difficulty_range": strategy.get("difficulty_range") if strategy else None,
+                    },
+                }
+            )
+        homework_strategy = _safe_resolve_assessment_strategy("homework")
+        for question in homework_questions:
+            homework_result = homework_result_map.get(question.homework_result_id)
+            lesson_plan = lesson_plan_map.get(question.lesson_plan_id)
+            artifacts.append(
+                {
+                    "artifact_type": "homework_question",
+                    "artifact_id": question.id,
+                    "knowledge_point_ids": _normalize_id_values(question.knowledge_point_id),
+                    "metadata": {
+                        "homework_question_id": question.id,
+                        "homework_result_id": question.homework_result_id,
+                        "source_type": "homework_result",
+                        "source_id": question.homework_result_id,
+                        "lesson_plan_id": question.lesson_plan_id,
+                        "class_session_no": lesson_plan.class_session_no if lesson_plan else None,
+                        "lesson_title": lesson_plan.lesson_title if lesson_plan else None,
+                        "homework_title": homework_result.title if homework_result else None,
+                        "question_no": question.question_no,
+                        "question_type": question.question_type,
+                        "difficulty_level": question.difficulty_level,
+                        "scene_type": "homework",
+                        "difficulty_range": homework_strategy.get("difficulty_range") if homework_strategy else None,
                     },
                 }
             )
@@ -533,11 +566,15 @@ def _build_invalid_reference_warning(artifact: dict[str, Any], invalid_refs: lis
 
 
 def _build_assessment_quality(artifacts: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """统计测评题型、难度分布并校验难度策略。"""
-    question_artifacts = [artifact for artifact in artifacts if artifact["artifact_type"] == "question_item"]
+    """统计测评 / 作业题型、难度分布并校验难度策略。"""
+    question_artifacts = [
+        artifact
+        for artifact in artifacts
+        if artifact["artifact_type"] in {"question_item", "homework_question"}
+    ]
     question_type_distribution = {question_type: 0 for question_type in QUESTION_TYPE_KEYS}
     difficulty_distribution = {difficulty_level: 0 for difficulty_level in DIFFICULTY_LEVEL_KEYS}
-    strategy_check_map: dict[tuple[Any, Any], dict[str, Any]] = {}
+    strategy_check_map: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
 
     for artifact in question_artifacts:
         metadata = artifact.get("metadata") or {}
@@ -548,48 +585,71 @@ def _build_assessment_quality(artifacts: list[dict[str, Any]]) -> tuple[dict[str
         difficulty_key = str(difficulty_level) if difficulty_level is not None else "unknown"
         difficulty_distribution[difficulty_key] = difficulty_distribution.get(difficulty_key, 0) + 1
 
-        paper_result_id = metadata.get("paper_result_id")
+        source_type = str(metadata.get("source_type") or "paper_result")
+        source_id = metadata.get("source_id")
         scene_type = metadata.get("scene_type")
         difficulty_range = metadata.get("difficulty_range")
-        check_key = (paper_result_id, scene_type)
+        artifact_id_field = (
+            "homework_question_ids" if artifact["artifact_type"] == "homework_question" else "question_item_ids"
+        )
+        question_id_field = (
+            "homework_question_id" if artifact["artifact_type"] == "homework_question" else "question_item_id"
+        )
+        check_key = (source_type, source_id, scene_type)
         strategy_check = strategy_check_map.setdefault(
             check_key,
             {
-                "paper_result_id": paper_result_id,
+                "source_type": source_type,
+                "source_id": source_id,
                 "scene_type": scene_type,
                 "difficulty_range": difficulty_range,
                 "question_count": 0,
-                "out_of_range_question_item_ids": [],
+                "out_of_range_ids": [],
+                "question_id_field": question_id_field,
+                "artifact_id_field": artifact_id_field,
                 "passed": True,
             },
         )
         strategy_check["question_count"] += 1
         if not _is_difficulty_in_range(difficulty_level, difficulty_range):
-            strategy_check["out_of_range_question_item_ids"].append(metadata.get("question_item_id"))
+            strategy_check["out_of_range_ids"].append(metadata.get(question_id_field))
 
     warnings: list[dict[str, Any]] = []
-    strategy_checks = sorted(
+    strategy_checks_raw = sorted(
         strategy_check_map.values(),
         key=lambda item: (
-            0 if item["paper_result_id"] is None else int(item["paper_result_id"]),
+            str(item["source_type"]),
+            0 if item["source_id"] is None else int(item["source_id"]),
             str(item["scene_type"] or ""),
         ),
     )
-    for strategy_check in strategy_checks:
+    strategy_checks: list[dict[str, Any]] = []
+    for strategy_check in strategy_checks_raw:
         out_of_range_ids = [
-            question_id for question_id in strategy_check["out_of_range_question_item_ids"] if question_id is not None
+            question_id for question_id in strategy_check["out_of_range_ids"] if question_id is not None
         ]
-        strategy_check["out_of_range_question_item_ids"] = out_of_range_ids
-        strategy_check["passed"] = not out_of_range_ids
+        question_id_field = strategy_check["question_id_field"]
+        artifact_id_field = strategy_check["artifact_id_field"]
+        normalized = {
+            "source_type": strategy_check["source_type"],
+            "source_id": strategy_check["source_id"],
+            "scene_type": strategy_check["scene_type"],
+            "difficulty_range": strategy_check["difficulty_range"],
+            "question_count": strategy_check["question_count"],
+            "passed": not out_of_range_ids,
+            artifact_id_field: out_of_range_ids,
+        }
+        strategy_checks.append(normalized)
         if out_of_range_ids:
             warnings.append(
                 {
                     "code": "QUESTION_DIFFICULTY_OUT_OF_RANGE",
                     "message": "题目难度不符合测评场景预设范围",
-                    "paper_result_id": strategy_check["paper_result_id"],
+                    "source_type": strategy_check["source_type"],
+                    "source_id": strategy_check["source_id"],
                     "scene_type": strategy_check["scene_type"],
                     "difficulty_range": strategy_check["difficulty_range"],
-                    "question_item_ids": out_of_range_ids,
+                    artifact_id_field: out_of_range_ids,
                 }
             )
 

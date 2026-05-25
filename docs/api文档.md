@@ -16,6 +16,7 @@
 - [课程大纲](#课程大纲)
 - [教案](#教案)
 - [测评](#测评)
+- [课后作业](#课后作业)
 - [课件](#课件)
 - [覆盖率](#覆盖率)
 - [任务中心](#任务中心)
@@ -2586,7 +2587,7 @@
 
 ```json
 {
-  scene_type?: 'homework' | 'unit_test' | 'final_exam'  # 测练场景类型，后端按场景自动套用预设策略：homework=课后作业，unit_test=单元测试，final_exam=期末综合测
+  scene_type?: 'homework' | 'unit_test' | 'final_exam'  # 测练场景类型，后端按场景自动套用预设策略：unit_test=单元测试，final_exam=期末综合测；课后作业（homework）已迁移至 /lesson-plans/{lesson_plan_id}/homework-tasks 课次维度接口，本接口不再接受 homework 场景。
 }
 ```
 
@@ -2952,6 +2953,398 @@
     signed_url: object  # 签名下载地址
     expires_in_seconds: integer  # 有效期秒数
     generated_at: object  # 生成时间
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+## 课后作业
+
+> 前端接入提示：课后作业不在自动 pipeline 中批量生成，需要在教案生成完成后，按 `lesson_plan_id` 单独触发。推荐在教案详情页提供“生成课后作业”按钮，在课程/批次维度提供“作业总览”页。
+
+- 触发生成：调用 `POST /api/v1/lesson-plans/{lesson_plan_id}/homework-tasks`，成功返回 `TaskListItem`。本地同步任务模式下 `result_json` 可能立即包含 `homework_result_id`；异步模式下前端应按任务中心接口轮询任务状态。
+- 查询详情：调用 `GET /api/v1/lesson-plans/{lesson_plan_id}/homework-result` 获取本课唯一作业，响应内 `questions` 可直接用于渲染题目列表。
+- 作业总览：调用 `GET /api/v1/homework-results?curriculum_plan_id={id}` 或 `generation_batch_id={id}`，列表按 `class_session_no` 升序返回。
+- 题库筛选：调用 `GET /api/v1/homework-questions`，支持按 `lesson_plan_id`、`homework_result_id`、`knowledge_point_id`、`question_type`、`difficulty_level` 过滤。
+- 常见错误：重复生成返回 `409 TASK_CONFLICT`；未生成详情返回 `404 HOMEWORK_RESULT_NOT_FOUND`；继续走批次级测评接口传 `scene_type=homework` 返回 `422 ASSESSMENT_SCENE_INVALID`。
+
+### POST `/api/v1/lesson-plans/{lesson_plan_id}/homework-tasks`
+
+**创建课后作业生成任务**
+
+为当前教师可见的教案创建课后作业生成任务，按教案知识点与教学内容生成 6 题练习；同一教案不可重复生成。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `lesson_plan_id` | integer | 是 | 教案主键 |
+
+**响应**
+
+`201` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    id: integer  # 任务主键
+    project_id: integer  # 所属项目主键
+    generation_batch_id?: object  # 生成批次主键
+    module_code: string  # 模块编码
+    task_type: string  # 任务类型
+    biz_key?: string  # 业务键
+    task_status: string  # 任务状态
+    queue_name?: string  # 队列名称
+    current_stage?: string  # 当前阶段
+    progress_percent: integer  # 任务进度
+    retry_count: integer  # 重试次数
+    max_retry_count: integer  # 最大重试次数
+    worker_task_id?: object  # Worker 任务ID
+    last_error_code?: object  # 最近错误码
+    last_error_message?: object  # 最近错误信息
+    payload_json?: object  # 任务载荷
+    result_json?: object  # 任务结果
+    started_at?: object  # 开始时间
+    finished_at?: object  # 结束时间
+    created_at: object  # 创建时间
+    updated_at: object  # 更新时间
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+### GET `/api/v1/lesson-plans/{lesson_plan_id}/homework-result`
+
+**按教案获取课后作业详情**
+
+按教案主键查询其唯一的课后作业结构化内容与题目明细，未生成时返回 404。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `lesson_plan_id` | integer | 是 | 教案主键 |
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    id: integer  # 作业结果主键
+    generation_batch_id: integer  # 生成批次主键
+    lesson_plan_id: integer  # 所属教案主键
+    homework_blueprint_id: integer  # 作业蓝图主键
+    title: string  # 作业标题
+    result_status: string  # 结果状态
+    question_count: integer  # 题目数量
+    difficulty_stats_json?: object  # 难度统计
+    content_json: object  # 作业结构化内容
+    export_file_id?: object  # 导出文件主键
+    class_session_no?: integer  # 所属课次序号
+    lesson_title?: string  # 所属教案标题
+    created_at: object  # 创建时间
+    updated_at: object  # 更新时间
+    questions?: object  # 题目明细列表
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+### GET `/api/v1/homework-results`
+
+**获取课后作业列表**
+
+按课程大纲或生成批次分页获取当前教师可见的课后作业，按课次序号升序排列。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| query | `curriculum_plan_id` | string | 否 | 课程大纲主键 |
+| query | `generation_batch_id` | string | 否 | 生成批次主键 |
+| query | `page` | integer | 否 | 页码 |
+| query | `page_size` | integer | 否 | 每页大小 |
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    items: array[{
+      id: integer  # 作业结果主键
+      generation_batch_id: integer  # 生成批次主键
+      lesson_plan_id: integer  # 所属教案主键
+      homework_blueprint_id: integer  # 作业蓝图主键
+      title: string  # 作业标题
+      result_status: string  # 结果状态
+      question_count: integer  # 题目数量
+      difficulty_stats_json?: object  # 难度统计
+      content_json: object  # 作业结构化内容
+      export_file_id?: object  # 导出文件主键
+      class_session_no?: integer  # 所属课次序号
+      lesson_title?: string  # 所属教案标题
+      created_at: object  # 创建时间
+      updated_at: object  # 更新时间
+    }]
+    pagination: {
+      total_count: integer  # 总记录数
+      page: integer  # 当前页码
+      page_size: integer  # 每页大小
+      total_pages: integer  # 总页数
+      has_previous: boolean  # 是否存在上一页
+      has_next: boolean  # 是否存在下一页
+    }
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+### GET `/api/v1/homework-results/{homework_result_id}`
+
+**获取课后作业详情**
+
+按主键查询单份课后作业的结构化内容与题目明细。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `homework_result_id` | integer | 是 | 课后作业主键 |
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    id: integer  # 作业结果主键
+    generation_batch_id: integer  # 生成批次主键
+    lesson_plan_id: integer  # 所属教案主键
+    homework_blueprint_id: integer  # 作业蓝图主键
+    title: string  # 作业标题
+    result_status: string  # 结果状态
+    question_count: integer  # 题目数量
+    difficulty_stats_json?: object  # 难度统计
+    content_json: object  # 作业结构化内容
+    export_file_id?: object  # 导出文件主键
+    class_session_no?: integer  # 所属课次序号
+    lesson_title?: string  # 所属教案标题
+    created_at: object  # 创建时间
+    updated_at: object  # 更新时间
+    questions?: object  # 题目明细列表
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+### POST `/api/v1/homework-results/{homework_result_id}/export-docx`
+
+**导出课后作业 DOCX**
+
+将当前教师可见的课后作业结构化内容和题目明细同步导出为 DOCX 文件，并返回签名下载地址。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `homework_result_id` | integer | 是 | 课后作业主键 |
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    file_object_id: integer  # 文件对象主键
+    bucket_name: string  # 存储桶名称
+    object_key: string  # 对象路径
+    signed_url: object  # 签名下载地址
+    expires_in_seconds: integer  # 有效期秒数
+    generated_at: object  # 生成时间
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+### GET `/api/v1/homework-blueprints/{homework_blueprint_id}`
+
+**获取课后作业蓝图详情**
+
+按主键查询单份课后作业蓝图，包含策略与考查权重。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `homework_blueprint_id` | integer | 是 | 课后作业蓝图主键 |
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    id: integer  # 作业蓝图主键
+    lesson_plan_id: integer  # 所属教案主键
+    generation_batch_id: integer  # 生成批次主键
+    version_no: integer  # 版本号
+    blueprint_name: string  # 作业蓝图名称
+    version_status: string  # 版本状态
+    strategy_json?: object  # 策略配置
+    content_json: object  # 蓝图结构化内容
+    export_file_id?: object  # 导出文件主键
+    created_by?: object  # 创建人
+    created_at: object  # 创建时间
+    updated_at: object  # 更新时间
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+### GET `/api/v1/homework-questions`
+
+**获取课后作业题目列表**
+
+按教案、作业、知识点、题型、难度筛选当前教师可见的作业题目，支持分页。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| query | `lesson_plan_id` | string | 否 | 教案主键 |
+| query | `homework_result_id` | string | 否 | 课后作业主键 |
+| query | `knowledge_point_id` | string | 否 | 知识点主键 |
+| query | `question_type` | string | 否 | 题型：single_choice=单选题，fill_blank=填空题，short_answer=简答题 |
+| query | `difficulty_level` | string | 否 | 难度等级（1-5） |
+| query | `page` | integer | 否 | 页码 |
+| query | `page_size` | integer | 否 | 每页大小 |
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    items: array[{
+      id: integer  # 作业题目主键
+      generation_batch_id: integer  # 生成批次主键
+      homework_result_id: integer  # 作业结果主键
+      lesson_plan_id: integer  # 所属教案主键
+      knowledge_point_id?: object  # 知识点主键
+      question_no: integer  # 题号
+      question_type: string  # 题型
+      difficulty_level?: object  # 难度等级
+      score_value?: object  # 分值
+      stem_text: object  # 题干
+      options_json?: object  # 选项
+      answer_text?: object  # 答案
+      analysis_text?: object  # 解析
+      source_trace_json?: object  # 来源摘要
+      created_at: object  # 创建时间
+      updated_at: object  # 更新时间
+      homework_title: string  # 所属作业标题
+      class_session_no?: integer  # 所属课次序号
+    }]
+    pagination: {
+      total_count: integer  # 总记录数
+      page: integer  # 当前页码
+      page_size: integer  # 每页大小
+      total_pages: integer  # 总页数
+      has_previous: boolean  # 是否存在上一页
+      has_next: boolean  # 是否存在下一页
+    }
   }
   timestamp: string  # 响应时间，UTC ISO8601 格式
   request_id: string  # 请求追踪 ID

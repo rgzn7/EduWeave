@@ -41,8 +41,12 @@ class AssessmentTaskCreateRequest(BaseSchema):
 
     scene_type: SceneType = Field(
         default=SceneType.UNIT_TEST,
-        description="测练场景类型，后端按场景自动套用预设策略：homework=课后作业，unit_test=单元测试，final_exam=期末综合测",
-        examples=["homework"],
+        description=(
+            "测练场景类型，后端按场景自动套用预设策略：unit_test=单元测试，final_exam=期末综合测；"
+            "课后作业（homework）已迁移至 /lesson-plans/{lesson_plan_id}/homework-tasks 课次维度接口，"
+            "本接口不再接受 homework 场景。"
+        ),
+        examples=["unit_test"],
     )
 
 

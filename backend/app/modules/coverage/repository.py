@@ -15,6 +15,8 @@ from app.modules.p0_models import (
     CurriculumPlan,
     GenerationBatch,
     GenerationTrace,
+    HomeworkQuestion,
+    HomeworkResult,
     KnowledgePoint,
     LessonPlan,
     PaperResult,
@@ -107,6 +109,31 @@ class CoverageRepository:
             select(QuestionItem)
             .where(QuestionItem.generation_batch_id == generation_batch_id)
             .order_by(QuestionItem.question_no.asc(), QuestionItem.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
+    def list_homework_results_by_batch(self, generation_batch_id: int) -> list[HomeworkResult]:
+        """查询批次下全部课后作业（仅 result_status=success 视为有效覆盖输入）。"""
+        statement = (
+            select(HomeworkResult)
+            .where(
+                HomeworkResult.generation_batch_id == generation_batch_id,
+                HomeworkResult.result_status == TASK_STATUS_SUCCESS,
+            )
+            .order_by(HomeworkResult.lesson_plan_id.asc(), HomeworkResult.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
+    def list_homework_questions_by_batch(self, generation_batch_id: int) -> list[HomeworkQuestion]:
+        """查询批次下全部作业题目明细。"""
+        statement = (
+            select(HomeworkQuestion)
+            .where(HomeworkQuestion.generation_batch_id == generation_batch_id)
+            .order_by(
+                HomeworkQuestion.lesson_plan_id.asc(),
+                HomeworkQuestion.question_no.asc(),
+                HomeworkQuestion.id.asc(),
+            )
         )
         return list(self.session.scalars(statement))
 
