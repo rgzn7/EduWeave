@@ -7,7 +7,7 @@
 import json
 import re
 import time
-from typing import Any
+from typing import Any, Callable
 
 import structlog
 from pydantic import BaseModel, ValidationError
@@ -15,6 +15,7 @@ from pydantic import BaseModel, ValidationError
 from app.core.config import Settings, get_settings
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.shared.llm.client import OpenAICompatibleEmbeddingClient, OpenAICompatibleLlmClient
+from app.shared.llm.prompt_cache import apply_prompt_cache_identity, apply_prompt_cache_markers
 from app.shared.llm.schemas import ChatMessage, EmbeddingUsage, LlmUsage
 
 logger = structlog.get_logger(__name__)
@@ -44,20 +45,38 @@ class OpenAICompatibleLlmService:
         messages: list[ChatMessage],
         response_model: type[BaseModel],
         temperature: float = 0.2,
+        cache_biz_key: str | None = None,
+        stable_prefix_message_count: int = 0,
+        cache_user_id: int | None = None,
+        on_usage: Callable[[LlmUsage], None] | None = None,
     ) -> BaseModel:
         """生成结构化 JSON 输出并解析为指定模型。
 
         三层健壮性：传输层瞬时错误重试（client）、缺文本重试（重发原始调用）、
         解析/校验失败时回调 LLM 自修复 JSON。
+
+        提示词缓存可选参数：
+        - cache_biz_key：派生 prompt_cache_key，按业务键分片复用上游前缀缓存。
+        - stable_prefix_message_count：前缀消息数量，Anthropic 端在第 N 条挂 cache_control 标记。
+        - cache_user_id：可选用户标识；仅在 settings.llm_prompt_cache_user_enabled 开启时注入 user 字段。
+        - on_usage：每次成功调用 LLM 后回调一次（含缺文本重试与修复重试），供调用方聚合 cached_tokens。
         """
-        raw_text = self._invoke_raw_text(
-            messages=messages, response_model=response_model, temperature=temperature
+        raw_text, raw_payload = self._invoke_raw_text(
+            messages=messages,
+            response_model=response_model,
+            temperature=temperature,
+            cache_biz_key=cache_biz_key,
+            stable_prefix_message_count=stable_prefix_message_count,
+            cache_user_id=cache_user_id,
         )
+        if on_usage is not None and raw_payload is not None:
+            on_usage(self.build_usage(raw_payload))
         return self._parse_or_repair(
             original_messages=messages,
             response_model=response_model,
             temperature=temperature,
             raw_text=raw_text,
+            on_usage=on_usage,
         )
 
     def _invoke_raw_text(
@@ -66,26 +85,44 @@ class OpenAICompatibleLlmService:
         messages: list[ChatMessage],
         response_model: type[BaseModel],
         temperature: float,
-    ) -> str:
-        """按配置格式调用 LLM 并提取文本；返回成功但无文本时重发原始调用。"""
+        cache_biz_key: str | None = None,
+        stable_prefix_message_count: int = 0,
+        cache_user_id: int | None = None,
+    ) -> tuple[str, dict[str, Any] | None]:
+        """按配置格式调用 LLM 并提取文本；返回成功但无文本时重发原始调用。
+
+        返回 (text, raw_payload)：raw_payload 是上游成功响应的原始字典，调用方可经
+        build_usage() 提取 LlmUsage（含 cached_tokens）。所有缺文本失败路径均抛异常。
+        """
         api_format = self.settings.llm_api_format
         max_retries = self.settings.llm_max_retries
         for attempt in range(max_retries + 1):
             if api_format == "chat":
-                payload = self._build_chat_completion_payload(messages=messages, temperature=temperature)
+                payload = self._build_chat_completion_payload(
+                    messages=messages,
+                    temperature=temperature,
+                    cache_biz_key=cache_biz_key,
+                    stable_prefix_message_count=stable_prefix_message_count,
+                    cache_user_id=cache_user_id,
+                )
                 result = self.client.create_chat_completion(payload)
                 text = self._extract_response_text(result)
                 details_source = result
             else:
                 payload = self._build_response_payload(
-                    messages=messages, response_model=response_model, temperature=temperature
+                    messages=messages,
+                    response_model=response_model,
+                    temperature=temperature,
+                    cache_biz_key=cache_biz_key,
+                    stable_prefix_message_count=stable_prefix_message_count,
+                    cache_user_id=cache_user_id,
                 )
                 streamed_text, final_payload = self.client.create_response_stream(payload)
                 text = streamed_text or self._extract_response_text(final_payload)
                 details_source = final_payload
 
             if text and text.strip():
-                return text.strip()
+                return text.strip(), details_source if isinstance(details_source, dict) else None
 
             details = self._build_missing_text_details(details_source, api_format)
             if attempt >= max_retries:
@@ -112,8 +149,13 @@ class OpenAICompatibleLlmService:
         response_model: type[BaseModel],
         temperature: float,
         raw_text: str,
+        on_usage: Callable[[LlmUsage], None] | None = None,
     ) -> BaseModel:
-        """解析结构化输出；失败时回调 LLM 修复 JSON 后重试。"""
+        """解析结构化输出；失败时回调 LLM 修复 JSON 后重试。
+
+        修复路径不传入 cache 参数，避免修复请求与稳定前缀混入同一缓存分片；on_usage
+        仍会对修复请求的使用量回调，便于调用方统计完整 token 成本。
+        """
         current_text = raw_text
         last_error: AppException | None = None
         max_attempts = self.settings.llm_parse_repair_max_attempts
@@ -140,11 +182,13 @@ class OpenAICompatibleLlmService:
                     parse_error=exc,
                     repair_attempt=attempt + 1,
                 )
-                current_text = self._invoke_raw_text(
+                current_text, repair_payload = self._invoke_raw_text(
                     messages=repair_messages,
                     response_model=response_model,
                     temperature=temperature,
                 )
+                if on_usage is not None and repair_payload is not None:
+                    on_usage(self.build_usage(repair_payload))
         if last_error is not None:
             raise last_error
         raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 生成结果结构不正确")
@@ -196,13 +240,23 @@ class OpenAICompatibleLlmService:
         messages: list[ChatMessage],
         response_model: type[BaseModel],
         temperature: float,
+        cache_biz_key: str | None = None,
+        stable_prefix_message_count: int = 0,
+        cache_user_id: int | None = None,
     ) -> dict[str, Any]:
         """构造 OpenAI Responses 结构化请求。"""
         # reasoning 类模型（如 gpt-5 系列）不接受 temperature，仅接受 reasoning.effort；
         # 若配置中显式给出 reasoning_effort，则忽略 temperature 以避免上游 400。
+        translated = [self._translate_message(message, "responses") for message in messages]
+        apply_prompt_cache_markers(
+            translated,
+            settings=self.settings,
+            api_format="responses",
+            stable_prefix_count=stable_prefix_message_count,
+        )
         payload: dict[str, Any] = {
             "model": self.settings.llm_model,
-            "input": [self._translate_message(message, "responses") for message in messages],
+            "input": translated,
             "text": {
                 "format": {
                     "type": "json_schema",
@@ -216,6 +270,12 @@ class OpenAICompatibleLlmService:
             payload["reasoning"] = {"effort": self.settings.llm_reasoning_effort}
         else:
             payload["temperature"] = temperature
+        apply_prompt_cache_identity(
+            payload,
+            settings=self.settings,
+            biz_key=cache_biz_key,
+            user_id=cache_user_id,
+        )
         return payload
 
     def _build_chat_completion_payload(
@@ -223,10 +283,20 @@ class OpenAICompatibleLlmService:
         *,
         messages: list[ChatMessage],
         temperature: float,
+        cache_biz_key: str | None = None,
+        stable_prefix_message_count: int = 0,
+        cache_user_id: int | None = None,
     ) -> dict[str, Any]:
         """构造 Chat Completions 兼容结构化请求。"""
         # reasoning 类模型（如 gpt-5 系列）不接受 temperature，仅接受 reasoning_effort
         message_payloads = [self._translate_message(message, "chat") for message in messages]
+        # 在追加 JSON 兜底提示之前先打 cache markers，确保锚点仍落在稳定前缀上。
+        apply_prompt_cache_markers(
+            message_payloads,
+            settings=self.settings,
+            api_format="chat",
+            stable_prefix_count=stable_prefix_message_count,
+        )
         # OpenAI 在使用 response_format=json_object 时要求 user 消息中出现 "json" 字样，
         # 否则会以 invalid_request_error 拒绝；此处兜底追加提示，避免上游 prompt 漏写。
         # 多模态 list 形态下 str(content) 不可靠，改为只扫描原始消息的 text 内容。
@@ -244,6 +314,12 @@ class OpenAICompatibleLlmService:
             payload["reasoning_effort"] = self.settings.llm_reasoning_effort
         else:
             payload["temperature"] = temperature
+        apply_prompt_cache_identity(
+            payload,
+            settings=self.settings,
+            biz_key=cache_biz_key,
+            user_id=cache_user_id,
+        )
         return payload
 
     def _build_repair_messages(
@@ -448,12 +524,31 @@ class OpenAICompatibleLlmService:
 
     @staticmethod
     def build_usage(payload: dict[str, Any]) -> LlmUsage:
-        """从原始响应中提取使用量。"""
+        """从原始响应中提取使用量，含三协议缓存命中 token 兼容读取。
+
+        缓存命中读取优先级：
+        - OpenAI Responses: usage.input_tokens_details.cached_tokens
+        - OpenAI Chat:      usage.prompt_tokens_details.cached_tokens
+        - Anthropic 兼容:    usage.cache_read_input_tokens
+        """
         usage = payload.get("usage") or {}
+        cached_tokens = 0
+        for key in ("input_tokens_details", "prompt_tokens_details"):
+            details = usage.get(key)
+            if isinstance(details, dict):
+                value = details.get("cached_tokens")
+                if isinstance(value, int):
+                    cached_tokens = value
+                    break
+        if not cached_tokens:
+            fallback = usage.get("cache_read_input_tokens")
+            if isinstance(fallback, int):
+                cached_tokens = fallback
         return LlmUsage(
             prompt_tokens=int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0),
             completion_tokens=int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0),
             total_tokens=int(usage.get("total_tokens", 0) or 0),
+            cached_tokens=int(cached_tokens or 0),
         )
 
 

@@ -52,6 +52,7 @@ class LlmUsage(BaseModel):
     prompt_tokens: int = Field(default=0, description="提示词 token 数")
     completion_tokens: int = Field(default=0, description="输出 token 数")
     total_tokens: int = Field(default=0, description="总 token 数")
+    cached_tokens: int = Field(default=0, description="命中提示词缓存的 token 数")
 
 
 class EmbeddingUsage(BaseModel):

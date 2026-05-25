@@ -74,6 +74,14 @@ class Settings(BaseSettings):
     llm_multimodal_enabled: bool = False
     # 单次教案生成注入的证据图片数量上限，控制 token 与成本。
     llm_multimodal_max_images: int = 6
+    # 是否给稳定前缀消息注入显式 cache_control 标记（仅 Anthropic 兼容端有效；OpenAI 兼容端会忽略）。
+    llm_prompt_cache_explicit_markers: bool = False
+    # 是否在请求载荷上注入 prompt_cache_key，让多账号代理稳定命中同一前缀缓存分片。
+    llm_prompt_cache_identity_enabled: bool = True
+    # 是否额外注入 user 字段；默认关闭，部分 OpenAI 代理在 Responses 模式下不兼容 user 字段。
+    llm_prompt_cache_user_enabled: bool = False
+    # prompt_cache_key 前缀；最终下发为 f"{prefix}-{biz_key}"，按业务键分片以最大化前缀复用。
+    llm_prompt_cache_key_prefix: str = "eduweave"
 
     embedding_api_base_url: str = "https://api.openai.com/v1"
     embedding_api_key: str | None = None
