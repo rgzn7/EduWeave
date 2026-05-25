@@ -701,7 +701,7 @@
           "学情"
         ],
         "summary": "上传学情文件",
-        "description": "向指定项目上传 doc 或 docx 学情文件，并按配置创建真实学情抽取任务。",
+        "description": "向指定项目上传 docx 学情文件，并按配置创建真实学情抽取任务（本地 python-docx 同步解析）。",
         "operationId": "learner_profile_create",
         "security": [
           {
@@ -6686,7 +6686,7 @@
             "type": "string",
             "contentMediaType": "application/octet-stream",
             "title": "File",
-            "description": "学情 doc/docx 文件"
+            "description": "学情 docx 文件"
           },
           "title": {
             "anyOf": [

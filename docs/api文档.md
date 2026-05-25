@@ -693,7 +693,7 @@
 
 **上传学情文件**
 
-向指定项目上传 doc 或 docx 学情文件，并按配置创建真实学情抽取任务。
+向指定项目上传 docx 学情文件，并按配置创建真实学情抽取任务（本地 python-docx 同步解析）。
 
 **参数**
 
@@ -705,7 +705,7 @@
 
 ```json
 {
-  file: string  # 学情 doc/docx 文件
+  file: string  # 学情 docx 文件
   title?: string | null  # 文档标题
   grade_code?: string | null  # 年级编码
   subject_scope?: string | null  # 学科范围
