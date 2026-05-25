@@ -1,9 +1,18 @@
 import { FormEvent, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, CheckCircle2, FileText, Loader2, UploadCloud } from "lucide-react";
+import { ArrowRight, CheckCircle2, FileText, Loader2, Minus, Plus, UploadCloud } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorNotice } from "../components/ErrorNotice";
+import {
+  COURSE_COUNT_MAX,
+  COURSE_COUNT_MIN,
+  DEFAULT_COURSE_COUNT,
+  DEFAULT_SESSION_DURATION_MINUTES,
+  SESSION_DURATION_MINUTES_MAX,
+  SESSION_DURATION_MINUTES_MIN,
+  markAutoCoreGeneration,
+} from "../lib/autoCoreGeneration";
 import { api } from "../lib/api";
 import { cn, formatDate } from "../utils";
 import type { GenerationBatch, Project } from "../types";
@@ -78,6 +87,10 @@ function inferSubjectCode(filename: string) {
 function inferGradeCode(filename: string) {
   const matched = gradeNameMap.find(([keyword]) => filename.includes(keyword));
   return matched?.[1] ?? "grade_3";
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
 }
 
 function getCaseState(project: Project, batch?: GenerationBatch, hasBatchError?: boolean): ProjectCaseState {
@@ -236,25 +249,84 @@ function ComposerMaterialRow({
   );
 }
 
+function GenerationSettingStepper({
+  label,
+  value,
+  min,
+  max,
+  step,
+  unit,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  unit: string;
+  disabled?: boolean;
+  onChange: (value: number) => void;
+}) {
+  const decrease = () => onChange(clampNumber(value - step, min, max));
+  const increase = () => onChange(clampNumber(value + step, min, max));
+
+  return (
+    <div className="flex shrink-0 items-center gap-2 whitespace-nowrap">
+      <span className="text-sm font-semibold text-ink">{label}</span>
+      <div className="inline-flex h-10 items-center rounded-full border border-line bg-white text-sm font-semibold text-ink shadow-[0_1px_0_rgba(0,0,0,0.03)]">
+        <button
+          aria-label={`${label}减少`}
+          className="flex h-full w-9 items-center justify-center rounded-l-full text-ink/70 transition hover:bg-[#f7f7f7] disabled:cursor-not-allowed disabled:text-ink/20 disabled:hover:bg-transparent"
+          disabled={disabled || value <= min}
+          type="button"
+          onClick={decrease}
+        >
+          <Minus size={15} />
+        </button>
+        <span className="flex h-full min-w-10 items-center justify-center border-x border-line/70 px-2 text-center tabular-nums">{value}</span>
+        <button
+          aria-label={`${label}增加`}
+          className="flex h-full w-9 items-center justify-center rounded-r-full text-ink/70 transition hover:bg-[#f7f7f7] disabled:cursor-not-allowed disabled:text-ink/20 disabled:hover:bg-transparent"
+          disabled={disabled || value >= max}
+          type="button"
+          onClick={increase}
+        >
+          <Plus size={15} />
+        </button>
+      </div>
+      <span className="text-sm font-medium text-ink/62">{unit}</span>
+    </div>
+  );
+}
+
 function LessonPrepComposer({
   textbookFile,
   profileFile,
+  courseCount,
+  sessionDurationMinutes,
   isPending,
   onTextbookChange,
   onProfileChange,
+  onCourseCountChange,
+  onSessionDurationMinutesChange,
 }: {
   textbookFile: File | null;
   profileFile: File | null;
+  courseCount: number;
+  sessionDurationMinutes: number;
   isPending: boolean;
   onTextbookChange: (file: File | null) => void;
   onProfileChange: (file: File | null) => void;
+  onCourseCountChange: (value: number) => void;
+  onSessionDurationMinutesChange: (value: number) => void;
 }) {
   return (
     <div className="rounded-[28px] border border-line bg-white px-4 py-2 shadow-panel">
       <ComposerMaterialRow
         accept="application/pdf,.pdf"
         actionLabel="选择教材"
-        description="基于教材生成课程方案和多课教案；PPT 课件与配套测练可在资源页按需生成。"
+        description="基于教材生成课程方案、教案、PPT 课件和配套测练。"
         file={textbookFile}
         step={1}
         title="上传教材 PDF"
@@ -272,12 +344,43 @@ function LessonPrepComposer({
         onChange={onProfileChange}
       />
       {textbookFile && profileFile ? (
-        <div className="mx-3 flex border-t border-line/75 py-4 md:justify-end">
-          <button className="btn btn-primary h-12 w-full shrink-0 rounded-full px-6 md:w-auto" disabled={isPending} type="submit">
-            {isPending ? <Loader2 className="animate-spin" size={17} /> : <ArrowRight size={17} />}
-            {isPending ? "正在生成" : "开始生成"}
-          </button>
-        </div>
+        <>
+          <div className="mx-3 border-t border-line/75" />
+          <div className="grid gap-4 px-3 py-5 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:items-center lg:gap-8">
+            <div className="flex shrink-0 items-center gap-4">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#f3f3f3] text-sm font-semibold text-ink/58">3</div>
+              <h2 className="text-base font-semibold text-ink">生成设置</h2>
+            </div>
+
+            <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center lg:justify-start lg:gap-5 xl:flex-nowrap">
+              <GenerationSettingStepper
+                disabled={isPending}
+                label="课次"
+                max={COURSE_COUNT_MAX}
+                min={COURSE_COUNT_MIN}
+                step={1}
+                unit="课"
+                value={courseCount}
+                onChange={onCourseCountChange}
+              />
+              <GenerationSettingStepper
+                disabled={isPending}
+                label="课时"
+                max={SESSION_DURATION_MINUTES_MAX}
+                min={SESSION_DURATION_MINUTES_MIN}
+                step={5}
+                unit="分钟"
+                value={sessionDurationMinutes}
+                onChange={onSessionDurationMinutesChange}
+              />
+            </div>
+
+            <button className="btn btn-primary h-11 w-full shrink-0 rounded-full px-5 lg:w-auto" disabled={isPending} type="submit">
+              {isPending ? <Loader2 className="animate-spin" size={17} /> : <ArrowRight size={17} />}
+              {isPending ? "正在生成" : "开始生成"}
+            </button>
+          </div>
+        </>
       ) : null}
     </div>
   );
@@ -328,6 +431,8 @@ export function DashboardPage() {
   const queryClient = useQueryClient();
   const [textbookFile, setTextbookFile] = useState<File | null>(null);
   const [profileFile, setProfileFile] = useState<File | null>(null);
+  const [courseCount, setCourseCount] = useState(DEFAULT_COURSE_COUNT);
+  const [sessionDurationMinutes, setSessionDurationMinutes] = useState(DEFAULT_SESSION_DURATION_MINUTES);
   const isHistoryPage = location.pathname === "/history";
 
   const projectsQuery = useQuery({
@@ -361,6 +466,7 @@ export function DashboardPage() {
       return project;
     },
     onSuccess: (project) => {
+      markAutoCoreGeneration(project.id, { courseCount, sessionDurationMinutes });
       queryClient.invalidateQueries({ queryKey: ["projects"] });
       navigate(`/projects/${project.id}`);
     },
@@ -426,17 +532,21 @@ export function DashboardPage() {
 
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col pb-16 pt-24 md:pt-32">
-      <section className="mx-auto w-full max-w-[760px]">
+      <section className="mx-auto w-full max-w-[900px]">
         <div className="text-center">
           <h1 className="font-serif text-[42px] font-medium leading-tight tracking-normal text-ink md:text-[56px]">上传材料，生成备课资源</h1>
         </div>
 
         <form className="mt-8" onSubmit={handleSubmit}>
           <LessonPrepComposer
+            courseCount={courseCount}
             isPending={startLessonPrep.isPending}
             profileFile={profileFile}
+            sessionDurationMinutes={sessionDurationMinutes}
             textbookFile={textbookFile}
+            onCourseCountChange={setCourseCount}
             onProfileChange={setProfileFile}
+            onSessionDurationMinutesChange={setSessionDurationMinutes}
             onTextbookChange={handleTextbookChange}
           />
           {startLessonPrep.error ? <ErrorNotice title="暂时无法开始生成" message="请确认材料格式正确，或稍后再试。" /> : null}

@@ -1,6 +1,8 @@
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
+import { AssessmentDetailPage } from "./pages/AssessmentDetailPage";
 import { BatchDetailPage } from "./pages/BatchDetailPage";
+import { CoverageReportPage } from "./pages/CoverageReportPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { LoginPage } from "./pages/LoginPage";
 import { ProjectWorkspacePage } from "./pages/ProjectWorkspacePage";
@@ -39,6 +41,14 @@ export const router = createBrowserRouter([
       {
         path: "projects/:projectId/batches/:batchId",
         element: <BatchDetailPage />,
+      },
+      {
+        path: "projects/:projectId/batches/:batchId/assessments/:paperResultId",
+        element: <AssessmentDetailPage />,
+      },
+      {
+        path: "projects/:projectId/batches/:batchId/coverage/:coverageReportId",
+        element: <CoverageReportPage />,
       },
       {
         path: "tasks/:taskId",

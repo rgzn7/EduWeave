@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowRight,
@@ -18,6 +18,13 @@ import { Link, useParams } from "react-router-dom";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { isTaskActiveStatus } from "../hooks/useTaskPolling";
+import {
+  clearAutoCoreGenerationMarker,
+  DEFAULT_COURSE_COUNT,
+  DEFAULT_SESSION_DURATION_MINUTES,
+  readAutoCoreGenerationMarker,
+  type AutoCoreGenerationMarker,
+} from "../lib/autoCoreGeneration";
 import { api } from "../lib/api";
 import type {
   CoursewareResult,
@@ -44,12 +51,14 @@ const READY_STATUS = "ready";
 const SUCCESS_STATUS = "success";
 const CONFIRMED_STATUS = "confirmed";
 const PROCESS_STEP_COUNT = 5;
+const FAILURE_STATUSES = new Set(["failed", "failure", "error", "cancelled"]);
 
 type ProcessState = "complete" | "current" | "waiting";
 
 type ActionConfig = {
   title: string;
   message: string;
+  meta?: string;
   buttonLabel?: string;
   buttonIcon?: LucideIcon;
   disabled?: boolean;
@@ -70,6 +79,31 @@ function latestTaskBy(tasks: Task[], predicate: (task: Task) => boolean) {
     })[0];
 }
 
+function isTextbookParseTask(task: Task) {
+  return task.module_code === "parsing" || task.task_type === "textbook_parse";
+}
+
+function isKnowledgeTask(task: Task) {
+  return task.module_code === "knowledge" || task.task_type === "knowledge_extract";
+}
+
+function numberValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? number : null;
+  }
+  return null;
+}
+
+function parseVersionIdFromTask(task: Task) {
+  const payload = valueAsRecord(task.payload_json);
+  const result = valueAsRecord(task.result_json);
+  return numberValue(payload?.parse_version_id) ?? numberValue(result?.parse_version_id);
+}
+
 function isReadyVersion(item?: { version_status?: string | null }) {
   return item?.version_status === READY_STATUS;
 }
@@ -78,12 +112,53 @@ function isConfirmedParseVersion(parseVersion?: ParseVersion) {
   return parseVersion?.parse_status === SUCCESS_STATUS && parseVersion.review_status === CONFIRMED_STATUS;
 }
 
+function preferredParseVersion(parseVersions: ParseVersion[], tasks: Task[]) {
+  const ordered = [...parseVersions].sort((a, b) => b.id - a.id);
+  const knowledgeParseVersionId = [...tasks]
+    .filter((task) => isKnowledgeTask(task) && !isFailureStatus(task.task_status))
+    .sort((a, b) => {
+      const updatedDiff = new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+      return updatedDiff || b.id - a.id;
+    })
+    .map(parseVersionIdFromTask)
+    .find((id): id is number => id !== null && ordered.some((item) => item.id === id));
+  const knowledgeVersionParse = ordered.find((item) => item.id === knowledgeParseVersionId);
+
+  return (
+    knowledgeVersionParse ??
+    ordered.find((item) => isConfirmedParseVersion(item) && isReadyVersion(item)) ??
+    ordered.find(isConfirmedParseVersion) ??
+    ordered.find((item) => item.parse_status === SUCCESS_STATUS && isReadyVersion(item)) ??
+    ordered.find((item) => item.parse_status === SUCCESS_STATUS) ??
+    ordered[0]
+  );
+}
+
 function isReadyProfileVersion(profileVersion?: LearnerProfileVersion | LearnerProfileVersionDetail) {
   return profileVersion?.extract_status === SUCCESS_STATUS && isReadyVersion(profileVersion);
 }
 
 function isCompleteStatus(status?: string | null) {
   return ["success", "completed", "complete", "ready", "done"].includes(String(status ?? "").toLowerCase());
+}
+
+function isFailureStatus(status?: string | null) {
+  return FAILURE_STATUSES.has(String(status ?? "").toLowerCase());
+}
+
+function taskErrorMessage(task: Task | undefined, fallback: string) {
+  return task?.last_error_message || fallback;
+}
+
+function formatElapsedTime(startedAt: string, now: number) {
+  const startTime = new Date(startedAt).getTime();
+  if (!Number.isFinite(startTime)) {
+    return "";
+  }
+  const totalSeconds = Math.max(0, Math.floor((now - startTime) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
 function valueAsRecord(value: unknown): JsonRecord | null {
@@ -291,7 +366,6 @@ function ParseSummaryCard({
   isLoading: boolean;
 }) {
   const volume = summary?.volume;
-  const sampleBlocks = summary?.sample_blocks ?? [];
 
   return (
     <div className="space-y-3">
@@ -303,21 +377,9 @@ function ParseSummaryCard({
           { label: "公式", value: displayCount(volume?.equation_block_count) },
         ]}
       />
-      {summary ? (
-        <div className="space-y-2 rounded-2xl border border-line bg-[#fbfbfb] p-3">
-          {sampleBlocks.slice(0, 2).map((block) => (
-            <div className="flex gap-3 rounded-xl bg-white px-3 py-2 text-sm text-ink/62" key={block.parse_block_id}>
-              <FileText className="mt-0.5 shrink-0 text-ink/38" size={16} />
-              <div className="line-clamp-2">
-                {block.text_excerpt || `第 ${block.page_no} 页 ${block.block_type || "内容"} 已完成结构化识别。`}
-              </div>
-            </div>
-          ))}
-          {!sampleBlocks.length ? <div className="text-sm text-ink/45">教材结构已经完成识别，证据片段正在同步。</div> : null}
-        </div>
-      ) : (
+      {!summary ? (
         <SoftNotice>{isLoading ? "正在读取教材理解结果。" : "教材理解结果已完成，结构化证据正在同步。"}</SoftNotice>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -427,10 +489,10 @@ function ResourceChecklist({
 
   const rows = [
     { label: "课程方案", value: batch?.curriculum_plan_id ? "已生成" : "准备中" },
-    { label: "教案", value: lessonCount ? `${lessonCount} 份` : "准备中" },
-    { label: "PPT 课件", value: coursewareCount ? `${coursewareCount} 份` : lessonCount ? "可按课生成" : "等待教案" },
-    { label: "配套测练", value: paperSceneCount ? `${paperSceneCount} 类` : batch?.curriculum_plan_id ? "可按场景生成" : "等待课程方案" },
-    { label: "覆盖报告", value: hasCoverage ? "已完成" : "准备中" },
+    { label: "多课教案", value: lessonCount ? `${lessonCount} 份` : batch?.curriculum_plan_id ? "生成中" : "等待课程方案" },
+    { label: "覆盖报告", value: hasCoverage ? "已完成" : lessonCount ? "准备中" : "等待教案" },
+    { label: "PPT 课件", value: coursewareCount ? `${coursewareCount} 份` : "按课生成" },
+    { label: "配套测练", value: paperSceneCount ? `${paperSceneCount} 类` : "按场景生成" },
   ];
 
   return (
@@ -502,6 +564,9 @@ function CurrentActionPanel({
           <div>
             <h2 className="text-lg font-semibold text-ink">{action.title}</h2>
             <p className="mt-2 text-sm leading-6 text-ink/55">{action.message}</p>
+            {action.meta ? (
+              <div className="mt-3 inline-flex rounded-full bg-[#f4f4f4] px-3 py-1 text-xs font-semibold text-ink/50">{action.meta}</div>
+            ) : null}
           </div>
         </div>
         {action.buttonLabel ? (
@@ -542,6 +607,25 @@ export function ProjectWorkspacePage() {
   const [selectedProfileVersionId, setSelectedProfileVersionId] = useState<number | null>(null);
   const [selectedParseVersionId, setSelectedParseVersionId] = useState<number | null>(null);
   const [selectedKnowledgeVersionId, setSelectedKnowledgeVersionId] = useState<number | null>(null);
+  const [autoCoreGenerationMarker, setAutoCoreGenerationMarker] = useState<AutoCoreGenerationMarker | null>(() =>
+    readAutoCoreGenerationMarker(projectId),
+  );
+  const [currentTime, setCurrentTime] = useState(() => Date.now());
+  const autoTriggeredStepKeys = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    setAutoCoreGenerationMarker(readAutoCoreGenerationMarker(projectId));
+    autoTriggeredStepKeys.current.clear();
+  }, [projectId]);
+
+  useEffect(() => {
+    if (!autoCoreGenerationMarker) {
+      return;
+    }
+    setCurrentTime(Date.now());
+    const timer = window.setInterval(() => setCurrentTime(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [autoCoreGenerationMarker]);
 
   const projectQuery = useQuery({
     queryKey: ["project", projectId],
@@ -641,17 +725,17 @@ export function ProjectWorkspacePage() {
   }, [learnerProfiles, selectedProfileFileId]);
 
   useEffect(() => {
-    const preferred = latestById(parseVersions);
+    const preferred = preferredParseVersion(parseVersions, tasks);
     if (!preferred) {
       setSelectedParseVersionId(null);
       setSelectedKnowledgeVersionId(null);
       return;
     }
-    if (!selectedParseVersionId || !parseVersions.some((item) => item.id === selectedParseVersionId)) {
+    if (selectedParseVersionId !== preferred.id) {
       setSelectedParseVersionId(preferred.id);
       setSelectedKnowledgeVersionId(null);
     }
-  }, [parseVersions, selectedParseVersionId]);
+  }, [parseVersions, selectedParseVersionId, tasks]);
 
   useEffect(() => {
     const preferred = latestById(profileVersions);
@@ -686,8 +770,8 @@ export function ProjectWorkspacePage() {
     [learnerProfiles, selectedProfileFileId],
   );
   const selectedParseVersion = useMemo(
-    () => parseVersions.find((item) => item.id === selectedParseVersionId) ?? latestById(parseVersions),
-    [parseVersions, selectedParseVersionId],
+    () => parseVersions.find((item) => item.id === selectedParseVersionId) ?? preferredParseVersion(parseVersions, tasks),
+    [parseVersions, selectedParseVersionId, tasks],
   );
   const selectedProfileVersion = useMemo(
     () => profileVersions.find((item) => item.id === selectedProfileVersionId) ?? latestById(profileVersions),
@@ -742,7 +826,7 @@ export function ProjectWorkspacePage() {
   });
 
   const parsingTask = useMemo(
-    () => latestTaskBy(tasks, (task) => task.module_code === "parsing" || task.task_type === "textbook_parse"),
+    () => latestTaskBy(tasks, isTextbookParseTask),
     [tasks],
   );
   const profileTask = useMemo(
@@ -750,7 +834,7 @@ export function ProjectWorkspacePage() {
     [tasks],
   );
   const knowledgeTask = useMemo(
-    () => latestTaskBy(tasks, (task) => task.module_code === "knowledge" || task.task_type === "knowledge_extract"),
+    () => latestTaskBy(tasks, isKnowledgeTask),
     [tasks],
   );
   const generationTask = useMemo(
@@ -765,11 +849,27 @@ export function ProjectWorkspacePage() {
   const parseComplete = isConfirmedParseVersion(selectedParseVersion);
   const profileComplete = isReadyProfileVersion(profileDetailQuery.data ?? selectedProfileVersion);
   const knowledgeComplete = isReadyVersion(selectedKnowledgeVersion);
+  const hasSuccessfulParseVersion = parseVersions.some((item) => item.parse_status === SUCCESS_STATUS);
+  const hasActiveParseTask = tasks.some((task) => isTextbookParseTask(task) && isTaskActiveStatus(task.task_status));
+  const hasActiveKnowledgeTask = tasks.some((task) => isKnowledgeTask(task) && isTaskActiveStatus(task.task_status));
   const generationActive = isTaskActiveStatus(generationTask?.task_status) || isTaskActiveStatus(latestBatch?.batch_status);
   const generationComplete = isCompleteStatus(latestBatch?.batch_status);
   const parseActive = isTaskActiveStatus(parsingTask?.task_status) || Boolean(selectedParseVersion && !parseComplete);
   const profileActive = isTaskActiveStatus(profileTask?.task_status) || Boolean(selectedProfileVersion && !profileComplete);
   const knowledgeActive = isTaskActiveStatus(knowledgeTask?.task_status) || Boolean(selectedKnowledgeVersion && !knowledgeComplete);
+  const parseFailed =
+    isFailureStatus(parsingTask?.task_status) ||
+    isFailureStatus(selectedTextbook?.parse_status) ||
+    isFailureStatus(selectedParseVersion?.parse_status);
+  const profileFailed =
+    isFailureStatus(profileTask?.task_status) ||
+    isFailureStatus(selectedProfileFile?.file_status) ||
+    isFailureStatus(selectedProfileVersion?.extract_status);
+  const knowledgeFailed = isFailureStatus(knowledgeTask?.task_status);
+  const generationFailed = isFailureStatus(generationTask?.task_status) || isFailureStatus(latestBatch?.batch_status);
+  const autoCoreGenerationEnabled = Boolean(autoCoreGenerationMarker);
+  const generationCourseCount = autoCoreGenerationMarker?.courseCount ?? DEFAULT_COURSE_COUNT;
+  const generationSessionDurationMinutes = autoCoreGenerationMarker?.sessionDurationMinutes ?? DEFAULT_SESSION_DURATION_MINUTES;
 
   const materialState: ProcessState = materialComplete ? "complete" : "current";
   const parseState: ProcessState = parseComplete ? "complete" : selectedTextbook ? "current" : "waiting";
@@ -832,13 +932,208 @@ export function ProjectWorkspacePage() {
         knowledge_version_id: selectedKnowledgeVersion!.id,
         learner_profile_version_id: selectedProfileVersion!.id,
         batch_name: `${projectTitle(projectQuery.data, selectedTextbook)}备课资源`,
-        course_count: 12,
-        session_duration_minutes: 90,
+        course_count: generationCourseCount,
+        session_duration_minutes: generationSessionDurationMinutes,
       }),
     onSuccess: invalidateWorkspace,
   });
 
+  const autoMutationError = createParseTask.error ?? confirmParseVersion.error ?? createKnowledgeTask.error ?? createBatch.error;
+  const hasAutoBlockingFailure =
+    parseFailed || profileFailed || knowledgeFailed || generationFailed || Boolean(autoMutationError);
+  const hasAutoMutationPending =
+    createParseTask.isPending || confirmParseVersion.isPending || createKnowledgeTask.isPending || createBatch.isPending;
+  const autoElapsedText = autoCoreGenerationMarker
+    ? `已运行 ${formatElapsedTime(autoCoreGenerationMarker.createdAt, currentTime)}`
+    : undefined;
+
+  const triggerAutoStep = (stepKey: string, action: () => void) => {
+    if (autoTriggeredStepKeys.current.has(stepKey)) {
+      return;
+    }
+    autoTriggeredStepKeys.current.add(stepKey);
+    action();
+  };
+
+  useEffect(() => {
+    if (autoCoreGenerationEnabled && generationComplete && latestBatch) {
+      clearAutoCoreGenerationMarker(projectId);
+      setAutoCoreGenerationMarker(null);
+    }
+  }, [autoCoreGenerationEnabled, generationComplete, latestBatch, projectId]);
+
+  useEffect(() => {
+    if (
+      !autoCoreGenerationEnabled ||
+      projectId <= 0 ||
+      !selectedTextbook ||
+      !selectedProfileFile ||
+      hasAutoBlockingFailure ||
+      hasAutoMutationPending ||
+      textbooksQuery.isLoading ||
+      learnerProfilesQuery.isLoading ||
+      parseVersionsQuery.isLoading ||
+      profileVersionsQuery.isLoading ||
+      knowledgeVersionsQuery.isLoading ||
+      generationBatchesQuery.isLoading ||
+      tasksQuery.isLoading
+    ) {
+      return;
+    }
+
+    if (!selectedParseVersion && !parseActive && !hasSuccessfulParseVersion && !hasActiveParseTask) {
+      triggerAutoStep(`parse:${selectedTextbook.id}`, () => createParseTask.mutate());
+      return;
+    }
+
+    if (selectedParseVersion?.parse_status === SUCCESS_STATUS && selectedParseVersion.review_status !== CONFIRMED_STATUS) {
+      triggerAutoStep(`confirm-parse:${selectedParseVersion.id}`, () => confirmParseVersion.mutate());
+      return;
+    }
+
+    if (parseComplete && !knowledgeComplete && !knowledgeActive && !hasActiveKnowledgeTask && selectedParseVersion) {
+      triggerAutoStep(`knowledge:${selectedParseVersion.id}`, () => createKnowledgeTask.mutate());
+      return;
+    }
+
+    if (parseComplete && profileComplete && knowledgeComplete && !latestBatch && !generationActive) {
+      triggerAutoStep(`batch:${selectedKnowledgeVersion?.id}:${selectedProfileVersion?.id}`, () => createBatch.mutate());
+    }
+  }, [
+    autoCoreGenerationEnabled,
+    confirmParseVersion,
+    createBatch,
+    createKnowledgeTask,
+    createParseTask,
+    generationActive,
+    generationBatchesQuery.isLoading,
+    hasAutoBlockingFailure,
+    hasAutoMutationPending,
+    hasActiveKnowledgeTask,
+    hasActiveParseTask,
+    hasSuccessfulParseVersion,
+    knowledgeActive,
+    knowledgeComplete,
+    knowledgeVersionsQuery.isLoading,
+    latestBatch,
+    learnerProfilesQuery.isLoading,
+    parseActive,
+    parseComplete,
+    parseVersionsQuery.isLoading,
+    profileComplete,
+    profileVersionsQuery.isLoading,
+    projectId,
+    selectedKnowledgeVersion?.id,
+    selectedParseVersion,
+    selectedProfileFile,
+    selectedProfileVersion?.id,
+    selectedTextbook,
+    tasksQuery.isLoading,
+    textbooksQuery.isLoading,
+  ]);
+
   const action: ActionConfig = useMemo(() => {
+    if (autoCoreGenerationEnabled) {
+      if (autoMutationError) {
+        return {
+          title: "自动生成遇到问题",
+          message: getErrorMessage(autoMutationError),
+          meta: autoElapsedText,
+        };
+      }
+      if (parseFailed) {
+        return {
+          title: "教材理解失败",
+          message: taskErrorMessage(parsingTask, "教材解析没有成功，请查看任务详情或重新创建备课。"),
+          meta: autoElapsedText,
+        };
+      }
+      if (profileFailed) {
+        return {
+          title: "学情分析失败",
+          message: taskErrorMessage(profileTask, "学情分析没有成功，当前接口不支持对已上传学情重新抽取。"),
+          meta: autoElapsedText,
+        };
+      }
+      if (knowledgeFailed) {
+        return {
+          title: "教学重点整理失败",
+          message: taskErrorMessage(knowledgeTask, "知识点抽取没有成功，请查看任务详情或重新创建备课。"),
+          meta: autoElapsedText,
+        };
+      }
+      if (generationFailed) {
+        return {
+          title: "核心备课包生成失败",
+          message: taskErrorMessage(generationTask, "课程方案、教案或覆盖报告生成没有成功，请查看任务详情。"),
+          meta: autoElapsedText,
+        };
+      }
+      if (generationComplete && latestBatch) {
+        return {
+          title: "备课资源已生成",
+          message: "课程方案、教案和覆盖报告已准备好；PPT 可按课生成，测练可按场景生成。",
+          meta: autoElapsedText,
+          buttonLabel: "查看备课资源",
+          buttonIcon: ExternalLink,
+          onClick: () => window.location.assign(`/projects/${projectId}/batches/${latestBatch.id}`),
+        };
+      }
+      if (!selectedParseVersion || selectedParseVersion.parse_status !== SUCCESS_STATUS || selectedParseVersion.review_status !== CONFIRMED_STATUS) {
+        return {
+          title: "自动生成中",
+          message: "正在理解教材，完成后会自动确认结果并整理教学重点。",
+          meta: autoElapsedText,
+          buttonLabel: "正在自动处理",
+          buttonIcon: Loader2,
+          disabled: true,
+          loading: true,
+        };
+      }
+      if (profileActive && knowledgeActive && !profileComplete && !knowledgeComplete) {
+        return {
+          title: "自动生成中",
+          message: "正在并行分析学情和整理教学重点，完成后会自动生成核心备课包。",
+          meta: autoElapsedText,
+          buttonLabel: "正在自动处理",
+          buttonIcon: Loader2,
+          disabled: true,
+          loading: true,
+        };
+      }
+      if (!profileComplete) {
+        return {
+          title: "自动生成中",
+          message: "正在分析学情，完成后会和教材知识点一起用于生成核心备课包。",
+          meta: autoElapsedText,
+          buttonLabel: "正在自动处理",
+          buttonIcon: Loader2,
+          disabled: true,
+          loading: true,
+        };
+      }
+      if (!knowledgeComplete) {
+        return {
+          title: "自动生成中",
+          message: "正在整理章节、知识点和重点讲解线索，完成后会自动生成核心备课包。",
+          meta: autoElapsedText,
+          buttonLabel: "正在自动处理",
+          buttonIcon: Loader2,
+          disabled: true,
+          loading: true,
+        };
+      }
+      return {
+        title: "自动生成中",
+        message: "正在生成课程方案、多课教案和覆盖报告；PPT 课件与配套测练可在资源页按需生成。",
+        meta: autoElapsedText,
+        buttonLabel: "正在自动处理",
+        buttonIcon: Loader2,
+        disabled: true,
+        loading: true,
+      };
+    }
+
     if (!selectedTextbook || !selectedProfileFile) {
       return {
         title: "请先补齐材料",
@@ -865,6 +1160,16 @@ export function ProjectWorkspacePage() {
         disabled: confirmParseVersion.isPending,
         loading: confirmParseVersion.isPending,
         onClick: () => confirmParseVersion.mutate(),
+      };
+    }
+    if (profileActive && knowledgeActive && !profileComplete && !knowledgeComplete) {
+      return {
+        title: "并行处理中",
+        message: "正在并行分析学情和整理教学重点，完成后会自动生成核心备课包。",
+        buttonLabel: "正在处理",
+        buttonIcon: Loader2,
+        disabled: true,
+        loading: true,
       };
     }
     if (!profileComplete) {
@@ -917,18 +1222,29 @@ export function ProjectWorkspacePage() {
       onClick: () => createBatch.mutate(),
     };
   }, [
+    autoCoreGenerationEnabled,
+    autoElapsedText,
+    autoMutationError,
     confirmParseVersion,
     createBatch,
     createKnowledgeTask,
     createParseTask,
     generationActive,
     generationComplete,
+    generationFailed,
+    generationTask,
     knowledgeActive,
     knowledgeComplete,
+    knowledgeFailed,
+    knowledgeTask,
     latestBatch,
     parseActive,
+    parseFailed,
+    parsingTask,
+    profileFailed,
     profileActive,
     profileComplete,
+    profileTask,
     projectId,
     selectedParseVersion,
     selectedProfileFile,
@@ -1059,7 +1375,7 @@ export function ProjectWorkspacePage() {
                   state={knowledgeState}
                   icon={Target}
                   title="整理教学重点"
-                  waitingText="教材理解和学情分析完成后，系统会整理章节和知识点。"
+                  waitingText="教材理解完成后，系统会整理章节和知识点；学情会在生成备课包时合并使用。"
                   currentText={knowledgeActive ? "正在整理章节、知识点和重点讲解线索。" : "可以开始整理教学重点。"}
                 >
                   <KnowledgeSummaryCard

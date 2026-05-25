@@ -1,7 +1,21 @@
-import { BookOpen, History, LogOut, Menu, PenLine } from "lucide-react";
+import { ArrowLeft, BookOpen, History, LogOut, Menu, PenLine } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Outlet, Link, useLocation, useNavigate } from "react-router-dom";
+import { api } from "../lib/api";
 import { useAuthStore } from "../stores/auth";
 import { cn } from "../utils";
+
+const sceneLabels: Record<string, string> = {
+  homework: "课后作业",
+  unit_test: "单元测评",
+  final_exam: "期末综合测",
+};
+
+function stripExtension(value?: string | null) {
+  return String(value ?? "")
+    .replace(/\.[^.]+$/u, "")
+    .trim();
+}
 
 export function AppShell() {
   const location = useLocation();
@@ -9,7 +23,40 @@ export function AppShell() {
   const clearSession = useAuthStore((state) => state.clearSession);
   const isDashboard = location.pathname === "/";
   const isProcessPage = /^\/projects\/[^/]+$/.test(location.pathname);
-  const useQuietHeader = isDashboard || isProcessPage;
+  const resourceMatch = location.pathname.match(/^\/projects\/([^/]+)\/batches\/([^/]+)(?:\/(assessments|coverage)\/([^/]+))?\/?$/);
+  const resourceProjectId = Number(resourceMatch?.[1] ?? 0);
+  const resourceBatchId = Number(resourceMatch?.[2] ?? 0);
+  const resourceKind = resourceMatch?.[3];
+  const resourceDetailId = Number(resourceMatch?.[4] ?? 0);
+  const hasContextHeader = isProcessPage || Boolean(resourceMatch);
+  const useQuietHeader = isDashboard;
+
+  const resourceProjectQuery = useQuery({
+    queryKey: ["project", resourceProjectId],
+    queryFn: () => api.getProject(resourceProjectId),
+    enabled: Boolean(resourceMatch && !resourceKind && resourceProjectId > 0),
+  });
+  const resourceBatchQuery = useQuery({
+    queryKey: ["generation-batch", resourceBatchId],
+    queryFn: () => api.getGenerationBatch(resourceBatchId),
+    enabled: Boolean(resourceMatch && !resourceKind && resourceBatchId > 0),
+  });
+  const paperHeaderQuery = useQuery({
+    queryKey: ["paper-result", resourceDetailId],
+    queryFn: () => api.getPaperResult(resourceDetailId),
+    enabled: Boolean(resourceKind === "assessments" && resourceDetailId > 0),
+  });
+
+  const contextTitle = isProcessPage
+    ? "生成过程"
+    : resourceKind === "coverage"
+      ? "覆盖报告"
+      : resourceKind === "assessments"
+        ? sceneLabels[String(paperHeaderQuery.data?.scene_type ?? "")] ?? "查看题目"
+        : resourceMatch
+          ? stripExtension(resourceProjectQuery.data?.name) || stripExtension(resourceBatchQuery.data?.batch_name) || "备课资源"
+          : "";
+  const resourceBackTo = resourceKind ? `/projects/${resourceProjectId}/batches/${resourceBatchId}` : "/history";
 
   return (
     <div className="min-h-screen bg-paper text-ink">
@@ -61,17 +108,44 @@ export function AppShell() {
         <header
           className={cn(
             "sticky top-0 z-10 flex h-14 items-center bg-paper/88 px-4 backdrop-blur lg:px-8",
-            useQuietHeader ? "border-b-0 lg:hidden" : "border-b border-line",
+            hasContextHeader ? "border-b border-line" : useQuietHeader ? "border-b-0 lg:hidden" : "border-b border-line",
           )}
         >
-          <div className="flex items-center gap-3">
-            <button className="btn btn-ghost h-9 w-9 px-0 lg:hidden" type="button" title="菜单">
-              <Menu size={18} />
-            </button>
-            <div className="lg:hidden">
-              <div className="text-sm font-semibold">EduWeave</div>
+          {hasContextHeader ? (
+            <div className="relative flex w-full items-center justify-between">
+              {isProcessPage ? (
+                <button
+                  className="inline-flex h-9 items-center gap-1 text-sm font-semibold text-ink/55 transition hover:text-ink"
+                  type="button"
+                  onClick={() => navigate(-1)}
+                >
+                  <ArrowLeft size={16} />
+                  返回
+                </button>
+              ) : (
+                <Link
+                  className="inline-flex h-9 items-center gap-1 text-sm font-semibold text-ink/55 transition hover:text-ink"
+                  to={resourceBackTo}
+                >
+                  <ArrowLeft size={16} />
+                  返回
+                </Link>
+              )}
+              <div className="pointer-events-none absolute left-1/2 max-w-[60%] -translate-x-1/2 truncate text-sm font-semibold text-ink" title={contextTitle}>
+                {contextTitle}
+              </div>
+              <div className="h-9 w-[72px]" />
             </div>
-          </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <button className="btn btn-ghost h-9 w-9 px-0 lg:hidden" type="button" title="菜单">
+                <Menu size={18} />
+              </button>
+              <div className="lg:hidden">
+                <div className="text-sm font-semibold">EduWeave</div>
+              </div>
+            </div>
+          )}
         </header>
         <main className="px-4 lg:px-8">
           <Outlet />
