@@ -15,7 +15,7 @@ from app.core.constants import (
 )
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.core.middleware import get_request_id
-from app.modules.assessment.presets import resolve_assessment_strategy
+from app.modules.assessment.presets import SceneType, resolve_assessment_strategy
 from app.modules.assessment.repository import AssessmentRepository
 from app.modules.assessment.schemas import (
     AssessmentBlueprintDetailResponse,
@@ -51,6 +51,12 @@ class AssessmentService:
         request: AssessmentTaskCreateRequest,
     ) -> TaskListItemResponse:
         """按课程大纲创建测评生成任务。"""
+        if request.scene_type == SceneType.HOMEWORK:
+            raise AppException(
+                BusinessErrorCode.ASSESSMENT_SCENE_INVALID,
+                "课后作业请通过 /lesson-plans/{lesson_plan_id}/homework-tasks 创建",
+                {"scene_type": request.scene_type.value},
+            )
         curriculum_plan = self.repository.get_curriculum_plan_for_owner(curriculum_plan_id, owner_user_id)
         if curriculum_plan is None:
             raise AppException(BusinessErrorCode.CURRICULUM_PLAN_NOT_FOUND, "课程大纲不存在")

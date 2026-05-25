@@ -36,14 +36,14 @@ def get_learner_profile_service(session: Annotated[Session, Depends(get_db_sessi
 @router.post(
     "/projects/{project_id}/learner-profiles",
     summary="上传学情文件",
-    description="向指定项目上传 doc 或 docx 学情文件，并按配置创建真实学情抽取任务。",
+    description="向指定项目上传 docx 学情文件，并按配置创建真实学情抽取任务（本地 python-docx 同步解析）。",
     operation_id="learner_profile_create",
     response_model=ApiResponse[LearnerProfileFileDetailResponse],
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_learner_profile(
     project_id: int = Path(..., description="项目主键", examples=[1]),
-    file: UploadFile = File(..., description="学情 doc/docx 文件"),
+    file: UploadFile = File(..., description="学情 docx 文件"),
     request: LearnerProfileUploadRequest = Depends(LearnerProfileUploadRequest.as_form),
     service: Annotated[LearnerProfileService, Depends(get_learner_profile_service)] = None,
     current_user: Annotated[SysUser, Depends(get_current_user)] = None,

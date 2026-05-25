@@ -48,6 +48,7 @@ packages = [
   "app.modules.coverage",
   "app.modules.curriculum",
   "app.modules.file_asset",
+  "app.modules.homework",
   "app.modules.knowledge",
   "app.modules.learner_profile",
   "app.modules.lesson_plan",

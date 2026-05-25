@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-10
+@Date: 2026-05-25
 @Author: xisy
 @Discription: 从 FastAPI app 直接导出 OpenAPI 文档为 Markdown，无需启动服务
 """
@@ -177,6 +177,24 @@ def _resolve_response_schema(resp: dict, components: dict) -> str:
     return ""
 
 
+def _build_tag_frontend_notes(tag: str) -> list[str]:
+    """为重点接口分组补充前端接入提示。"""
+    if tag != "课后作业":
+        return []
+    return [
+        "> 前端接入提示：课后作业不在自动 pipeline 中批量生成，需要在教案生成完成后，按 `lesson_plan_id` 单独触发。"
+        "推荐在教案详情页提供“生成课后作业”按钮，在课程/批次维度提供“作业总览”页。",
+        "",
+        "- 触发生成：调用 `POST /api/v1/lesson-plans/{lesson_plan_id}/homework-tasks`，成功返回 `TaskListItem`。"
+        "本地同步任务模式下 `result_json` 可能立即包含 `homework_result_id`；异步模式下前端应按任务中心接口轮询任务状态。",
+        "- 查询详情：调用 `GET /api/v1/lesson-plans/{lesson_plan_id}/homework-result` 获取本课唯一作业，响应内 `questions` 可直接用于渲染题目列表。",
+        "- 作业总览：调用 `GET /api/v1/homework-results?curriculum_plan_id={id}` 或 `generation_batch_id={id}`，列表按 `class_session_no` 升序返回。",
+        "- 题库筛选：调用 `GET /api/v1/homework-questions`，支持按 `lesson_plan_id`、`homework_result_id`、`knowledge_point_id`、`question_type`、`difficulty_level` 过滤。",
+        "- 常见错误：重复生成返回 `409 TASK_CONFLICT`；未生成详情返回 `404 HOMEWORK_RESULT_NOT_FOUND`；继续走批次级测评接口传 `scene_type=homework` 返回 `422 ASSESSMENT_SCENE_INVALID`。",
+        "",
+    ]
+
+
 def build_markdown(spec: dict) -> str:
     info = spec.get("info", {})
     components = spec.get("components", {})
@@ -211,6 +229,7 @@ def build_markdown(spec: dict) -> str:
 
     for tag, ops in tag_ops.items():
         lines += [f"## {tag}", ""]
+        lines += _build_tag_frontend_notes(tag)
 
         for method, path, op in ops:
             summary = op.get("summary", path)

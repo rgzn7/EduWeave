@@ -565,10 +565,17 @@ def test_generation_batch_should_create_curriculum_lesson_plans_and_coverage(cli
     assert coverage_payload["report_json"]["total_knowledge_point_count"] == 1
     assert coverage_payload["report_json"]["covered_knowledge_point_ids"]
     artifact_coverage = coverage_payload["report_json"]["artifact_coverage"]
-    assert set(artifact_coverage) == {"curriculum_plan", "lesson_plan", "question_item", "courseware_slide"}
+    assert set(artifact_coverage) == {
+        "curriculum_plan",
+        "lesson_plan",
+        "question_item",
+        "homework_question",
+        "courseware_slide",
+    }
     assert artifact_coverage["curriculum_plan"]["covered_knowledge_point_ids"]
     assert artifact_coverage["lesson_plan"]["item_count"] == 2
     assert artifact_coverage["question_item"]["item_count"] == 0
+    assert artifact_coverage["homework_question"]["item_count"] == 0
     assert artifact_coverage["courseware_slide"]["item_count"] == 0
     assert coverage_payload["report_json"]["assessment_quality"]["question_count"] == 0
 
@@ -1345,7 +1352,8 @@ def test_coverage_refresh_should_warn_when_question_difficulty_out_of_strategy(
     assert "QUESTION_DIFFICULTY_OUT_OF_RANGE" in warning_codes
     assert report_json["assessment_quality"]["difficulty_distribution"]["5"] == 1
     assert report_json["assessment_quality"]["strategy_checks"][0]["passed"] is False
-    assert report_json["assessment_quality"]["strategy_checks"][0]["out_of_range_question_item_ids"] == [
+    assert report_json["assessment_quality"]["strategy_checks"][0]["source_type"] == "paper_result"
+    assert report_json["assessment_quality"]["strategy_checks"][0]["question_item_ids"] == [
         out_of_range_question_id
     ]
 

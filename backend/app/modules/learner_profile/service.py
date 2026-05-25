@@ -73,8 +73,8 @@ class LearnerProfileService:
             raise AppException(BusinessErrorCode.PROJECT_NOT_FOUND, "项目不存在")
 
         file_ext = Path(filename).suffix.lower()
-        if file_ext not in {".doc", ".docx"}:
-            raise AppException(BusinessErrorCode.INVALID_FILE_TYPE, "学情文件仅支持 doc 或 docx")
+        if file_ext != ".docx":
+            raise AppException(BusinessErrorCode.INVALID_FILE_TYPE, "学情文件仅支持 docx")
         if not content:
             raise AppException(BusinessErrorCode.INVALID_FILE_TYPE, "学情文件不能为空")
         if textbook_version_hint_id is not None:
@@ -140,8 +140,7 @@ class LearnerProfileService:
                 )
                 step_names = [
                     ("prepare_source", "准备源文件"),
-                    ("submit_mineru", "提交 MinerU 任务"),
-                    ("poll_mineru_result", "轮询 MinerU 结果"),
+                    ("extract_local", "本地解析 docx"),
                     ("build_profile_version", "构建学情版本"),
                 ]
                 for step_order, (step_code, step_name) in enumerate(step_names, start=1):

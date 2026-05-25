@@ -13,7 +13,6 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.constants import (
-    MINERU_STRATEGY_DOC_DEFAULT,
     REVIEW_STATUS_PENDING,
     TASK_STATUS_PROCESSING,
     TASK_STATUS_SUCCESS,
@@ -25,7 +24,7 @@ from app.modules.learner_profile.rules import LearnerProfileRecordDraft, parse_l
 from app.modules.p0_models import FileObject, LearnerProfileRecord, LearnerProfileVersion
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
-from app.shared.mineru import MineruDocumentService
+from app.shared.document import LocalDocxParseService
 from app.shared.storage import ObsStorageClient
 from app.shared.utils import DateTimeUtil
 
@@ -36,7 +35,7 @@ def run_extract_task(payload: dict) -> dict[str, int | str]:
     repository = LearnerProfileRepository(session)
     task_repository = TaskCenterRepository(session)
     storage_client = ObsStorageClient()
-    mineru_service = MineruDocumentService()
+    local_parser = LocalDocxParseService()
     task = task_repository.get_task_by_id(payload["task_record_id"])
     step_map = _get_step_map(task_repository, payload["task_record_id"])
     now = DateTimeUtil.now_utc()
@@ -68,27 +67,30 @@ def run_extract_task(payload: dict) -> dict[str, int | str]:
             detail_json={"source_file_id": source_file.id},
             finished_at=DateTimeUtil.now_utc(),
         )
-        _mark_step(step_map["submit_mineru"], TASK_STATUS_PROCESSING, 20, started_at=DateTimeUtil.now_utc())
-        _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="submit_mineru", progress_percent=20)
+        _mark_step(step_map["extract_local"], TASK_STATUS_PROCESSING, 20, started_at=DateTimeUtil.now_utc())
+        _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="extract_local", progress_percent=25)
         task_repository.save(task)
         for step in step_map.values():
             task_repository.save(step)
         session.commit()
 
-        normalized_document = mineru_service.parse_document(
+        normalized_document = local_parser.parse_document(
             file_name=source_file.original_filename,
             content=source_content,
-            strategy_code=MINERU_STRATEGY_DOC_DEFAULT,
             data_id=f"profile_{profile_file.id}_task_{task.id}",
         )
         _mark_step(
-            step_map["submit_mineru"],
+            step_map["extract_local"],
             TASK_STATUS_SUCCESS,
             100,
-            detail_json={"batch_id": normalized_document.batch_id, "data_id": normalized_document.data_id},
+            detail_json={
+                "batch_id": normalized_document.batch_id,
+                "data_id": normalized_document.data_id,
+                "model_version": normalized_document.model_version,
+                "asset_count": len(normalized_document.asset_files),
+            },
             finished_at=DateTimeUtil.now_utc(),
         )
-        _mark_step(step_map["poll_mineru_result"], TASK_STATUS_SUCCESS, 100, detail_json={"batch_id": normalized_document.batch_id}, started_at=now, finished_at=DateTimeUtil.now_utc())
         _mark_step(step_map["build_profile_version"], TASK_STATUS_PROCESSING, 40, started_at=DateTimeUtil.now_utc())
         _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="build_profile_version", progress_percent=55)
         task_repository.save(task)
@@ -391,7 +393,7 @@ def _mark_step(step, step_status: str, progress_percent: int, *, detail_json: di
 def _get_step_map(task_repository: TaskCenterRepository, task_record_id: int) -> dict[str, object]:
     return {
         step_code: task_repository.get_task_step(task_record_id, step_code)
-        for step_code in ("prepare_source", "submit_mineru", "poll_mineru_result", "build_profile_version")
+        for step_code in ("prepare_source", "extract_local", "build_profile_version")
     }
 
 

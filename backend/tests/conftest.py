@@ -68,11 +68,13 @@ from app.core.database import get_db_session
 from app.core.security import hash_password
 from app.main import app
 from app.modules.auth.models import SysUser
+from app.shared.document import LocalDocxParseService
 from app.shared.mineru import NormalizedBlock, NormalizedDocument, NormalizedPage, MineruDocumentService
 from app.shared.storage import ObsStorageClient
 
 TEST_PASSWORD = "Teacher@123"
 SCHEMA_SQL_PATH = Path(__file__).resolve().parents[2] / "sql" / "20260430_eduweave_mysql_28_tables.sql"
+HOMEWORK_SCHEMA_SQL_PATH = Path(__file__).resolve().parents[2] / "sql" / "20260525_eduweave_homework_tables.sql"
 
 
 def build_mysql_uri(database_name: str) -> str:
@@ -85,7 +87,7 @@ def build_mysql_uri(database_name: str) -> str:
 
 
 def execute_schema_sql(database_name: str) -> None:
-    """向指定 MySQL 数据库执行 28 张表初始化脚本。"""
+    """向指定 MySQL 数据库执行基础 28 张表 + homework 增量 schema 脚本。"""
     settings = get_settings()
     connection = pymysql.connect(
         host=settings.mysql_host,
@@ -97,28 +99,32 @@ def execute_schema_sql(database_name: str) -> None:
         autocommit=True,
     )
     try:
-        raw_script = SCHEMA_SQL_PATH.read_text(encoding="utf-8")
-        filtered_lines: list[str] = []
-        skip_database_block = False
-
-        for line in raw_script.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("--"):
-                continue
-            if stripped.startswith("CREATE DATABASE IF NOT EXISTS"):
-                skip_database_block = True
-                continue
-            if skip_database_block:
-                if stripped.endswith(";"):
-                    skip_database_block = False
-                continue
-            if stripped.startswith("USE "):
-                continue
-            filtered_lines.append(line)
-
-        statements = [statement.strip() for statement in "\n".join(filtered_lines).split(";") if statement.strip()]
+        all_statements: list[str] = []
+        for schema_path in (SCHEMA_SQL_PATH, HOMEWORK_SCHEMA_SQL_PATH):
+            raw_script = schema_path.read_text(encoding="utf-8")
+            filtered_lines: list[str] = []
+            skip_database_block = False
+            for line in raw_script.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("--"):
+                    continue
+                if stripped.startswith("CREATE DATABASE IF NOT EXISTS"):
+                    skip_database_block = True
+                    continue
+                if skip_database_block:
+                    if stripped.endswith(";"):
+                        skip_database_block = False
+                    continue
+                if stripped.startswith("USE "):
+                    continue
+                filtered_lines.append(line)
+            all_statements.extend(
+                statement.strip()
+                for statement in "\n".join(filtered_lines).split(";")
+                if statement.strip()
+            )
         with connection.cursor() as cursor:
-            for statement in statements:
+            for statement in all_statements:
                 cursor.execute(statement)
     finally:
         connection.close()
@@ -179,6 +185,9 @@ def seeded_session_factory(mysql_session_factory):
             "task_step_record",
             "task_record",
             "coverage_report",
+            "homework_question",
+            "homework_result",
+            "homework_blueprint",
             "question_item",
             "paper_result",
             "courseware_result",
@@ -408,3 +417,65 @@ def mock_mineru_service(monkeypatch: pytest.MonkeyPatch):
         )
 
     monkeypatch.setattr(MineruDocumentService, "parse_document", fake_parse_document)
+
+
+@pytest.fixture(autouse=True)
+def mock_local_docx_parser(monkeypatch: pytest.MonkeyPatch):
+    """用内存桩替换学情本地 docx 解析，避免测试依赖真实 docx 二进制内容。"""
+
+    def fake_parse_document(self, *, file_name: str, content: bytes, data_id: str):  # noqa: ANN001
+        _ = (self, content)
+        markdown_text = (
+            "王xx — 学情分析\n"
+            "一、基本信息\n"
+            "姓名\n王xx\n"
+            "所属地区\n上海\n"
+            "年级\n三年级\n"
+            "学习科目\n语文、数学\n"
+            "二、使用教材\n"
+            "科目\n教材版本\n"
+            "语文\n人民教育出版社-语文-三年级下册\n"
+            "数学\n北京出版社-数学-三年级下册\n"
+            "三、科目成绩\n"
+            "语文：89分（月考，三年级上学期期中考试）\n"
+            "数学：82分（期末质检，三年级上学期期末考试）\n"
+            "四、学生基本情况描述\n"
+            "该学生认知理解能力较强，阅读理解题目中寻找关键信息的准确率较高，作文思路清晰。"
+            "数学方面，基础计算能力尚可，但乘法口诀记忆尚不牢固，遇到需要逆向思维的题目时容易卡壳。"
+            "课堂注意力基本能保持30分钟左右，课后作业完成及时，但存在粗心大意的毛病。\n"
+            "五、培训时间规划\n"
+            "计划每周安排2次数学课（每次2课时），重点训练乘法运算能力和应用题分析能力；"
+            "每周1次语文课（每次2课时），侧重阅读理解能力和看图写话表达能力。预计在接下来的12次课程后，"
+            "乘法运算熟练度和逆向思维解题能力明显提升，阅读理解得分率改善。"
+        )
+        raw_blocks = [
+            {"page_idx": 0, "type": "paragraph", "text": markdown_text},
+        ]
+        block = NormalizedBlock(
+            page_no=1,
+            block_no=1,
+            block_type="paragraph",
+            text_content=markdown_text,
+            markdown_content=markdown_text,
+        )
+        page = NormalizedPage(
+            page_no=1,
+            text_content=markdown_text,
+            markdown_content=markdown_text,
+            layout_json={"raw_items": raw_blocks},
+            blocks=[block],
+        )
+        return NormalizedDocument(
+            batch_id=f"local-{data_id}",
+            file_name=file_name,
+            data_id=data_id,
+            model_version="local_docx",
+            markdown_text=markdown_text,
+            content_list_json=raw_blocks,
+            pages=[page],
+            full_zip_bytes=content or b"fake-profile-zip",
+            asset_files={},
+            raw_metadata={"mocked": True, "parser": "local_docx"},
+        )
+
+    monkeypatch.setattr(LocalDocxParseService, "parse_document", fake_parse_document)

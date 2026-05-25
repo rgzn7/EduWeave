@@ -701,7 +701,7 @@
           "学情"
         ],
         "summary": "上传学情文件",
-        "description": "向指定项目上传 doc 或 docx 学情文件，并按配置创建真实学情抽取任务。",
+        "description": "向指定项目上传 docx 学情文件，并按配置创建真实学情抽取任务（本地 python-docx 同步解析）。",
         "operationId": "learner_profile_create",
         "security": [
           {
@@ -3388,6 +3388,557 @@
         }
       }
     },
+    "/api/v1/lesson-plans/{lesson_plan_id}/homework-tasks": {
+      "post": {
+        "tags": [
+          "课后作业"
+        ],
+        "summary": "创建课后作业生成任务",
+        "description": "为当前教师可见的教案创建课后作业生成任务，按教案知识点与教学内容生成 6 题练习；同一教案不可重复生成。",
+        "operationId": "homework_task_create",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "lesson_plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "教案主键",
+              "examples": [
+                1
+              ],
+              "title": "Lesson Plan Id"
+            },
+            "description": "教案主键"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_TaskListItemResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/lesson-plans/{lesson_plan_id}/homework-result": {
+      "get": {
+        "tags": [
+          "课后作业"
+        ],
+        "summary": "按教案获取课后作业详情",
+        "description": "按教案主键查询其唯一的课后作业结构化内容与题目明细，未生成时返回 404。",
+        "operationId": "homework_result_detail_by_lesson",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "lesson_plan_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "教案主键",
+              "examples": [
+                1
+              ],
+              "title": "Lesson Plan Id"
+            },
+            "description": "教案主键"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_HomeworkResultDetailResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/homework-results": {
+      "get": {
+        "tags": [
+          "课后作业"
+        ],
+        "summary": "获取课后作业列表",
+        "description": "按课程大纲或生成批次分页获取当前教师可见的课后作业，按课次序号升序排列。",
+        "operationId": "homework_result_list",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "curriculum_plan_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "课程大纲主键",
+              "examples": [
+                1
+              ],
+              "title": "Curriculum Plan Id"
+            },
+            "description": "课程大纲主键"
+          },
+          {
+            "name": "generation_batch_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "生成批次主键",
+              "examples": [
+                1
+              ],
+              "title": "Generation Batch Id"
+            },
+            "description": "生成批次主键"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "页码",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "页码"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "每页大小",
+              "default": 20,
+              "title": "Page Size"
+            },
+            "description": "每页大小"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_PaginatedData_HomeworkResultListItemResponse__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/homework-results/{homework_result_id}": {
+      "get": {
+        "tags": [
+          "课后作业"
+        ],
+        "summary": "获取课后作业详情",
+        "description": "按主键查询单份课后作业的结构化内容与题目明细。",
+        "operationId": "homework_result_detail",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "homework_result_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "课后作业主键",
+              "examples": [
+                1
+              ],
+              "title": "Homework Result Id"
+            },
+            "description": "课后作业主键"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_HomeworkResultDetailResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/homework-results/{homework_result_id}/export-docx": {
+      "post": {
+        "tags": [
+          "课后作业"
+        ],
+        "summary": "导出课后作业 DOCX",
+        "description": "将当前教师可见的课后作业结构化内容和题目明细同步导出为 DOCX 文件，并返回签名下载地址。",
+        "operationId": "homework_result_export_docx",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "homework_result_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "课后作业主键",
+              "examples": [
+                1
+              ],
+              "title": "Homework Result Id"
+            },
+            "description": "课后作业主键"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_FileDownloadUrlResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/homework-blueprints/{homework_blueprint_id}": {
+      "get": {
+        "tags": [
+          "课后作业"
+        ],
+        "summary": "获取课后作业蓝图详情",
+        "description": "按主键查询单份课后作业蓝图，包含策略与考查权重。",
+        "operationId": "homework_blueprint_detail",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "homework_blueprint_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "课后作业蓝图主键",
+              "examples": [
+                1
+              ],
+              "title": "Homework Blueprint Id"
+            },
+            "description": "课后作业蓝图主键"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_HomeworkBlueprintResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/homework-questions": {
+      "get": {
+        "tags": [
+          "课后作业"
+        ],
+        "summary": "获取课后作业题目列表",
+        "description": "按教案、作业、知识点、题型、难度筛选当前教师可见的作业题目，支持分页。",
+        "operationId": "homework_question_list",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "lesson_plan_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "教案主键",
+              "examples": [
+                1
+              ],
+              "title": "Lesson Plan Id"
+            },
+            "description": "教案主键"
+          },
+          {
+            "name": "homework_result_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "课后作业主键",
+              "examples": [
+                1
+              ],
+              "title": "Homework Result Id"
+            },
+            "description": "课后作业主键"
+          },
+          {
+            "name": "knowledge_point_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "知识点主键",
+              "examples": [
+                1
+              ],
+              "title": "Knowledge Point Id"
+            },
+            "description": "知识点主键"
+          },
+          {
+            "name": "question_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/QuestionType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "题型：single_choice=单选题，fill_blank=填空题，short_answer=简答题",
+              "examples": [
+                "single_choice"
+              ],
+              "title": "Question Type"
+            },
+            "description": "题型：single_choice=单选题，fill_blank=填空题，short_answer=简答题"
+          },
+          {
+            "name": "difficulty_level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 5,
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "难度等级（1-5）",
+              "examples": [
+                2
+              ],
+              "title": "Difficulty Level"
+            },
+            "description": "难度等级（1-5）"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "页码",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "页码"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "每页大小",
+              "default": 20,
+              "title": "Page Size"
+            },
+            "description": "每页大小"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_PaginatedData_HomeworkQuestionListItemResponse__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/lesson-plans/{lesson_plan_id}/courseware-tasks": {
       "post": {
         "tags": [
@@ -4571,6 +5122,116 @@
         ],
         "title": "ApiResponse[HealthResponse]"
       },
+      "ApiResponse_HomeworkBlueprintResponse_": {
+        "properties": {
+          "success": {
+            "title": "Success",
+            "description": "请求是否成功",
+            "examples": [
+              true
+            ]
+          },
+          "code": {
+            "title": "Code",
+            "description": "业务响应状态码",
+            "examples": [
+              200
+            ]
+          },
+          "message": {
+            "title": "Message",
+            "description": "响应消息",
+            "examples": [
+              "操作成功"
+            ]
+          },
+          "data": {
+            "description": "业务数据"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "description": "响应时间，UTC ISO8601 格式",
+            "examples": [
+              "2026-04-11T10:00:00.000000Z"
+            ]
+          },
+          "request_id": {
+            "title": "Request Id",
+            "description": "请求追踪 ID",
+            "examples": [
+              "a5c0f6b6-1234-5678-9abc-def012345678"
+            ]
+          },
+          "errors": {
+            "title": "Errors",
+            "description": "错误明细列表"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "code",
+          "message",
+          "timestamp",
+          "request_id"
+        ],
+        "title": "ApiResponse[HomeworkBlueprintResponse]"
+      },
+      "ApiResponse_HomeworkResultDetailResponse_": {
+        "properties": {
+          "success": {
+            "title": "Success",
+            "description": "请求是否成功",
+            "examples": [
+              true
+            ]
+          },
+          "code": {
+            "title": "Code",
+            "description": "业务响应状态码",
+            "examples": [
+              200
+            ]
+          },
+          "message": {
+            "title": "Message",
+            "description": "响应消息",
+            "examples": [
+              "操作成功"
+            ]
+          },
+          "data": {
+            "description": "业务数据"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "description": "响应时间，UTC ISO8601 格式",
+            "examples": [
+              "2026-04-11T10:00:00.000000Z"
+            ]
+          },
+          "request_id": {
+            "title": "Request Id",
+            "description": "请求追踪 ID",
+            "examples": [
+              "a5c0f6b6-1234-5678-9abc-def012345678"
+            ]
+          },
+          "errors": {
+            "title": "Errors",
+            "description": "错误明细列表"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "code",
+          "message",
+          "timestamp",
+          "request_id"
+        ],
+        "title": "ApiResponse[HomeworkResultDetailResponse]"
+      },
       "ApiResponse_KnowledgePointDetailResponse_": {
         "properties": {
           "success": {
@@ -5175,6 +5836,116 @@
           "request_id"
         ],
         "title": "ApiResponse[PaginatedData[GenerationBatchListItemResponse]]"
+      },
+      "ApiResponse_PaginatedData_HomeworkQuestionListItemResponse__": {
+        "properties": {
+          "success": {
+            "title": "Success",
+            "description": "请求是否成功",
+            "examples": [
+              true
+            ]
+          },
+          "code": {
+            "title": "Code",
+            "description": "业务响应状态码",
+            "examples": [
+              200
+            ]
+          },
+          "message": {
+            "title": "Message",
+            "description": "响应消息",
+            "examples": [
+              "操作成功"
+            ]
+          },
+          "data": {
+            "description": "业务数据"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "description": "响应时间，UTC ISO8601 格式",
+            "examples": [
+              "2026-04-11T10:00:00.000000Z"
+            ]
+          },
+          "request_id": {
+            "title": "Request Id",
+            "description": "请求追踪 ID",
+            "examples": [
+              "a5c0f6b6-1234-5678-9abc-def012345678"
+            ]
+          },
+          "errors": {
+            "title": "Errors",
+            "description": "错误明细列表"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "code",
+          "message",
+          "timestamp",
+          "request_id"
+        ],
+        "title": "ApiResponse[PaginatedData[HomeworkQuestionListItemResponse]]"
+      },
+      "ApiResponse_PaginatedData_HomeworkResultListItemResponse__": {
+        "properties": {
+          "success": {
+            "title": "Success",
+            "description": "请求是否成功",
+            "examples": [
+              true
+            ]
+          },
+          "code": {
+            "title": "Code",
+            "description": "业务响应状态码",
+            "examples": [
+              200
+            ]
+          },
+          "message": {
+            "title": "Message",
+            "description": "响应消息",
+            "examples": [
+              "操作成功"
+            ]
+          },
+          "data": {
+            "description": "业务数据"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "description": "响应时间，UTC ISO8601 格式",
+            "examples": [
+              "2026-04-11T10:00:00.000000Z"
+            ]
+          },
+          "request_id": {
+            "title": "Request Id",
+            "description": "请求追踪 ID",
+            "examples": [
+              "a5c0f6b6-1234-5678-9abc-def012345678"
+            ]
+          },
+          "errors": {
+            "title": "Errors",
+            "description": "错误明细列表"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "code",
+          "message",
+          "timestamp",
+          "request_id"
+        ],
+        "title": "ApiResponse[PaginatedData[HomeworkResultListItemResponse]]"
       },
       "ApiResponse_PaginatedData_KnowledgePointListItemResponse__": {
         "properties": {
@@ -6669,10 +7440,10 @@
         "properties": {
           "scene_type": {
             "$ref": "#/components/schemas/SceneType",
-            "description": "测练场景类型，后端按场景自动套用预设策略：homework=课后作业，unit_test=单元测试，final_exam=期末综合测",
+            "description": "测练场景类型，后端按场景自动套用预设策略：unit_test=单元测试，final_exam=期末综合测；课后作业（homework）已迁移至 /lesson-plans/{lesson_plan_id}/homework-tasks 课次维度接口，本接口不再接受 homework 场景。",
             "default": "unit_test",
             "examples": [
-              "homework"
+              "unit_test"
             ]
           }
         },
@@ -6686,7 +7457,7 @@
             "type": "string",
             "contentMediaType": "application/octet-stream",
             "title": "File",
-            "description": "学情 doc/docx 文件"
+            "description": "学情 docx 文件"
           },
           "title": {
             "anyOf": [
@@ -8249,6 +9020,513 @@
         ],
         "title": "HealthResponse",
         "description": "存活探针响应模型。"
+      },
+      "HomeworkBlueprintResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "description": "作业蓝图主键",
+            "examples": [
+              1
+            ]
+          },
+          "lesson_plan_id": {
+            "title": "Lesson Plan Id",
+            "description": "所属教案主键",
+            "examples": [
+              1
+            ]
+          },
+          "generation_batch_id": {
+            "title": "Generation Batch Id",
+            "description": "生成批次主键",
+            "examples": [
+              1
+            ]
+          },
+          "version_no": {
+            "title": "Version No",
+            "description": "版本号",
+            "examples": [
+              1
+            ]
+          },
+          "blueprint_name": {
+            "title": "Blueprint Name",
+            "description": "作业蓝图名称",
+            "examples": [
+              "第 1 课课后作业蓝图"
+            ]
+          },
+          "version_status": {
+            "title": "Version Status",
+            "description": "版本状态",
+            "examples": [
+              "ready"
+            ]
+          },
+          "strategy_json": {
+            "title": "Strategy Json",
+            "description": "策略配置"
+          },
+          "content_json": {
+            "title": "Content Json",
+            "description": "蓝图结构化内容"
+          },
+          "export_file_id": {
+            "title": "Export File Id",
+            "description": "导出文件主键"
+          },
+          "created_by": {
+            "title": "Created By",
+            "description": "创建人"
+          },
+          "created_at": {
+            "title": "Created At",
+            "description": "创建时间"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "description": "更新时间"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "lesson_plan_id",
+          "generation_batch_id",
+          "version_no",
+          "blueprint_name",
+          "version_status",
+          "content_json",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "HomeworkBlueprintResponse",
+        "description": "作业蓝图响应。"
+      },
+      "HomeworkQuestionListItemResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "description": "作业题目主键",
+            "examples": [
+              1
+            ]
+          },
+          "generation_batch_id": {
+            "title": "Generation Batch Id",
+            "description": "生成批次主键",
+            "examples": [
+              1
+            ]
+          },
+          "homework_result_id": {
+            "title": "Homework Result Id",
+            "description": "作业结果主键",
+            "examples": [
+              1
+            ]
+          },
+          "lesson_plan_id": {
+            "title": "Lesson Plan Id",
+            "description": "所属教案主键",
+            "examples": [
+              1
+            ]
+          },
+          "knowledge_point_id": {
+            "title": "Knowledge Point Id",
+            "description": "知识点主键"
+          },
+          "question_no": {
+            "title": "Question No",
+            "description": "题号",
+            "examples": [
+              1
+            ]
+          },
+          "question_type": {
+            "title": "Question Type",
+            "description": "题型",
+            "examples": [
+              "single_choice"
+            ]
+          },
+          "difficulty_level": {
+            "title": "Difficulty Level",
+            "description": "难度等级"
+          },
+          "score_value": {
+            "title": "Score Value",
+            "description": "分值"
+          },
+          "stem_text": {
+            "title": "Stem Text",
+            "description": "题干"
+          },
+          "options_json": {
+            "title": "Options Json",
+            "description": "选项"
+          },
+          "answer_text": {
+            "title": "Answer Text",
+            "description": "答案"
+          },
+          "analysis_text": {
+            "title": "Analysis Text",
+            "description": "解析"
+          },
+          "source_trace_json": {
+            "title": "Source Trace Json",
+            "description": "来源摘要"
+          },
+          "created_at": {
+            "title": "Created At",
+            "description": "创建时间"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "description": "更新时间"
+          },
+          "homework_title": {
+            "title": "Homework Title",
+            "description": "所属作业标题",
+            "examples": [
+              "第 1 课课后作业"
+            ]
+          },
+          "class_session_no": {
+            "title": "Class Session No",
+            "description": "所属课次序号",
+            "examples": [
+              1
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "generation_batch_id",
+          "homework_result_id",
+          "lesson_plan_id",
+          "question_no",
+          "question_type",
+          "stem_text",
+          "created_at",
+          "updated_at",
+          "homework_title"
+        ],
+        "title": "HomeworkQuestionListItemResponse",
+        "description": "作业题目列表项响应。"
+      },
+      "HomeworkQuestionResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "description": "作业题目主键",
+            "examples": [
+              1
+            ]
+          },
+          "generation_batch_id": {
+            "title": "Generation Batch Id",
+            "description": "生成批次主键",
+            "examples": [
+              1
+            ]
+          },
+          "homework_result_id": {
+            "title": "Homework Result Id",
+            "description": "作业结果主键",
+            "examples": [
+              1
+            ]
+          },
+          "lesson_plan_id": {
+            "title": "Lesson Plan Id",
+            "description": "所属教案主键",
+            "examples": [
+              1
+            ]
+          },
+          "knowledge_point_id": {
+            "title": "Knowledge Point Id",
+            "description": "知识点主键"
+          },
+          "question_no": {
+            "title": "Question No",
+            "description": "题号",
+            "examples": [
+              1
+            ]
+          },
+          "question_type": {
+            "title": "Question Type",
+            "description": "题型",
+            "examples": [
+              "single_choice"
+            ]
+          },
+          "difficulty_level": {
+            "title": "Difficulty Level",
+            "description": "难度等级"
+          },
+          "score_value": {
+            "title": "Score Value",
+            "description": "分值"
+          },
+          "stem_text": {
+            "title": "Stem Text",
+            "description": "题干"
+          },
+          "options_json": {
+            "title": "Options Json",
+            "description": "选项"
+          },
+          "answer_text": {
+            "title": "Answer Text",
+            "description": "答案"
+          },
+          "analysis_text": {
+            "title": "Analysis Text",
+            "description": "解析"
+          },
+          "source_trace_json": {
+            "title": "Source Trace Json",
+            "description": "来源摘要"
+          },
+          "created_at": {
+            "title": "Created At",
+            "description": "创建时间"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "description": "更新时间"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "generation_batch_id",
+          "homework_result_id",
+          "lesson_plan_id",
+          "question_no",
+          "question_type",
+          "stem_text",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "HomeworkQuestionResponse",
+        "description": "作业题目响应。"
+      },
+      "HomeworkResultDetailResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "description": "作业结果主键",
+            "examples": [
+              1
+            ]
+          },
+          "generation_batch_id": {
+            "title": "Generation Batch Id",
+            "description": "生成批次主键",
+            "examples": [
+              1
+            ]
+          },
+          "lesson_plan_id": {
+            "title": "Lesson Plan Id",
+            "description": "所属教案主键",
+            "examples": [
+              1
+            ]
+          },
+          "homework_blueprint_id": {
+            "title": "Homework Blueprint Id",
+            "description": "作业蓝图主键",
+            "examples": [
+              1
+            ]
+          },
+          "title": {
+            "title": "Title",
+            "description": "作业标题",
+            "examples": [
+              "第 1 课课后作业"
+            ]
+          },
+          "result_status": {
+            "title": "Result Status",
+            "description": "结果状态",
+            "examples": [
+              "success"
+            ]
+          },
+          "question_count": {
+            "title": "Question Count",
+            "description": "题目数量",
+            "examples": [
+              6
+            ]
+          },
+          "difficulty_stats_json": {
+            "title": "Difficulty Stats Json",
+            "description": "难度统计"
+          },
+          "content_json": {
+            "title": "Content Json",
+            "description": "作业结构化内容"
+          },
+          "export_file_id": {
+            "title": "Export File Id",
+            "description": "导出文件主键"
+          },
+          "class_session_no": {
+            "title": "Class Session No",
+            "description": "所属课次序号",
+            "examples": [
+              1
+            ]
+          },
+          "lesson_title": {
+            "title": "Lesson Title",
+            "description": "所属教案标题",
+            "examples": [
+              "第 1 课 集合的概念"
+            ]
+          },
+          "created_at": {
+            "title": "Created At",
+            "description": "创建时间"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "description": "更新时间"
+          },
+          "questions": {
+            "title": "Questions",
+            "description": "题目明细列表"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "generation_batch_id",
+          "lesson_plan_id",
+          "homework_blueprint_id",
+          "title",
+          "result_status",
+          "question_count",
+          "content_json",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "HomeworkResultDetailResponse",
+        "description": "作业结果详情响应。"
+      },
+      "HomeworkResultListItemResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "description": "作业结果主键",
+            "examples": [
+              1
+            ]
+          },
+          "generation_batch_id": {
+            "title": "Generation Batch Id",
+            "description": "生成批次主键",
+            "examples": [
+              1
+            ]
+          },
+          "lesson_plan_id": {
+            "title": "Lesson Plan Id",
+            "description": "所属教案主键",
+            "examples": [
+              1
+            ]
+          },
+          "homework_blueprint_id": {
+            "title": "Homework Blueprint Id",
+            "description": "作业蓝图主键",
+            "examples": [
+              1
+            ]
+          },
+          "title": {
+            "title": "Title",
+            "description": "作业标题",
+            "examples": [
+              "第 1 课课后作业"
+            ]
+          },
+          "result_status": {
+            "title": "Result Status",
+            "description": "结果状态",
+            "examples": [
+              "success"
+            ]
+          },
+          "question_count": {
+            "title": "Question Count",
+            "description": "题目数量",
+            "examples": [
+              6
+            ]
+          },
+          "difficulty_stats_json": {
+            "title": "Difficulty Stats Json",
+            "description": "难度统计"
+          },
+          "content_json": {
+            "title": "Content Json",
+            "description": "作业结构化内容"
+          },
+          "export_file_id": {
+            "title": "Export File Id",
+            "description": "导出文件主键"
+          },
+          "class_session_no": {
+            "title": "Class Session No",
+            "description": "所属课次序号",
+            "examples": [
+              1
+            ]
+          },
+          "lesson_title": {
+            "title": "Lesson Title",
+            "description": "所属教案标题",
+            "examples": [
+              "第 1 课 集合的概念"
+            ]
+          },
+          "created_at": {
+            "title": "Created At",
+            "description": "创建时间"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "description": "更新时间"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "generation_batch_id",
+          "lesson_plan_id",
+          "homework_blueprint_id",
+          "title",
+          "result_status",
+          "question_count",
+          "content_json",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "HomeworkResultListItemResponse",
+        "description": "作业结果列表项响应。"
       },
       "KnowledgeEvidenceResponse": {
         "properties": {
@@ -10398,6 +11676,40 @@
           "pagination"
         ],
         "title": "PaginatedData[GenerationBatchListItemResponse]"
+      },
+      "PaginatedData_HomeworkQuestionListItemResponse_": {
+        "properties": {
+          "items": {
+            "title": "Items",
+            "description": "分页数据列表"
+          },
+          "pagination": {
+            "description": "分页元数据"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "pagination"
+        ],
+        "title": "PaginatedData[HomeworkQuestionListItemResponse]"
+      },
+      "PaginatedData_HomeworkResultListItemResponse_": {
+        "properties": {
+          "items": {
+            "title": "Items",
+            "description": "分页数据列表"
+          },
+          "pagination": {
+            "description": "分页元数据"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "pagination"
+        ],
+        "title": "PaginatedData[HomeworkResultListItemResponse]"
       },
       "PaginatedData_KnowledgePointListItemResponse_": {
         "properties": {

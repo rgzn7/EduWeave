@@ -1173,6 +1173,152 @@ class QuestionItem(TimestampMixin, Base):
     source_trace_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="题目来源摘要")
 
 
+class HomeworkBlueprint(TimestampMixin, Base):
+    """课后作业蓝图表（按课次维度，每课一份）。"""
+
+    __tablename__ = "homework_blueprint"
+    __table_args__ = (
+        Index("uk_homework_blueprint_lesson_version", "lesson_plan_id", "version_no", unique=True),
+        Index("idx_homework_blueprint_batch", "generation_batch_id"),
+        Index("idx_homework_blueprint_lesson_status", "lesson_plan_id", "version_status", "created_at"),
+        {"comment": "课后作业蓝图表"},
+    )
+
+    id: Mapped[int] = mapped_column(MYSQL_BIGINT_UNSIGNED, primary_key=True, autoincrement=True, comment="主键")
+    lesson_plan_id: Mapped[int] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("lesson_plan.id"),
+        nullable=False,
+        comment="所属教案",
+    )
+    generation_batch_id: Mapped[int] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("generation_batch.id"),
+        nullable=False,
+        comment="生成批次",
+    )
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False, comment="版本号")
+    blueprint_name: Mapped[str] = mapped_column(String(255), nullable=False, comment="蓝图名称")
+    version_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="ready",
+        server_default=text("'ready'"),
+        comment="版本状态",
+    )
+    strategy_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="策略配置")
+    content_json: Mapped[dict[str, Any]] = mapped_column(MYSQL_JSON, nullable=False, comment="蓝图内容")
+    export_file_id: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("file_object.id"),
+        nullable=True,
+        comment="导出文件",
+    )
+    created_by: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("sys_user.id"),
+        nullable=True,
+        comment="创建人",
+    )
+
+
+class HomeworkResult(TimestampMixin, Base):
+    """课后作业结果表（每课最多一份成功作业）。"""
+
+    __tablename__ = "homework_result"
+    __table_args__ = (
+        Index("uk_homework_result_lesson", "lesson_plan_id", unique=True),
+        Index("idx_homework_result_batch", "generation_batch_id", "lesson_plan_id"),
+        Index("idx_homework_result_blueprint", "homework_blueprint_id", "created_at"),
+        {"comment": "课后作业结果表"},
+    )
+
+    id: Mapped[int] = mapped_column(MYSQL_BIGINT_UNSIGNED, primary_key=True, autoincrement=True, comment="主键")
+    generation_batch_id: Mapped[int] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("generation_batch.id"),
+        nullable=False,
+        comment="生成批次",
+    )
+    lesson_plan_id: Mapped[int] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("lesson_plan.id"),
+        nullable=False,
+        comment="所属教案",
+    )
+    homework_blueprint_id: Mapped[int] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("homework_blueprint.id"),
+        nullable=False,
+        comment="作业蓝图",
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False, comment="作业标题")
+    result_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="success",
+        server_default=text("'success'"),
+        comment="结果状态",
+    )
+    question_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"), comment="题目数量")
+    difficulty_stats_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="难度统计")
+    content_json: Mapped[dict[str, Any]] = mapped_column(MYSQL_JSON, nullable=False, comment="作业内容")
+    export_file_id: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("file_object.id"),
+        nullable=True,
+        comment="导出文件",
+    )
+
+
+class HomeworkQuestion(TimestampMixin, Base):
+    """课后作业题目明细表。"""
+
+    __tablename__ = "homework_question"
+    __table_args__ = (
+        Index("uk_homework_question_scope", "homework_result_id", "question_no", unique=True),
+        Index("idx_homework_question_lesson_kp", "lesson_plan_id", "knowledge_point_id"),
+        Index("idx_homework_question_batch_kp", "generation_batch_id", "knowledge_point_id"),
+        Index("idx_homework_question_type_diff", "question_type", "difficulty_level"),
+        {"comment": "课后作业题目明细表"},
+    )
+
+    id: Mapped[int] = mapped_column(MYSQL_BIGINT_UNSIGNED, primary_key=True, autoincrement=True, comment="主键")
+    generation_batch_id: Mapped[int] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("generation_batch.id"),
+        nullable=False,
+        comment="生成批次",
+    )
+    homework_result_id: Mapped[int] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("homework_result.id"),
+        nullable=False,
+        comment="作业结果",
+    )
+    lesson_plan_id: Mapped[int] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("lesson_plan.id"),
+        nullable=False,
+        comment="所属教案",
+    )
+    knowledge_point_id: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("knowledge_point.id"),
+        nullable=True,
+        comment="知识点",
+    )
+    question_no: Mapped[int] = mapped_column(Integer, nullable=False, comment="题号")
+    question_type: Mapped[str] = mapped_column(String(32), nullable=False, comment="题型")
+    difficulty_level: Mapped[int | None] = mapped_column(MYSQL_TINYINT_UNSIGNED, nullable=True, comment="难度")
+    score_value: Mapped[float | None] = mapped_column(MYSQL_DECIMAL_6_2, nullable=True, comment="分值")
+    stem_text: Mapped[str] = mapped_column(MYSQL_MEDIUMTEXT, nullable=False, comment="题干")
+    options_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="选项")
+    answer_text: Mapped[str | None] = mapped_column(Text, nullable=True, comment="答案")
+    analysis_text: Mapped[str | None] = mapped_column(Text, nullable=True, comment="解析")
+    source_trace_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="题目来源摘要")
+
+
 class CoverageReport(TimestampMixin, Base):
     """覆盖率报告表。"""
 

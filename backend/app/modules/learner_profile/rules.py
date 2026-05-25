@@ -170,6 +170,8 @@ def _normalize_markdown_text(markdown_text: str) -> str:
     text = markdown_text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"^\s{0,3}#+\s*", "", text, flags=re.MULTILINE)
     text = re.sub(r"^[*-]\s*", "", text, flags=re.MULTILINE)
+    # 防御性兜底：mammoth/部分转换工具会输出 __xxx__ 加粗，规则匹配前先清掉
+    text = re.sub(r"_{2,}", "", text)
     text = re.sub(r"\n{2,}", "\n", text)
     return text.strip()
 

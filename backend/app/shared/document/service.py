@@ -90,6 +90,38 @@ class DocxRenderService:
             _add_mapping_section(document, "来源摘要", question.source_trace_json, level=3)
         return _dump_document(document)
 
+    def render_homework_result(self, homework_result, questions: list, *, lesson_plan=None) -> bytes:
+        """渲染课后作业结果 DOCX。"""
+        content_json = _ensure_dict(homework_result.content_json)
+        document = _create_document()
+        document.add_heading(_safe_text(homework_result.title or content_json.get("paper_title"), "课后作业"), level=0)
+        _add_meta_paragraph(document, "作业类型", content_json.get("scene_label") or "课后作业")
+        if lesson_plan is not None:
+            if lesson_plan.class_session_no is not None:
+                _add_meta_paragraph(document, "课次序号", lesson_plan.class_session_no)
+            if lesson_plan.lesson_title:
+                _add_meta_paragraph(document, "所属教案", lesson_plan.lesson_title)
+        _add_meta_paragraph(document, "题目数量", homework_result.question_count)
+        _add_mapping_section(document, "题型分布", content_json.get("question_type_distribution"))
+        _add_mapping_section(document, "难度分布", content_json.get("difficulty_distribution"))
+
+        document.add_heading("题目明细", level=1)
+        if not questions:
+            document.add_paragraph("暂无题目。")
+            return _dump_document(document)
+
+        for question in questions:
+            document.add_heading(f"第 {question.question_no} 题", level=2)
+            _add_meta_paragraph(document, "题型", question.question_type)
+            _add_meta_paragraph(document, "难度", question.difficulty_level)
+            _add_meta_paragraph(document, "分值", question.score_value)
+            _add_plain_paragraph(document, "题干", question.stem_text)
+            _add_mapping_section(document, "选项", question.options_json, level=3)
+            _add_plain_paragraph(document, "答案", question.answer_text)
+            _add_plain_paragraph(document, "解析", question.analysis_text)
+            _add_mapping_section(document, "来源摘要", question.source_trace_json, level=3)
+        return _dump_document(document)
+
 
 class DocumentExportService:
     """负责 DOCX 文件上传、文件对象落库与下载地址生成。"""

@@ -47,5 +47,8 @@ def test_task_center_should_list_and_detail_tasks(client) -> None:
     assert detail_response.status_code == 200
     detail_payload = detail_response.json()["data"]
     assert detail_payload["task_type"] == "learner_profile_extract"
-    assert len(detail_payload["steps"]) == 4
-    assert detail_payload["steps"][0]["step_code"] == "prepare_source"
+    assert [step["step_code"] for step in detail_payload["steps"]] == [
+        "prepare_source",
+        "extract_local",
+        "build_profile_version",
+    ]

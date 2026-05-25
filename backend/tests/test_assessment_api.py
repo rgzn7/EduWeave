@@ -300,7 +300,7 @@ def test_assessment_prompt_should_apply_scene_preset(
     generation_test_stubs,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """仅传 scene_type 时测评提示词与策略应自动套用场景预设。"""
+    """仅传 scene_type 时测评提示词与策略应自动套用场景预设（unit_test 走批次级）。"""
     _ = generation_test_stubs
     captured_system_prompts: list[str] = []
     captured_user_payloads: list[dict] = []
@@ -320,23 +320,42 @@ def test_assessment_prompt_should_apply_scene_preset(
     response = client.post(
         f"/api/v1/curriculum-plans/{batch_payload['curriculum_plan_id']}/assessment-tasks",
         headers=headers,
-        json={"scene_type": "homework"},
+        json={"scene_type": "unit_test"},
     )
 
     assert response.status_code == 201
-    assert "scene_type=homework" in captured_system_prompts[0]
-    assert "本次为课后作业" in captured_system_prompts[0]
-    assert "不得固定写成单元测试" in captured_system_prompts[0]
+    assert "scene_type=unit_test" in captured_system_prompts[0]
+    assert "本次为单元测试" in captured_system_prompts[0]
     strategy_payload = captured_user_payloads[0]["assessment_strategy"]
-    assert strategy_payload["scene_type"] == "homework"
-    assert strategy_payload["question_count"] == 6
-    assert strategy_payload["difficulty_range"] == [1, 3]
+    assert strategy_payload["scene_type"] == "unit_test"
+    assert strategy_payload["question_count"] == 10
+    assert strategy_payload["difficulty_range"] == [2, 4]
     paper_id = response.json()["data"]["result_json"]["paper_result_id"]
     paper_detail_response = client.get(f"/api/v1/paper-results/{paper_id}", headers=headers)
     paper_detail_payload = paper_detail_response.json()["data"]
-    assert paper_detail_payload["scene_type"] == "homework"
-    assert paper_detail_payload["question_count"] == 6
-    assert paper_detail_payload["paper_json"]["scene_label"] == "课后作业"
+    assert paper_detail_payload["scene_type"] == "unit_test"
+    assert paper_detail_payload["question_count"] == 10
+    assert paper_detail_payload["paper_json"]["scene_label"] == "单元测试"
+
+
+def test_assessment_should_reject_homework_scene(
+    client,
+    generation_test_stubs,
+) -> None:
+    """批次级测评入口应拒绝 scene_type=homework，引导到课次级作业接口。"""
+    _ = generation_test_stubs
+    headers = build_auth_headers(client)
+    project_id, knowledge_version_id, learner_profile_version_id = create_generation_baseline(client, headers)
+    batch_payload = create_generation_batch(client, headers, project_id, knowledge_version_id, learner_profile_version_id)
+
+    response = client.post(
+        f"/api/v1/curriculum-plans/{batch_payload['curriculum_plan_id']}/assessment-tasks",
+        headers=headers,
+        json={"scene_type": "homework"},
+    )
+    assert response.status_code == 422
+    error_codes = {error["code"] for error in response.json()["errors"]}
+    assert error_codes == {BusinessErrorCode.ASSESSMENT_SCENE_INVALID.value}
 
 
 def test_assessment_should_recalculate_inconsistent_distribution(
@@ -723,7 +742,7 @@ def test_assessment_should_support_multiple_scenes_in_one_batch(
     client,
     generation_test_stubs,
 ) -> None:
-    """同一批次下三类场景应能并存生成，同一场景不可重复生成。"""
+    """同一批次下 unit_test 与 final_exam 应能并存生成，同一场景不可重复生成（homework 已迁至课次级）。"""
     _ = generation_test_stubs
     headers = build_auth_headers(client)
     project_id, knowledge_version_id, learner_profile_version_id = create_generation_baseline(client, headers)
@@ -731,7 +750,7 @@ def test_assessment_should_support_multiple_scenes_in_one_batch(
     curriculum_plan_id = batch_payload["curriculum_plan_id"]
     generation_batch_id = batch_payload["id"]
 
-    expected_counts = {"homework": 6, "unit_test": 10, "final_exam": 20}
+    expected_counts = {"unit_test": 10, "final_exam": 20}
     for scene_type, expected_count in expected_counts.items():
         scene_response = client.post(
             f"/api/v1/curriculum-plans/{curriculum_plan_id}/assessment-tasks",
@@ -746,7 +765,7 @@ def test_assessment_should_support_multiple_scenes_in_one_batch(
         headers=headers,
     )
     assert all_papers_response.status_code == 200
-    assert all_papers_response.json()["data"]["pagination"]["total_count"] == 3
+    assert all_papers_response.json()["data"]["pagination"]["total_count"] == 2
 
     for scene_type, expected_count in expected_counts.items():
         scene_papers_response = client.get(
@@ -762,7 +781,7 @@ def test_assessment_should_support_multiple_scenes_in_one_batch(
     duplicate_response = client.post(
         f"/api/v1/curriculum-plans/{curriculum_plan_id}/assessment-tasks",
         headers=headers,
-        json={"scene_type": "homework"},
+        json={"scene_type": "unit_test"},
     )
     assert duplicate_response.status_code == 409
     assert duplicate_response.json()["errors"][0]["code"] == "TASK_CONFLICT"
