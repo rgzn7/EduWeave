@@ -12,6 +12,7 @@ const artifactConfigs = [
   { key: "lesson_plan", label: "教案" },
   { key: "courseware_slide", label: "PPT" },
   { key: "question_item", label: "测练" },
+  { key: "homework_question", label: "作业题目" },
 ] as const;
 
 const warningLabels: Record<string, string> = {
@@ -27,6 +28,12 @@ const questionTypeLabels: Record<string, string> = {
   short_answer: "简答题",
   unknown: "未知题型",
 };
+
+const HIDDEN_SCENE_TYPES = new Set(["unit_test"]);
+
+function isHiddenScene(value: unknown) {
+  return HIDDEN_SCENE_TYPES.has(String(value ?? ""));
+}
 
 function isSuccessfulStatus(status?: string | null) {
   return ["success", "ready", "available", "confirmed"].includes(String(status ?? "").toLowerCase());
@@ -106,15 +113,26 @@ function CoverageMatrix({ artifactCoverage }: { artifactCoverage: JsonRecord | n
     <section className="rounded-[22px] border border-line bg-white shadow-panel">
       <div className="border-b border-line px-6 py-5">
         <h2 className="text-lg font-semibold text-ink">覆盖矩阵</h2>
-        <p className="mt-1 text-sm text-ink/45">查看课程方案、教案、PPT 和测练对知识点的覆盖情况。</p>
+        <p className="mt-1 text-sm text-ink/45">查看课程方案、教案、PPT、测练和作业题目对知识点的覆盖情况。</p>
       </div>
       <div className="divide-y divide-line">
         {artifactConfigs.map((item) => {
           const bucket = asRecord(artifactCoverage?.[item.key]);
-          const coveredCount = asNumberList(bucket?.covered_knowledge_point_ids).length;
-          const invalidCount = asNumberList(bucket?.invalid_knowledge_point_ids).length;
-          const itemCount = numberValue(bucket?.item_count) ?? 0;
-          const referenceCount = numberValue(bucket?.reference_count) ?? 0;
+          const rawItems = asRecordList(bucket?.items);
+          const visibleItems = item.key === "question_item" ? rawItems.filter((entry) => !isHiddenScene(entry.scene_type)) : rawItems;
+          const coveredCount =
+            item.key === "question_item"
+              ? new Set(visibleItems.flatMap((entry) => asNumberList(entry.valid_knowledge_point_ids))).size
+              : asNumberList(bucket?.covered_knowledge_point_ids).length;
+          const invalidCount =
+            item.key === "question_item"
+              ? new Set(visibleItems.flatMap((entry) => asNumberList(entry.invalid_knowledge_point_ids))).size
+              : asNumberList(bucket?.invalid_knowledge_point_ids).length;
+          const itemCount = item.key === "question_item" ? visibleItems.length : numberValue(bucket?.item_count) ?? 0;
+          const referenceCount =
+            item.key === "question_item"
+              ? visibleItems.reduce((sum, entry) => sum + (numberValue(entry.reference_count) ?? 0), 0)
+              : numberValue(bucket?.reference_count) ?? 0;
           return (
             <div className="grid gap-4 px-6 py-5 md:grid-cols-[160px_repeat(4,1fr)] md:items-center" key={item.key}>
               <div className="font-semibold text-ink">{item.label}</div>
@@ -188,7 +206,7 @@ export function CoverageReportPage() {
   const artifactCoverage = asRecord(reportJson?.artifact_coverage);
   const assessmentQuality = asRecord(reportJson?.assessment_quality ?? summary?.assessment_quality);
   const importantCoverage = asRecord(reportJson?.important_knowledge_point_coverage);
-  const warnings = useMemo(() => asRecordList(reportJson?.warnings), [reportJson]);
+  const warnings = useMemo(() => asRecordList(reportJson?.warnings).filter((warning) => !isHiddenScene(warning.scene_type)), [reportJson]);
 
   if (reportQuery.isLoading && !report) {
     return <PageLoading text="正在打开覆盖报告" />;
@@ -203,8 +221,13 @@ export function CoverageReportPage() {
   }
 
   const questionBucket = asRecord(artifactCoverage?.question_item);
+  const homeworkBucket = asRecord(artifactCoverage?.homework_question);
   const coursewareBucket = asRecord(artifactCoverage?.courseware_slide);
-  const questionCoverage = asNumberList(questionBucket?.covered_knowledge_point_ids).length;
+  const visibleQuestionItems = asRecordList(questionBucket?.items).filter((item) => !isHiddenScene(item.scene_type));
+  const questionCoverage = new Set([
+    ...visibleQuestionItems.flatMap((item) => asNumberList(item.valid_knowledge_point_ids)),
+    ...asNumberList(homeworkBucket?.covered_knowledge_point_ids),
+  ]).size;
   const pptCoverage = asNumberList(coursewareBucket?.covered_knowledge_point_ids).length;
 
   return (

@@ -482,7 +482,7 @@ function ResourceChecklist({
   coursewareResults?: PageResult<CoursewareResult>;
   coverageReports?: PageResult<CoverageReport>;
 }) {
-  const paperSceneCount = new Set((paperResults?.items ?? []).map((item) => item.scene_type)).size;
+  const paperSceneCount = new Set((paperResults?.items ?? []).filter((item) => item.scene_type !== "unit_test").map((item) => item.scene_type)).size;
   const hasCoverage = (coverageReports?.items ?? []).some((item) => isCompleteStatus(item.report_status));
   const lessonCount = lessonPlans?.pagination?.total_count ?? 0;
   const coursewareCount = coursewareResults?.pagination?.total_count ?? 0;
@@ -492,7 +492,8 @@ function ResourceChecklist({
     { label: "多课教案", value: lessonCount ? `${lessonCount} 份` : batch?.curriculum_plan_id ? "生成中" : "等待课程方案" },
     { label: "覆盖报告", value: hasCoverage ? "已完成" : lessonCount ? "准备中" : "等待教案" },
     { label: "PPT 课件", value: coursewareCount ? `${coursewareCount} 份` : "按课生成" },
-    { label: "配套测练", value: paperSceneCount ? `${paperSceneCount} 类` : "按场景生成" },
+    { label: "课后作业", value: "按课生成" },
+    { label: "配套测练", value: paperSceneCount ? `${paperSceneCount} 类` : "按整套生成" },
   ];
 
   return (
@@ -521,7 +522,7 @@ function GeneratedResourcesSummary({
   coverageReports?: PageResult<CoverageReport>;
 }) {
   if (!batch) {
-    return <SoftNotice>整理好教学重点后，就可以生成课程方案和多课教案；PPT 课件与配套测练可在资源页按需生成。</SoftNotice>;
+    return <SoftNotice>整理好教学重点后，就可以生成课程方案和多课教案；PPT 与课后作业可按课生成，期末综合测可按整套生成。</SoftNotice>;
   }
 
   return (
@@ -1072,7 +1073,7 @@ export function ProjectWorkspacePage() {
       if (generationComplete && latestBatch) {
         return {
           title: "备课资源已生成",
-          message: "课程方案、教案和覆盖报告已准备好；PPT 可按课生成，测练可按场景生成。",
+          message: "课程方案、教案和覆盖报告已准备好；PPT 与课后作业可按课生成，期末综合测可按整套生成。",
           meta: autoElapsedText,
           buttonLabel: "查看备课资源",
           buttonIcon: ExternalLink,
@@ -1125,7 +1126,7 @@ export function ProjectWorkspacePage() {
       }
       return {
         title: "自动生成中",
-        message: "正在生成课程方案、多课教案和覆盖报告；PPT 课件与配套测练可在资源页按需生成。",
+        message: "正在生成课程方案、多课教案和覆盖报告；PPT 与课后作业可按课生成，期末综合测可按整套生成。",
         meta: autoElapsedText,
         buttonLabel: "正在自动处理",
         buttonIcon: Loader2,
@@ -1196,7 +1197,7 @@ export function ProjectWorkspacePage() {
     if (generationActive) {
       return {
         title: "正在生成备课资源",
-        message: "课程方案、多课教案和覆盖报告正在准备中；PPT 课件与配套测练可在资源页按需生成。",
+        message: "课程方案、多课教案和覆盖报告正在准备中；PPT 与课后作业可按课生成，期末综合测可按整套生成。",
         buttonLabel: "正在生成",
         buttonIcon: Loader2,
         disabled: true,
@@ -1206,7 +1207,7 @@ export function ProjectWorkspacePage() {
     if (generationComplete && latestBatch) {
       return {
         title: "备课资源已生成",
-        message: "课程方案、教案和覆盖报告已准备好；PPT 可按课生成，测练可按场景生成。",
+        message: "课程方案、教案和覆盖报告已准备好；PPT 与课后作业可按课生成，期末综合测可按整套生成。",
         buttonLabel: "查看备课资源",
         buttonIcon: ExternalLink,
         onClick: () => window.location.assign(`/projects/${projectId}/batches/${latestBatch.id}`),
@@ -1214,7 +1215,7 @@ export function ProjectWorkspacePage() {
     }
     return {
       title: latestBatch ? "可以重新生成" : "可以生成备课资源了",
-      message: "将基于教材、学情和教学重点生成课程方案和多课教案；PPT 课件与配套测练可在资源页按需生成。",
+      message: "将基于教材、学情和教学重点生成课程方案和多课教案；PPT 与课后作业可按课生成，期末综合测可按整套生成。",
       buttonLabel: "生成备课资源",
       buttonIcon: Wand2,
       disabled: createBatch.isPending,

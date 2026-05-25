@@ -121,7 +121,7 @@ export function OverviewTab({
             title="教案"
           />
           <FlowItem
-            detail={assessmentPaperCount ? `已生成 ${completedAssessmentScenes.length}/${assessmentScenes.length} 类，共 ${assessmentPaperCount} 份` : "按需生成作业、单元测评和综合测"}
+            detail={assessmentPaperCount ? `已生成 ${completedAssessmentScenes.length}/${assessmentScenes.length} 类，共 ${assessmentPaperCount} 份` : "按需生成作业和综合测"}
             icon={<FileQuestion size={18} />}
             status={assessmentStatus}
             title="测练体系"

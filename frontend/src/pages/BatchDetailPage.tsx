@@ -13,28 +13,13 @@ import {
 import { Link, useParams } from "react-router-dom";
 import { isTaskActiveStatus } from "../hooks/useTaskPolling";
 import { api } from "../lib/api";
-import type { CoursewareResult, GenerationBatch, JsonRecord, LessonPlan, PaperResult, Task } from "../types";
-import { cn, formatDate, toNumberId } from "../utils";
+import type { CoursewareResult, GenerationBatch, HomeworkResult, JsonRecord, LessonPlan, PaperResult, Task } from "../types";
+import { cn, toNumberId } from "../utils";
 import { asRecord, asRecordList, latestByUpdated, sortLessons } from "./batch-detail/helpers";
 
 const assessmentScenes = [
   {
-    scene_type: "homework",
-    label: "课后作业",
-    actionLabel: "生成作业",
-    description: "围绕本套课程内容，生成课后巩固练习。",
-  },
-  {
-    scene_type: "unit_test",
-    label: "单元测评",
-    actionLabel: "生成测评",
-    description: "用于阶段检测，查看学生对核心知识的掌握情况。",
-  },
-  {
     scene_type: "final_exam",
-    label: "期末综合测",
-    actionLabel: "生成试卷",
-    description: "生成综合测评，覆盖整套课程的重点内容。",
   },
 ] as const;
 
@@ -138,7 +123,6 @@ function buildLessonSections(lesson?: LessonPlan): TextSection[] {
     ...pickText(content, ["key_points", "teaching_focus", "core_knowledge", "important_points"], 4),
     ...pickText(content, ["difficult_points", "learning_difficulties"], 3),
   ];
-  const practice = pickText(content, ["class_practice", "practice_items", "in_class_practice", "exercises"], 5);
   const homework = [
     ...collectText(afterClassPlan, 5),
     ...collectText(sessionPlans.flatMap((session) => collectText(session.homework, 3)), 5),
@@ -153,10 +137,6 @@ function buildLessonSections(lesson?: LessonPlan): TextSection[] {
     {
       title: "重点难点",
       items: focus,
-    },
-    {
-      title: "课堂练习",
-      items: practice,
     },
     {
       title: "课后安排",
@@ -199,6 +179,21 @@ function getCoursewareTask(tasks: Task[], lessonId?: number | null) {
   );
 }
 
+function getHomeworkTask(tasks: Task[], lessonId?: number | null) {
+  if (!lessonId) {
+    return undefined;
+  }
+  return latestByUpdated(
+    tasks.filter((task) => {
+      const payloadLessonId = Number(task.payload_json?.lesson_plan_id);
+      return (
+        (task.module_code === "homework" || task.task_type.includes("homework")) &&
+        (payloadLessonId === lessonId || task.biz_key?.includes(`lesson_plan:${lessonId}:homework`))
+      );
+    }),
+  );
+}
+
 function ResourceBadge({ children }: { children: string }) {
   return (
     <span className="inline-flex h-7 items-center rounded-full bg-[#f2f2f2] px-3 text-xs font-semibold text-ink/62">
@@ -207,11 +202,27 @@ function ResourceBadge({ children }: { children: string }) {
   );
 }
 
-function InlineStatus({ label }: { label: string }) {
+function LessonStatusChip({
+  children,
+  tone = "muted",
+  active,
+}: {
+  children: string;
+  tone?: "muted" | "blue" | "success" | "danger";
+  active?: boolean;
+}) {
   return (
-    <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap text-xs font-semibold text-ink/45">
-      <span className="h-1.5 w-1.5 rounded-full bg-ink/35" />
-      {label}
+    <span
+      className={cn(
+        "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-xs font-semibold",
+        tone === "blue" && "bg-blue-50 text-blue-600",
+        tone === "success" && "bg-emerald-50 text-emerald-700",
+        tone === "danger" && "bg-red-50 text-red-600",
+        tone === "muted" && "bg-[#f2f2f2] text-ink/58",
+      )}
+    >
+      {children}
+      {active ? <Loader2 className="animate-spin" size={13} /> : null}
     </span>
   );
 }
@@ -253,15 +264,19 @@ function PageLoading({ text }: { text: string }) {
   );
 }
 
+const sectionNumerals = ["一", "二", "三", "四", "五", "六"];
+
 function LessonList({
   lessons,
   selectedLessonId,
   coursewareResults,
+  homeworkResults,
   onSelectLesson,
 }: {
   lessons: LessonPlan[];
   selectedLessonId: number | null;
   coursewareResults: CoursewareResult[];
+  homeworkResults: HomeworkResult[];
   onSelectLesson: (lessonId: number) => void;
 }) {
   if (!lessons.length) {
@@ -272,6 +287,7 @@ function LessonList({
     <div className="space-y-3">
       {lessons.map((lesson) => {
         const hasPpt = coursewareResults.some((item) => item.lesson_plan_id === lesson.id && item.export_file_id);
+        const hasHomework = homeworkResults.some((item) => item.lesson_plan_id === lesson.id && isSuccessfulStatus(item.result_status));
         const selected = selectedLessonId === lesson.id;
         return (
           <button
@@ -288,7 +304,10 @@ function LessonList({
                 <div className="text-xs font-semibold text-ink/45">第 {lesson.class_session_no ?? "-"} 课</div>
                 <div className="mt-1 line-clamp-2 text-sm font-semibold leading-5 text-ink">{formatLessonTitle(lesson.lesson_title)}</div>
               </div>
-              {hasPpt ? <ResourceBadge>PPT</ResourceBadge> : null}
+              <div className="flex shrink-0 flex-col gap-1">
+                {hasPpt ? <ResourceBadge>PPT</ResourceBadge> : null}
+                {hasHomework ? <ResourceBadge>作业</ResourceBadge> : null}
+              </div>
             </div>
           </button>
         );
@@ -311,26 +330,20 @@ function LessonPreview({ lesson, loading }: { lesson?: LessonPlan; loading: bool
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <div className="text-sm font-semibold text-ink/45">第 {lesson.class_session_no ?? "-"} 课</div>
-        <h2 className="mt-2 text-2xl font-semibold leading-tight text-ink">{formatLessonTitle(lesson.lesson_title)}</h2>
-        {lesson.summary_text ? <p className="mt-3 text-sm leading-7 text-ink/58">{lesson.summary_text}</p> : null}
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        {sections.map((section) => (
-          <section className="rounded-2xl border border-line bg-[#fafafa] p-4" key={section.title}>
-            <h3 className="text-sm font-semibold text-ink">{section.title}</h3>
+    <div>
+      <h3 className="text-lg font-semibold text-ink">教案预览</h3>
+      <div className="mt-6 divide-y divide-line">
+        {sections.map((section, index) => (
+          <section className="py-5 first:pt-0 last:pb-0" key={section.title}>
+            <h4 className="text-base font-semibold text-ink">
+              {sectionNumerals[index] ?? index + 1}、{section.title}
+            </h4>
             {section.items.length ? (
-              <ul className="mt-3 space-y-2 text-sm leading-6 text-ink/62">
+              <div className="mt-4 space-y-3 text-sm leading-7 text-ink/68">
                 {section.items.slice(0, 5).map((item, index) => (
-                  <li className="flex gap-2" key={`${section.title}-${item}-${index}`}>
-                    <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-ink/32" />
-                    <span className="min-w-0">{item}</span>
-                  </li>
+                  <p key={`${section.title}-${item}-${index}`}>{item}</p>
                 ))}
-              </ul>
+              </div>
             ) : (
               <div className="mt-3 text-sm text-ink/38">等待内容同步</div>
             )}
@@ -338,8 +351,10 @@ function LessonPreview({ lesson, loading }: { lesson?: LessonPlan; loading: bool
         ))}
       </div>
 
-      <section className="rounded-2xl border border-line bg-white p-5">
-        <h3 className="text-base font-semibold text-ink">教学流程</h3>
+      <section className="mt-6 border-t border-line pt-5">
+        <h4 className="text-base font-semibold text-ink">
+          {sectionNumerals[sections.length] ?? sections.length + 1}、教学流程
+        </h4>
         {steps.length ? (
           <div className="mt-4 space-y-4">
             {steps.map((step, index) => (
@@ -368,6 +383,7 @@ export function BatchDetailPage() {
   const queryClient = useQueryClient();
   const [selectedLessonId, setSelectedLessonId] = useState<number | null>(null);
   const [lessonDownloadId, setLessonDownloadId] = useState<number | null>(null);
+  const [homeworkDownloadId, setHomeworkDownloadId] = useState<number | null>(null);
   const [paperDownloadId, setPaperDownloadId] = useState<number | null>(null);
 
   const batchQuery = useQuery({
@@ -449,6 +465,27 @@ export function BatchDetailPage() {
 
   const selectedCoursewareTask = useMemo(() => getCoursewareTask(tasks, selectedLessonId), [selectedLessonId, tasks]);
 
+  const selectedHomeworkTask = useMemo(() => getHomeworkTask(tasks, selectedLessonId), [selectedLessonId, tasks]);
+
+  const homeworkResultsQuery = useQuery({
+    queryKey: ["homework-results", batch?.id],
+    queryFn: () => api.listHomeworkResults({ generation_batch_id: batch!.id, page: 1, page_size: 100 }),
+    enabled: Boolean(batch?.id),
+    refetchInterval: isTaskActiveStatus(selectedHomeworkTask?.task_status) ? 5_000 : false,
+  });
+
+  const homeworkResults = useMemo(
+    () => [...(homeworkResultsQuery.data?.items ?? [])].sort((a, b) => b.id - a.id),
+    [homeworkResultsQuery.data?.items],
+  );
+
+  const selectedHomeworkResult = useMemo(() => {
+    if (!selectedLessonId) {
+      return undefined;
+    }
+    return homeworkResults.find((result) => result.lesson_plan_id === selectedLessonId);
+  }, [homeworkResults, selectedLessonId]);
+
   const assessmentTasksByScene = useMemo(() => {
     return Object.fromEntries(
       assessmentScenes.map((scene) => [
@@ -513,6 +550,20 @@ export function BatchDetailPage() {
     },
   });
 
+  const createHomework = useMutation({
+    mutationFn: () => {
+      if (!selectedLesson) {
+        throw new Error("请选择一课教案");
+      }
+      return api.createHomeworkTask(selectedLesson.id);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["generation-batch", batchId] });
+      queryClient.invalidateQueries({ queryKey: ["homework-results", batch?.id] });
+      queryClient.invalidateQueries({ queryKey: ["coverage-reports", batch?.id] });
+    },
+  });
+
   const downloadLesson = useMutation({
     mutationFn: async (lesson: LessonPlan) => {
       setLessonDownloadId(lesson.id);
@@ -529,11 +580,28 @@ export function BatchDetailPage() {
     onSettled: () => setLessonDownloadId(null),
   });
 
+  const downloadHomework = useMutation({
+    mutationFn: async (homework: HomeworkResult) => {
+      setHomeworkDownloadId(homework.id);
+      const result = homework.export_file_id ? await api.getFileDownloadUrl(homework.export_file_id) : await api.exportHomeworkResultDocx(homework.id);
+      if (!result.signed_url) {
+        throw new Error("下载地址暂未准备好");
+      }
+      return result.signed_url;
+    },
+    onSuccess: (url, homework) => {
+      queryClient.invalidateQueries({ queryKey: ["homework-result", homework.id] });
+      queryClient.invalidateQueries({ queryKey: ["homework-results", batch?.id] });
+      window.open(url, "_blank", "noopener,noreferrer");
+    },
+    onSettled: () => setHomeworkDownloadId(null),
+  });
+
   const downloadCurriculum = useMutation({
     mutationFn: async () => {
       const plan = curriculumQuery.data;
       if (!plan) {
-        throw new Error("课程方案暂未准备好");
+        throw new Error("课程总纲暂未准备好");
       }
       const result = plan.export_file_id ? await api.getFileDownloadUrl(plan.export_file_id) : await api.exportCurriculumPlanDocx(plan.id);
       if (!result.signed_url) {
@@ -606,210 +674,298 @@ export function BatchDetailPage() {
   const coursewareFailed = isFailedStatus(selectedCoursewareResult?.result_status) || isFailedStatus(selectedCoursewareTask?.task_status);
   const canDownloadPpt = Boolean(selectedCoursewareResult?.export_file_id);
   const hasCoursewareResult = Boolean(selectedCoursewareResult);
+  const homeworkActive = isTaskActiveStatus(selectedHomeworkTask?.task_status) || isTaskActiveStatus(selectedHomeworkResult?.result_status);
+  const homeworkFailed = isFailedStatus(selectedHomeworkTask?.task_status) || isFailedStatus(selectedHomeworkResult?.result_status);
+  const hasHomework = Boolean(selectedHomeworkResult && isSuccessfulStatus(selectedHomeworkResult.result_status));
+  const homeworkStatusUnavailable = homeworkResultsQuery.isError;
+  const finalExamPaper = paperResultsByScene.final_exam?.[0];
+  const finalExamTask = assessmentTasksByScene.final_exam;
+  const finalExamActive = isTaskActiveStatus(finalExamTask?.task_status) || isTaskActiveStatus(finalExamPaper?.result_status);
+  const finalExamFailed = isFailedStatus(finalExamTask?.task_status) || isFailedStatus(finalExamPaper?.result_status);
+  const hasFinalExam = Boolean(finalExamPaper && isSuccessfulStatus(finalExamPaper.result_status));
+  const hasCoverageReport = Boolean(coverageReport && isSuccessfulStatus(coverageReport.report_status));
+  const lessonCount = lessonPlans.length || batch.course_count;
+  const courseOutlineMeta = [
+    lessonCount ? `共 ${lessonCount} 课` : "课次数待同步",
+    batch.session_duration_minutes ? `每课 ${batch.session_duration_minutes} 分钟` : null,
+  ]
+    .filter(Boolean)
+    .join("，");
+  const coursewareGenerating = coursewareActive || createCourseware.isPending;
+  const homeworkGenerating = homeworkActive || createHomework.isPending;
+  const coursewareStatusLabel = canDownloadPpt ? "PPT 已生成" : coursewareGenerating ? "PPT 生成中" : coursewareFailed ? "PPT 需重试" : "PPT 待生成";
+  const homeworkStatusLabel = hasHomework ? "作业已生成" : homeworkGenerating ? "作业生成中" : homeworkFailed ? "作业需重试" : "作业待生成";
+  const coursewareStatusTone: "muted" | "blue" | "success" | "danger" = canDownloadPpt
+    ? "success"
+    : coursewareGenerating
+      ? "blue"
+      : coursewareFailed
+        ? "danger"
+        : "muted";
+  const homeworkStatusTone: "muted" | "blue" | "success" | "danger" = hasHomework
+    ? "success"
+    : homeworkGenerating
+      ? "blue"
+      : homeworkFailed
+        ? "danger"
+        : "muted";
 
   return (
     <div className="mx-auto w-full max-w-[1540px] space-y-6 px-2 pb-10 pt-6 text-ink">
-      <section className="grid gap-6 xl:h-[calc(100vh-230px)] xl:min-h-[500px] xl:grid-cols-[310px_minmax(0,1fr)_340px]">
+      <section className="grid gap-6 xl:h-[calc(100vh-230px)] xl:min-h-[560px] xl:grid-cols-[310px_minmax(0,1fr)]">
         <ResourcePanel title="课次" scroll>
           <LessonList
             lessons={lessonPlans}
             selectedLessonId={selectedLessonId}
             coursewareResults={coursewareResults}
+            homeworkResults={homeworkResults}
             onSelectLesson={setSelectedLessonId}
           />
         </ResourcePanel>
 
-        <ResourcePanel title="教案预览" scroll>
-          <LessonPreview lesson={lessonForPreview} loading={lessonDetailQuery.isLoading} />
-        </ResourcePanel>
+        <section className="flex min-h-0 flex-col rounded-[22px] border border-line bg-white shadow-panel">
+          <div className="shrink-0 border-b border-line px-7 py-6">
+            <div className="text-sm font-semibold text-ink/45">第 {lessonForPreview?.class_session_no ?? "-"} 课</div>
+            <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <h2 className="text-3xl font-semibold leading-tight text-ink">{lessonForPreview ? formatLessonTitle(lessonForPreview.lesson_title) : "请选择一课"}</h2>
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <LessonStatusChip active={homeworkGenerating} tone={homeworkStatusTone}>
+                  {homeworkStatusLabel}
+                </LessonStatusChip>
+                <LessonStatusChip active={coursewareGenerating} tone={coursewareStatusTone}>
+                  {coursewareStatusLabel}
+                </LessonStatusChip>
+              </div>
+            </div>
+            {lessonForPreview?.summary_text ? <p className="mt-4 max-w-4xl text-sm leading-7 text-ink/64">{lessonForPreview.summary_text}</p> : null}
+          </div>
 
-        <ResourcePanel title="本课资源" scroll>
-          <div className="space-y-4">
-            <div className="rounded-2xl border border-line bg-[#fafafa] p-4">
-              <div className="flex items-start gap-3">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white">
-                  <FileText size={20} />
+          <div className="grid min-h-0 flex-1 xl:grid-cols-[minmax(0,1fr)_330px]">
+            <div className="min-h-0 overflow-y-auto px-7 py-6">
+              <LessonPreview lesson={lessonForPreview} loading={lessonDetailQuery.isLoading} />
+            </div>
+
+            <aside className="min-h-0 overflow-y-auto border-t border-line px-7 py-6 xl:border-l xl:border-t-0">
+              <div>
+                <h3 className="text-lg font-semibold text-ink">本课资源</h3>
+              </div>
+
+              <div className="mt-6 divide-y divide-line">
+                <div className="pb-6">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#f6f6f6]">
+                      <FileText size={19} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-semibold text-ink">教案 DOCX</div>
+                    </div>
+                  </div>
+                  <button
+                    className="btn btn-secondary mt-4 w-full rounded-full"
+                    disabled={!lessonForPreview || lessonDownloadId === lessonForPreview.id}
+                    onClick={() => lessonForPreview && downloadLesson.mutate(lessonForPreview)}
+                    type="button"
+                  >
+                    <Download size={16} />
+                    {lessonForPreview && lessonDownloadId === lessonForPreview.id ? "准备下载" : "下载教案"}
+                  </button>
                 </div>
-                <div className="min-w-0">
-                  <div className="font-semibold text-ink">教案 DOCX</div>
-                  <p className="mt-1 text-sm leading-6 text-ink/50">下载当前课教案，直接用于备课和教研归档。</p>
+
+                <div className="py-6">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#f6f6f6]">
+                      <Presentation size={19} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-semibold text-ink">PPT 课件</div>
+                    </div>
+                  </div>
+                  {canDownloadPpt ? (
+                    <button className="btn btn-primary mt-4 w-full rounded-full" disabled={downloadPpt.isPending} onClick={() => downloadPpt.mutate()} type="button">
+                      <Download size={16} />
+                      {downloadPpt.isPending ? "准备下载" : "下载 PPT"}
+                    </button>
+                  ) : hasCoursewareResult || coursewareGenerating ? (
+                    <button className="btn btn-secondary mt-4 w-full rounded-full" disabled type="button">
+                      <Loader2 className={coursewareGenerating ? "animate-spin" : ""} size={16} />
+                      PPT 生成中
+                    </button>
+                  ) : (
+                    <button
+                      className="btn btn-primary mt-4 w-full rounded-full"
+                      disabled={!selectedLesson || createCourseware.isPending}
+                      onClick={() => createCourseware.mutate()}
+                      type="button"
+                    >
+                      {createCourseware.isPending ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
+                      {coursewareFailed ? "重新生成" : "生成这一课 PPT"}
+                    </button>
+                  )}
+                </div>
+
+                <div className="pt-6">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#f6f6f6]">
+                      <ClipboardCheck size={19} />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="font-semibold text-ink">课后作业</div>
+                    </div>
+                  </div>
+                  {homeworkStatusUnavailable ? (
+                    <button className="btn btn-secondary mt-4 w-full rounded-full" disabled type="button">
+                      作业状态同步中
+                    </button>
+                  ) : hasHomework && selectedHomeworkResult ? (
+                    <div className="mt-4 grid gap-2">
+                      <Link className="btn btn-secondary rounded-full" to={`/projects/${projectId}/batches/${batchId}/homework/${selectedHomeworkResult.id}`}>
+                        查看题目
+                      </Link>
+                      <button
+                        className="btn btn-secondary rounded-full"
+                        disabled={homeworkDownloadId === selectedHomeworkResult.id}
+                        onClick={() => downloadHomework.mutate(selectedHomeworkResult)}
+                        type="button"
+                      >
+                        <Download size={16} />
+                        {homeworkDownloadId === selectedHomeworkResult.id ? "准备下载" : "下载 DOCX"}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      className="btn btn-primary mt-4 w-full rounded-full"
+                      disabled={!selectedLesson || homeworkGenerating}
+                      onClick={() => createHomework.mutate()}
+                      type="button"
+                    >
+                      {homeworkGenerating ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
+                      {homeworkActive ? "生成中" : homeworkFailed ? "重新生成" : "生成这一课作业"}
+                    </button>
+                  )}
                 </div>
               </div>
+
+              {(downloadLesson.error || downloadPpt.error || createCourseware.error || createHomework.error || downloadHomework.error) ? (
+                <div className="mt-5">
+                  <FriendlyNotice title="操作暂时没有完成" description="请稍后再试，页面会继续同步资源状态。" />
+                </div>
+              ) : null}
+            </aside>
+          </div>
+        </section>
+      </section>
+
+      <ResourcePanel>
+        <div className="flex flex-col gap-3 border-b border-line pb-5 md:flex-row md:items-end md:justify-between">
+          <h2 className="text-2xl font-semibold tracking-normal text-ink">整套资源</h2>
+        </div>
+
+        <div className="hidden grid-cols-[minmax(220px,1.05fr)_minmax(250px,1.25fr)_minmax(240px,1fr)_minmax(180px,auto)] gap-6 border-b border-line py-4 text-sm font-semibold text-ink/45 xl:grid">
+          <div>资源</div>
+          <div>内容说明</div>
+          <div>相关信息</div>
+          <div className="text-center">操作</div>
+        </div>
+
+        <div className="divide-y divide-line">
+          <div className="grid gap-4 py-5 xl:grid-cols-[minmax(220px,1.05fr)_minmax(250px,1.25fr)_minmax(240px,1fr)_minmax(180px,auto)] xl:items-center xl:gap-6">
+            <div className="flex min-w-0 items-center gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#f3f3f3] text-ink">
+                <BookOpen size={21} />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-lg font-semibold text-ink">课程总纲</h3>
+              </div>
+            </div>
+            <p className="text-sm leading-6 text-ink/58">整套课程安排、教学目标与课时规划。</p>
+            <div className="text-sm font-medium text-ink/58">{courseOutlineMeta}</div>
+            <div className="flex xl:justify-center">
               <button
-                className="btn btn-secondary mt-4 w-full rounded-full"
-                disabled={!lessonForPreview || lessonDownloadId === lessonForPreview.id}
-                onClick={() => lessonForPreview && downloadLesson.mutate(lessonForPreview)}
+                className="btn btn-secondary min-w-[152px] rounded-full px-5"
+                disabled={!curriculumQuery.data || downloadCurriculum.isPending}
+                onClick={() => downloadCurriculum.mutate()}
                 type="button"
               >
                 <Download size={16} />
-                {lessonForPreview && lessonDownloadId === lessonForPreview.id ? "准备下载" : "下载教案"}
+                {downloadCurriculum.isPending ? "准备下载" : "下载总纲"}
               </button>
             </div>
+          </div>
 
-            <div className="rounded-2xl border border-line bg-[#fafafa] p-4">
-              <div className="flex items-start gap-3">
-                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white">
-                  <Presentation size={20} />
-                </div>
-                <div className="min-w-0">
-                  <div className="font-semibold text-ink">PPT 课件</div>
-                  <p className="mt-1 text-sm leading-6 text-ink/50">基于当前课教案生成这一课的 PPT。</p>
-                </div>
+          <div className="grid gap-4 py-5 xl:grid-cols-[minmax(220px,1.05fr)_minmax(250px,1.25fr)_minmax(240px,1fr)_minmax(180px,auto)] xl:items-center xl:gap-6">
+            <div className="flex min-w-0 items-center gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#f3f3f3] text-ink">
+                <ClipboardCheck size={21} />
               </div>
-              {canDownloadPpt ? (
-                <button className="btn btn-primary mt-4 w-full rounded-full" disabled={downloadPpt.isPending} onClick={() => downloadPpt.mutate()} type="button">
+              <div className="min-w-0">
+                <h3 className="text-lg font-semibold text-ink">期末综合测</h3>
+              </div>
+            </div>
+            <p className="text-sm leading-6 text-ink/58">覆盖整套课程重点内容。</p>
+            <div className="text-sm font-medium text-ink/58">{hasFinalExam ? "综合测评" : "等待生成"}</div>
+            <div className="flex xl:justify-center">
+              {hasFinalExam && finalExamPaper ? (
+                <button
+                  className="btn btn-secondary min-w-[152px] rounded-full px-5"
+                  disabled={paperDownloadId === finalExamPaper.id}
+                  onClick={() => downloadPaper.mutate(finalExamPaper)}
+                  type="button"
+                >
                   <Download size={16} />
-                  {downloadPpt.isPending ? "准备下载" : "下载 PPT"}
-                </button>
-              ) : hasCoursewareResult || coursewareActive ? (
-                <button className="btn btn-secondary mt-4 w-full rounded-full" disabled type="button">
-                  <Loader2 className={coursewareActive ? "animate-spin" : ""} size={16} />
-                  PPT 生成中
+                  {paperDownloadId === finalExamPaper.id ? "准备下载" : "下载 DOCX"}
                 </button>
               ) : (
                 <button
-                  className="btn btn-primary mt-4 w-full rounded-full"
-                  disabled={!selectedLesson || createCourseware.isPending}
-                  onClick={() => createCourseware.mutate()}
+                  className="btn btn-secondary min-w-[152px] rounded-full px-5"
+                  disabled={!batch.curriculum_plan_id || finalExamActive || createAssessment.isPending}
+                  onClick={() => createAssessment.mutate("final_exam")}
                   type="button"
                 >
-                  {createCourseware.isPending ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-                  {coursewareFailed ? "重新生成" : "生成这一课 PPT"}
+                  {finalExamActive || createAssessment.isPending ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
+                  {finalExamActive ? "生成中" : finalExamFailed ? "重新生成" : "生成试卷"}
                 </button>
               )}
             </div>
-
-            {(downloadLesson.error || downloadPpt.error || createCourseware.error) ? (
-              <FriendlyNotice title="操作暂时没有完成" description="请稍后再试，页面会继续同步资源状态。" />
-            ) : null}
           </div>
-        </ResourcePanel>
-      </section>
 
-      <ResourcePanel title="整套资源">
-        <div className="grid gap-4 xl:grid-cols-[320px_1fr_320px]">
-          <section className="rounded-2xl border border-line bg-[#fafafa] p-5">
-            <div className="flex items-start gap-3">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white">
-                <BookOpen size={20} />
+          <div className="grid gap-4 py-5 xl:grid-cols-[minmax(220px,1.05fr)_minmax(250px,1.25fr)_minmax(240px,1fr)_minmax(180px,auto)] xl:items-center xl:gap-6">
+            <div className="flex min-w-0 items-center gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#f3f3f3] text-ink">
+                <BarChart3 size={21} />
               </div>
-              <div>
-                <h3 className="font-semibold text-ink">课程方案</h3>
-                <p className="mt-2 text-sm leading-6 text-ink/50">整套课程安排、教学目标与课时规划。</p>
+              <div className="min-w-0">
+                <h3 className="text-lg font-semibold text-ink">覆盖报告</h3>
               </div>
             </div>
-            <button
-              className="btn btn-secondary mt-5 w-full rounded-full"
-              disabled={!curriculumQuery.data || downloadCurriculum.isPending}
-              onClick={() => downloadCurriculum.mutate()}
-              type="button"
-            >
-              <Download size={16} />
-              {downloadCurriculum.isPending ? "准备下载" : "下载课程方案"}
-            </button>
-          </section>
-
-          <section className="rounded-2xl border border-line bg-[#fafafa] p-5">
-            <div className="flex items-start gap-3">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white">
-                <ClipboardCheck size={20} />
-              </div>
-              <div>
-                <h3 className="font-semibold text-ink">配套测练</h3>
-                <p className="mt-2 text-sm leading-6 text-ink/50">按教学场景生成作业、测评和综合试卷。</p>
-              </div>
+            <p className="text-sm leading-6 text-ink/58">知识点、题目和课件覆盖检查。</p>
+            <div className="flex min-w-max items-baseline gap-3">
+              <span className="text-xl font-semibold text-ink">{coverageReport?.coverage_rate != null ? `${coverageReport.coverage_rate}%` : "-"}</span>
+              <span className="text-xl font-semibold text-ink/62">知识点覆盖</span>
             </div>
-            <div className="mt-5 grid gap-3 lg:grid-cols-3">
-              {assessmentScenes.map((scene) => {
-                const paper = paperResultsByScene[scene.scene_type]?.[0];
-                const task = assessmentTasksByScene[scene.scene_type];
-                const active = isTaskActiveStatus(task?.task_status) || isTaskActiveStatus(paper?.result_status);
-                const failed = isFailedStatus(task?.task_status) || isFailedStatus(paper?.result_status);
-                const hasPaper = Boolean(paper && isSuccessfulStatus(paper.result_status));
-                return (
-                  <div className="rounded-2xl border border-line bg-white p-4" key={scene.scene_type}>
-                    <div>
-                      <div className="flex min-w-0 items-center justify-between gap-3">
-                        <h4 className="font-semibold text-ink">{scene.label}</h4>
-                        <InlineStatus label={hasPaper ? "已生成" : active ? "生成中" : "可生成"} />
-                      </div>
-                      <div>
-                        <p className="mt-2 min-h-12 text-sm leading-6 text-ink/48">{scene.description}</p>
-                      </div>
-                    </div>
-                    <div className="mt-4 grid gap-2">
-                      {hasPaper && paper ? (
-                        <>
-                          <Link className="btn btn-primary rounded-full" to={`/projects/${projectId}/batches/${batchId}/assessments/${paper.id}`}>
-                            查看题目
-                          </Link>
-                          <button
-                            className="btn btn-secondary rounded-full"
-                            disabled={paperDownloadId === paper.id}
-                            onClick={() => downloadPaper.mutate(paper)}
-                            type="button"
-                          >
-                            <Download size={16} />
-                            {paperDownloadId === paper.id ? "准备下载" : "下载 DOCX"}
-                          </button>
-                        </>
-                      ) : (
-                        <button
-                          className="btn btn-secondary rounded-full"
-                          disabled={!batch.curriculum_plan_id || active || createAssessment.isPending}
-                          onClick={() => createAssessment.mutate(scene.scene_type)}
-                          type="button"
-                        >
-                          {active || createAssessment.isPending ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-                          {active ? "生成中" : failed ? "重新生成" : scene.actionLabel}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="flex xl:justify-center">
+              {hasCoverageReport && coverageReport ? (
+                <Link className="btn btn-secondary min-w-[170px] rounded-full px-5" to={`/projects/${projectId}/batches/${batchId}/coverage/${coverageReport.id}`}>
+                  <BarChart3 size={16} />
+                  查看覆盖报告
+                </Link>
+              ) : (
+                <button className="btn btn-secondary min-w-[170px] rounded-full px-5" disabled type="button">
+                  覆盖报告同步中
+                </button>
+              )}
             </div>
-            {(createAssessment.error || downloadPaper.error) ? (
-              <div className="mt-4">
-                <FriendlyNotice title="测练操作暂时没有完成" description="请稍后再试，页面会继续同步测练状态。" />
-              </div>
-            ) : null}
-          </section>
-
-          <section className="rounded-2xl border border-line bg-[#fafafa] p-5">
-            <div className="flex items-start gap-3">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-white">
-                <BarChart3 size={20} />
-              </div>
-              <div>
-                <h3 className="font-semibold text-ink">覆盖报告</h3>
-                <p className="mt-2 text-sm leading-6 text-ink/50">检查知识点、题目和课件是否覆盖到位。</p>
-              </div>
-            </div>
-            <div className="mt-5 rounded-2xl border border-line bg-white p-4">
-              <div className="text-sm font-semibold text-ink/45">知识点覆盖</div>
-              <div className="mt-2 text-3xl font-semibold text-ink">
-                {coverageReport?.coverage_rate != null ? `${coverageReport.coverage_rate}%` : "-"}
-              </div>
-              <div className="mt-1 text-sm text-ink/45">
-                {coverageReport ? `更新于 ${formatDate(coverageReport.updated_at)}` : "等待资源同步"}
-              </div>
-            </div>
-            {coverageReport && isSuccessfulStatus(coverageReport.report_status) ? (
-              <Link className="btn btn-primary mt-5 w-full rounded-full" to={`/projects/${projectId}/batches/${batchId}/coverage/${coverageReport.id}`}>
-                查看覆盖报告
-              </Link>
-            ) : (
-              <button className="btn btn-secondary mt-5 w-full rounded-full" disabled type="button">
-                覆盖报告同步中
-              </button>
-            )}
-          </section>
+          </div>
         </div>
+
+        {(createAssessment.error || downloadPaper.error) ? (
+          <div className="mt-4">
+            <FriendlyNotice title="测练操作暂时没有完成" description="请稍后再试，页面会继续同步测练状态。" />
+          </div>
+        ) : null}
       </ResourcePanel>
 
       {(downloadCurriculum.error || batchQuery.error || lessonPlansQuery.error || coverageReportsQuery.error) ? (
-        <FriendlyNotice title="部分资源仍在同步" description="可以稍后刷新页面，已生成资源会继续显示在这里。" />
+        <FriendlyNotice title="部分资源仍在同步" description="可以稍后刷新页面，已有资源会继续显示在这里。" />
       ) : null}
     </div>
   );

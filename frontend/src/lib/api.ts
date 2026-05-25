@@ -10,6 +10,9 @@ import type {
   CurriculumPlan,
   FileDownloadUrl,
   GenerationBatch,
+  HomeworkQuestionListItem,
+  HomeworkResult,
+  HomeworkResultDetail,
   KnowledgeChapter,
   KnowledgePoint,
   KnowledgeVersion,
@@ -280,11 +283,41 @@ export const api = {
       method: "POST",
     });
   },
-  createAssessmentTask(curriculumPlanId: number, payload?: { scene_type?: "homework" | "unit_test" | "final_exam" }) {
+  createAssessmentTask(curriculumPlanId: number, payload?: { scene_type?: "unit_test" | "final_exam" }) {
     return request<Task>(`/api/v1/curriculum-plans/${curriculumPlanId}/assessment-tasks`, {
       method: "POST",
       body: JSON.stringify(payload ?? {}),
     });
+  },
+  createHomeworkTask(lessonPlanId: number) {
+    return request<Task>(`/api/v1/lesson-plans/${lessonPlanId}/homework-tasks`, {
+      method: "POST",
+    });
+  },
+  getHomeworkResultByLesson(lessonPlanId: number) {
+    return request<HomeworkResultDetail>(`/api/v1/lesson-plans/${lessonPlanId}/homework-result`);
+  },
+  listHomeworkResults(query?: { curriculum_plan_id?: number; generation_batch_id?: number; page?: number; page_size?: number }) {
+    return request<PageResult<HomeworkResult>>("/api/v1/homework-results", {}, { page: 1, page_size: 20, ...query });
+  },
+  getHomeworkResult(homeworkResultId: number) {
+    return request<HomeworkResultDetail>(`/api/v1/homework-results/${homeworkResultId}`);
+  },
+  exportHomeworkResultDocx(homeworkResultId: number) {
+    return request<FileDownloadUrl>(`/api/v1/homework-results/${homeworkResultId}/export-docx`, {
+      method: "POST",
+    });
+  },
+  listHomeworkQuestions(query?: {
+    lesson_plan_id?: number;
+    homework_result_id?: number;
+    knowledge_point_id?: number;
+    question_type?: string;
+    difficulty_level?: number;
+    page?: number;
+    page_size?: number;
+  }) {
+    return request<PageResult<HomeworkQuestionListItem>>("/api/v1/homework-questions", {}, { page: 1, page_size: 20, ...query });
   },
   listAssessmentBlueprints(
     curriculumPlanId: number,

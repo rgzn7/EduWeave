@@ -27,7 +27,6 @@ const QUESTION_TYPE_LABELS: Record<string, string> = {
 
 const SCENE_LABELS: Record<string, string> = {
   homework: "课后作业",
-  unit_test: "单元测评",
   final_exam: "期末综合测",
 };
 
@@ -37,6 +36,12 @@ const WARNING_LABELS: Record<string, string> = {
   UNCOVERED_KNOWLEDGE_POINTS: "存在未覆盖知识点",
   IMPORTANT_KNOWLEDGE_POINTS_UNCOVERED: "重点知识点未覆盖",
 };
+
+const HIDDEN_SCENE_TYPES = new Set(["unit_test"]);
+
+function isHiddenScene(value: unknown) {
+  return HIDDEN_SCENE_TYPES.has(String(value ?? ""));
+}
 
 function numberValue(value: unknown) {
   const valueAsNumber = Number(value);
@@ -182,9 +187,9 @@ function getArtifactMeta(artifactType: string, item: JsonObject) {
     return [
       `题目 #${displayValue(item.question_item_id ?? item.artifact_id)}`,
       `试卷 #${displayValue(item.paper_result_id)}`,
-      formatScene(item.scene_type),
+      isHiddenScene(item.scene_type) ? "" : formatScene(item.scene_type),
       `策略 ${formatDifficultyRange(item.difficulty_range)}`,
-    ];
+    ].filter(Boolean);
   }
   if (artifactType === "courseware_slide") {
     return [
@@ -208,9 +213,21 @@ function ArtifactCoverageMatrix({ artifactCoverage }: { artifactCoverage: JsonOb
       {buckets.map((config) => {
         const bucket = asRecord(artifactCoverage[config.type]);
         const items = asRecordList(bucket?.items);
+        const visibleItems = config.type === "question_item" ? items.filter((item) => !isHiddenScene(item.scene_type)) : items;
         const displayName = textValue(bucket?.display_name) || config.fallbackLabel;
-        const coveredIds = asNumberList(bucket?.covered_knowledge_point_ids);
-        const invalidIds = asNumberList(bucket?.invalid_knowledge_point_ids);
+        const coveredIds =
+          config.type === "question_item"
+            ? [...new Set(visibleItems.flatMap((item) => asNumberList(item.valid_knowledge_point_ids)))]
+            : asNumberList(bucket?.covered_knowledge_point_ids);
+        const invalidIds =
+          config.type === "question_item"
+            ? [...new Set(visibleItems.flatMap((item) => asNumberList(item.invalid_knowledge_point_ids)))]
+            : asNumberList(bucket?.invalid_knowledge_point_ids);
+        const itemCount = config.type === "question_item" ? visibleItems.length : bucket?.item_count;
+        const referenceCount =
+          config.type === "question_item"
+            ? visibleItems.reduce((sum, item) => sum + countValue(item.reference_count), 0)
+            : bucket?.reference_count;
 
         return (
           <section className="p-4" key={config.type}>
@@ -220,8 +237,8 @@ function ArtifactCoverageMatrix({ artifactCoverage }: { artifactCoverage: JsonOb
                 <div className="mt-1 text-xs font-semibold text-ink/45">{config.type}</div>
               </div>
               <div className="grid grid-cols-2 gap-2 text-right text-xs font-semibold text-ink/55 sm:grid-cols-4">
-                <span>成果 {displayValue(bucket?.item_count)}</span>
-                <span>引用 {displayValue(bucket?.reference_count)}</span>
+                <span>成果 {displayValue(itemCount)}</span>
+                <span>引用 {displayValue(referenceCount)}</span>
                 <span>覆盖 {coveredIds.length}</span>
                 <span className={invalidIds.length ? "text-coral" : ""}>越界 {invalidIds.length}</span>
               </div>
@@ -239,8 +256,8 @@ function ArtifactCoverageMatrix({ artifactCoverage }: { artifactCoverage: JsonOb
             </div>
 
             <div className="mt-4 max-h-[480px] divide-y divide-line overflow-y-auto border-t border-line">
-              {items.length ? (
-                items.map((item, index) => {
+              {visibleItems.length ? (
+                visibleItems.map((item, index) => {
                   const validIds = asNumberList(item.valid_knowledge_point_ids);
                   const itemInvalidIds = asNumberList(item.invalid_knowledge_point_ids);
                   return (
@@ -279,7 +296,7 @@ function ArtifactCoverageMatrix({ artifactCoverage }: { artifactCoverage: JsonOb
 function AssessmentQuality({ assessmentQuality }: { assessmentQuality: JsonObject | null }) {
   const questionTypeDistribution = asRecord(assessmentQuality?.question_type_distribution);
   const difficultyDistribution = asRecord(assessmentQuality?.difficulty_distribution);
-  const strategyChecks = asRecordList(assessmentQuality?.strategy_checks);
+  const strategyChecks = asRecordList(assessmentQuality?.strategy_checks).filter((item) => !isHiddenScene(item.scene_type));
 
   return (
     <div className="space-y-4">
@@ -411,7 +428,7 @@ export function CoverageTab({
   const artifactCoverage = asRecord(reportJson?.artifact_coverage);
   const assessmentQuality = asRecord(reportJson?.assessment_quality ?? summary?.assessment_quality);
   const knowledgeScope = asRecord(reportJson?.knowledge_scope ?? summary?.knowledge_scope);
-  const warnings = asRecordList(reportJson?.warnings);
+  const warnings = asRecordList(reportJson?.warnings).filter((warning) => !isHiddenScene(warning.scene_type));
   const coveredIds = asNumberList(reportJson?.covered_knowledge_point_ids);
   const uncoveredIds = asNumberList(reportJson?.uncovered_knowledge_point_ids);
 

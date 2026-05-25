@@ -7,7 +7,6 @@ import { cn } from "../utils";
 
 const sceneLabels: Record<string, string> = {
   homework: "课后作业",
-  unit_test: "单元测评",
   final_exam: "期末综合测",
 };
 
@@ -23,7 +22,7 @@ export function AppShell() {
   const clearSession = useAuthStore((state) => state.clearSession);
   const isDashboard = location.pathname === "/";
   const isProcessPage = /^\/projects\/[^/]+$/.test(location.pathname);
-  const resourceMatch = location.pathname.match(/^\/projects\/([^/]+)\/batches\/([^/]+)(?:\/(assessments|coverage)\/([^/]+))?\/?$/);
+  const resourceMatch = location.pathname.match(/^\/projects\/([^/]+)\/batches\/([^/]+)(?:\/(assessments|homework|coverage)\/([^/]+))?\/?$/);
   const resourceProjectId = Number(resourceMatch?.[1] ?? 0);
   const resourceBatchId = Number(resourceMatch?.[2] ?? 0);
   const resourceKind = resourceMatch?.[3];
@@ -46,11 +45,18 @@ export function AppShell() {
     queryFn: () => api.getPaperResult(resourceDetailId),
     enabled: Boolean(resourceKind === "assessments" && resourceDetailId > 0),
   });
+  const homeworkHeaderQuery = useQuery({
+    queryKey: ["homework-result", resourceDetailId],
+    queryFn: () => api.getHomeworkResult(resourceDetailId),
+    enabled: Boolean(resourceKind === "homework" && resourceDetailId > 0),
+  });
 
   const contextTitle = isProcessPage
     ? "生成过程"
     : resourceKind === "coverage"
       ? "覆盖报告"
+      : resourceKind === "homework"
+        ? homeworkHeaderQuery.data?.title ?? "课后作业"
       : resourceKind === "assessments"
         ? sceneLabels[String(paperHeaderQuery.data?.scene_type ?? "")] ?? "查看题目"
         : resourceMatch

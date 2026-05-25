@@ -414,6 +414,51 @@ export type PaperResult = {
   updated_at: string;
 };
 
+export type HomeworkQuestion = {
+  id: number;
+  generation_batch_id: number;
+  homework_result_id: number;
+  lesson_plan_id: number;
+  knowledge_point_id?: number | null;
+  question_no: number;
+  question_type: string;
+  difficulty_level?: number | null;
+  score_value?: number | null;
+  stem_text: string;
+  options_json?: JsonRecord | null;
+  answer_text?: string | null;
+  analysis_text?: string | null;
+  source_trace_json?: JsonRecord | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type HomeworkResult = {
+  id: number;
+  generation_batch_id: number;
+  lesson_plan_id: number;
+  homework_blueprint_id: number;
+  title: string;
+  result_status: string;
+  question_count: number;
+  difficulty_stats_json?: JsonRecord | null;
+  content_json: JsonRecord | null;
+  export_file_id?: number | null;
+  class_session_no?: number | null;
+  lesson_title?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type HomeworkResultDetail = HomeworkResult & {
+  questions: HomeworkQuestion[];
+};
+
+export type HomeworkQuestionListItem = HomeworkQuestion & {
+  homework_title: string;
+  class_session_no?: number | null;
+};
+
 export type CoursewareResult = {
   id: number;
   generation_batch_id: number;

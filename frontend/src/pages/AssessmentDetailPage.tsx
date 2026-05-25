@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FileText, Loader2 } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api } from "../lib/api";
-import type { JsonRecord, PaperResult, QuestionItem } from "../types";
+import type { HomeworkQuestion, HomeworkResultDetail, JsonRecord, PaperResult, QuestionItem } from "../types";
 import { cn, formatDate, toNumberId } from "../utils";
 import { asRecord, displayValue } from "./batch-detail/helpers";
 
@@ -13,7 +13,7 @@ const questionTypeLabels: Record<string, string> = {
   short_answer: "简答题",
 };
 
-type QuestionRecord = Partial<QuestionItem> & JsonRecord;
+type QuestionRecord = Partial<QuestionItem & HomeworkQuestion> & JsonRecord;
 
 function isSuccessfulStatus(status?: string | null) {
   return ["success", "ready", "available", "confirmed"].includes(String(status ?? "").toLowerCase());
@@ -24,11 +24,11 @@ function getQuestionTypeLabel(value?: unknown) {
   return questionTypeLabels[key] ?? displayValue(value);
 }
 
-function getPaperQuestions(paper?: PaperResult): QuestionRecord[] {
-  if (paper?.questions?.length) {
-    return paper.questions.map((question) => question as QuestionRecord);
+function getResultQuestions(result?: PaperResult | HomeworkResultDetail): QuestionRecord[] {
+  if (result?.questions?.length) {
+    return result.questions.map((question) => question as QuestionRecord);
   }
-  const paperJson = asRecord(paper?.paper_json);
+  const paperJson = asRecord((result as PaperResult | undefined)?.paper_json);
   const rawQuestions = paperJson?.questions;
   if (!Array.isArray(rawQuestions)) {
     return [];
@@ -137,17 +137,29 @@ function QuestionCard({ question, index }: { question: QuestionRecord; index: nu
 
 export function AssessmentDetailPage() {
   const paperResultId = toNumberId(useParams().paperResultId);
+  const homeworkResultId = toNumberId(useParams().homeworkResultId);
+  const isHomework = homeworkResultId > 0;
   const queryClient = useQueryClient();
   const [typeFilter, setTypeFilter] = useState("");
 
   const paperQuery = useQuery({
     queryKey: ["paper-result", paperResultId],
     queryFn: () => api.getPaperResult(paperResultId),
-    enabled: paperResultId > 0,
+    enabled: !isHomework && paperResultId > 0,
   });
 
-  const paper = paperQuery.data;
-  const questions = useMemo(() => getPaperQuestions(paper), [paper]);
+  const homeworkQuery = useQuery({
+    queryKey: ["homework-result", homeworkResultId],
+    queryFn: () => api.getHomeworkResult(homeworkResultId),
+    enabled: isHomework,
+  });
+
+  const result = isHomework ? homeworkQuery.data : paperQuery.data;
+  const resultStatus = result?.result_status;
+  const resultTitle = result?.title || (isHomework ? "课后作业" : "测练题目");
+  const resultUpdatedAt = result?.updated_at;
+  const resultQuestionCount = result?.question_count;
+  const questions = useMemo(() => getResultQuestions(result), [result]);
   const filteredQuestions = typeFilter ? questions.filter((question) => String(question.question_type ?? "") === typeFilter) : questions;
   const typeStats = useMemo(() => {
     return questions.reduce<Record<string, number>>((acc, question) => {
@@ -159,26 +171,33 @@ export function AssessmentDetailPage() {
 
   const downloadMutation = useMutation({
     mutationFn: async () => {
-      if (!paper) {
+      if (!result) {
         throw new Error("测练暂未准备好");
       }
-      const result = paper.export_file_id ? await api.getFileDownloadUrl(paper.export_file_id) : await api.exportPaperResultDocx(paper.id);
-      if (!result.signed_url) {
+      const download = isHomework
+        ? result.export_file_id
+          ? await api.getFileDownloadUrl(result.export_file_id)
+          : await api.exportHomeworkResultDocx(result.id)
+        : result.export_file_id
+          ? await api.getFileDownloadUrl(result.export_file_id)
+          : await api.exportPaperResultDocx(result.id);
+      if (!download.signed_url) {
         throw new Error("下载地址暂未准备好");
       }
-      return result.signed_url;
+      return download.signed_url;
     },
     onSuccess: (url) => {
-      queryClient.invalidateQueries({ queryKey: ["paper-result", paperResultId] });
+      queryClient.invalidateQueries({ queryKey: isHomework ? ["homework-result", homeworkResultId] : ["paper-result", paperResultId] });
       window.open(url, "_blank", "noopener,noreferrer");
     },
   });
 
-  if (paperQuery.isLoading && !paper) {
+  const isLoading = isHomework ? homeworkQuery.isLoading : paperQuery.isLoading;
+  if (isLoading && !result) {
     return <PageLoading text="正在打开题目" />;
   }
 
-  if (!paper || !isSuccessfulStatus(paper.result_status)) {
+  if (!result || !isSuccessfulStatus(resultStatus)) {
     return (
       <div className="mx-auto max-w-[1540px] px-2 pb-10 pt-6">
         <FriendlyNotice title="题目暂未准备好" description="生成完成后，可以在这里查看题目、答案和解析。" />
@@ -189,16 +208,16 @@ export function AssessmentDetailPage() {
   return (
     <div className="mx-auto w-full max-w-[1540px] space-y-8 px-2 pb-10 pt-6 text-ink">
       <section className="grid gap-4 md:grid-cols-3">
-        <StatCard label="题目数量" value={questions.length || paper.question_count || "-"} />
+        <StatCard label="题目数量" value={questions.length || resultQuestionCount || "-"} />
         <StatCard label="题型数量" value={Object.keys(typeStats).length || "-"} />
-        <StatCard label="更新时间" value={formatDate(paper.updated_at)} />
+        <StatCard label="更新时间" value={formatDate(resultUpdatedAt)} />
       </section>
 
       <section className="rounded-[22px] border border-line bg-white p-5 shadow-panel">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-ink">题目预览</h2>
-            <p className="mt-1 text-sm text-ink/45">{paper.title || "按题型筛选查看题干、答案和解析。"}</p>
+            <p className="mt-1 text-sm text-ink/45">{resultTitle || "按题型筛选查看题干、答案和解析。"}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <button className="btn btn-primary h-9 rounded-full" disabled={downloadMutation.isPending} onClick={() => downloadMutation.mutate()} type="button">

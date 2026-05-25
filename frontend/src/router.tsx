@@ -47,6 +47,10 @@ export const router = createBrowserRouter([
         element: <AssessmentDetailPage />,
       },
       {
+        path: "projects/:projectId/batches/:batchId/homework/:homeworkResultId",
+        element: <AssessmentDetailPage />,
+      },
+      {
         path: "projects/:projectId/batches/:batchId/coverage/:coverageReportId",
         element: <CoverageReportPage />,
       },

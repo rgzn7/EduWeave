@@ -12,7 +12,7 @@ import { cn, formatDate, getErrorMessage } from "../../utils";
 import { asRecord, asRecordList, displayValue, type JsonObject } from "./helpers";
 import { KeyValueGrid, KnowledgeRefs, LoadingBlock, SectionBlock, StatCard, TaskSummaryCard } from "./shared";
 
-export type AssessmentSceneType = "homework" | "unit_test" | "final_exam";
+export type AssessmentSceneType = "unit_test" | "final_exam";
 
 export type AssessmentSceneConfig = {
   scene_type: AssessmentSceneType;
@@ -32,22 +32,6 @@ export type AssessmentSceneSummary = {
 };
 
 export const ASSESSMENT_SCENES: AssessmentSceneConfig[] = [
-  {
-    scene_type: "homework",
-    label: "课后作业",
-    shortLabel: "作业",
-    questionCount: 6,
-    difficultyRange: "1-3",
-    description: "巩固当堂知识点，题量精简，偏基础应用。",
-  },
-  {
-    scene_type: "unit_test",
-    label: "单元测评",
-    shortLabel: "单元",
-    questionCount: 10,
-    difficultyRange: "2-4",
-    description: "覆盖本单元主要知识点，兼顾理解和典型应用。",
-  },
   {
     scene_type: "final_exam",
     label: "期末综合测",
@@ -74,7 +58,7 @@ function labelQuestionType(type: unknown) {
 }
 
 export function getAssessmentSceneConfig(sceneType: string | null | undefined) {
-  return ASSESSMENT_SCENES.find((scene) => scene.scene_type === sceneType) ?? ASSESSMENT_SCENES[1];
+  return ASSESSMENT_SCENES.find((scene) => scene.scene_type === sceneType) ?? ASSESSMENT_SCENES[0];
 }
 
 function labelScene(sceneType: unknown) {
