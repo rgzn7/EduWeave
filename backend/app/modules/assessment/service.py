@@ -23,6 +23,7 @@ from app.modules.assessment.schemas import (
     AssessmentTaskCreateRequest,
     PaperResultDetailResponse,
     PaperResultListItemResponse,
+    QuestionItemListItemResponse,
     QuestionItemResponse,
 )
 from app.modules.file_asset.schemas import FileDownloadUrlResponse
@@ -160,6 +161,58 @@ class AssessmentService:
             scene_type=scene_type,
         )
         return [self.build_paper_result_response(paper_result) for paper_result in paper_results], total_count
+
+    def list_question_items(
+        self,
+        *,
+        owner_user_id: int,
+        generation_batch_id: int | None,
+        paper_result_id: int | None,
+        knowledge_point_id: int | None,
+        question_type: str | None,
+        difficulty_level: int | None,
+        scene_type: str | None,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[QuestionItemListItemResponse], int]:
+        """分页查询题库题目列表。"""
+        if generation_batch_id is not None:
+            if self.repository.get_generation_batch_for_owner(generation_batch_id, owner_user_id) is None:
+                raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "生成批次不存在")
+        if paper_result_id is not None:
+            if self.repository.get_paper_result_for_owner(paper_result_id, owner_user_id) is None:
+                raise AppException(BusinessErrorCode.PAPER_RESULT_NOT_FOUND, "试卷结果不存在")
+
+        offset = (page - 1) * page_size
+        rows = self.repository.list_question_items_for_owner(
+            owner_user_id,
+            generation_batch_id=generation_batch_id,
+            paper_result_id=paper_result_id,
+            knowledge_point_id=knowledge_point_id,
+            question_type=question_type,
+            difficulty_level=difficulty_level,
+            scene_type=scene_type,
+            offset=offset,
+            limit=page_size,
+        )
+        total_count = self.repository.count_question_items_for_owner(
+            owner_user_id,
+            generation_batch_id=generation_batch_id,
+            paper_result_id=paper_result_id,
+            knowledge_point_id=knowledge_point_id,
+            question_type=question_type,
+            difficulty_level=difficulty_level,
+            scene_type=scene_type,
+        )
+        items = [
+            QuestionItemListItemResponse(
+                **QuestionItemResponse.model_validate(question_item, from_attributes=True).model_dump(),
+                paper_title=paper_result.title,
+                scene_type=paper_result.scene_type,
+            )
+            for question_item, paper_result in rows
+        ]
+        return items, total_count
 
     def get_paper_result_detail(self, *, owner_user_id: int, paper_result_id: int) -> PaperResultDetailResponse:
         """查询试卷结果详情。"""

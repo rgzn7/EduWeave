@@ -1379,6 +1379,54 @@
 
 ---
 
+### GET `/api/v1/parse-versions/{parse_version_id}/evidence-summary`
+
+**获取解析证据摘要**
+
+聚合解析版本的页数、block 统计、类型分布、MinerU 参数与示例 block，证明教材 PDF 已被结构化拆解。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `parse_version_id` | integer | 是 | 解析版本主键 |
+| query | `sample_size` | integer | 否 | 示例证据 block 数量，限制在 3-10 之间 |
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    parse_version_id: integer  # 解析版本主键
+    textbook_version_id: integer  # 教材版本主键
+    strategy_code: string  # 解析策略编码
+    mineru_model?: string  # MinerU 模型名称
+    parse_status: string  # 解析状态
+    review_status: string  # 审核状态
+    version_status: string  # 版本状态
+    volume: object  # 规模统计
+    block_type_counts: object  # block 类型分布，按数量倒序
+    mineru_parameters: object  # MinerU 参数摘要
+    sample_blocks: object  # 示例证据 block 列表
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
 ### GET `/api/v1/parse-versions/{parse_version_id}/pages`
 
 **获取解析页列表**
@@ -2806,6 +2854,76 @@
 
 ---
 
+### GET `/api/v1/question-items`
+
+**获取题库题目列表**
+
+按批次、试卷、知识点、题型、难度、测练场景筛选当前教师可见的题目，支持分页。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| query | `generation_batch_id` | string | 否 | 生成批次主键 |
+| query | `paper_result_id` | string | 否 | 试卷结果主键 |
+| query | `knowledge_point_id` | string | 否 | 知识点主键 |
+| query | `question_type` | string | 否 | 题型：single_choice=单选题，fill_blank=填空题，short_answer=简答题 |
+| query | `difficulty_level` | string | 否 | 难度等级（1-5） |
+| query | `scene_type` | string | 否 | 测练场景类型：homework=课后作业，unit_test=单元测试，final_exam=期末综合测 |
+| query | `page` | integer | 否 | 页码 |
+| query | `page_size` | integer | 否 | 每页大小 |
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    items: array[{
+      id: integer  # 题目主键
+      generation_batch_id: integer  # 生成批次主键
+      paper_result_id: integer  # 试卷结果主键
+      knowledge_point_id?: object  # 知识点主键
+      question_no: integer  # 题号
+      question_type: string  # 题型
+      difficulty_level?: object  # 难度等级
+      score_value?: object  # 分值
+      stem_text: object  # 题干
+      options_json?: object  # 选项
+      answer_text?: object  # 答案
+      analysis_text?: object  # 解析
+      source_trace_json?: object  # 来源摘要
+      created_at: object  # 创建时间
+      updated_at: object  # 更新时间
+      paper_title: string  # 所属试卷标题
+      scene_type: string  # 所属测练场景
+    }]
+    pagination: {
+      total_count: integer  # 总记录数
+      page: integer  # 当前页码
+      page_size: integer  # 每页大小
+      total_pages: integer  # 总页数
+      has_previous: boolean  # 是否存在上一页
+      has_next: boolean  # 是否存在下一页
+    }
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
 ### POST `/api/v1/paper-results/{paper_result_id}/export-docx`
 
 **导出试卷结果 DOCX**
@@ -3248,7 +3366,7 @@
 
 **获取覆盖率报告列表**
 
-分页获取指定生成批次下的覆盖率分析报告。
+分页获取指定生成批次下的覆盖率分析报告，报告会展示课程大纲、教案、试卷题目与课件页面的知识点覆盖矩阵。
 
 **参数**
 
@@ -3313,6 +3431,52 @@
 | 位置 | 名称 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- | --- |
 | path | `coverage_report_id` | integer | 是 | 覆盖率报告主键 |
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    id: integer  # 覆盖率报告主键
+    generation_batch_id: integer  # 生成批次主键
+    report_status: string  # 报告状态
+    coverage_rate?: number  # 覆盖率百分比
+    warning_count: integer  # 告警数量
+    coverage_summary_json?: object  # 覆盖摘要
+    report_json: object  # 覆盖率报告内容
+    export_file_id?: object  # 导出文件主键
+    created_at: object  # 创建时间
+    updated_at: object  # 更新时间
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+### POST `/api/v1/generation-batches/{generation_batch_id}/coverage-reports/refresh`
+
+**重新分析覆盖率报告**
+
+重新汇总指定生成批次下课程大纲、教案、试卷题目与课件页面的知识点引用，并刷新覆盖率报告和质量告警。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `generation_batch_id` | integer | 是 | 生成批次主键 |
 
 **响应**
 

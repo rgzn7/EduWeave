@@ -5,5 +5,6 @@
 """
 
 from app.shared.utils.datetime_util import DateTimeUtil
+from app.shared.utils.number_util import safe_int
 
-__all__ = ["DateTimeUtil"]
+__all__ = ["DateTimeUtil", "safe_int"]

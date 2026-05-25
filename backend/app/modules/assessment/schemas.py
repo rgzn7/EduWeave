@@ -66,6 +66,13 @@ class QuestionItemResponse(BaseSchema):
     updated_at: datetime = Field(description="更新时间")
 
 
+class QuestionItemListItemResponse(QuestionItemResponse):
+    """题库题目列表项响应。"""
+
+    paper_title: str = Field(description="所属试卷标题", examples=["乘法单元测试"])
+    scene_type: str = Field(description="所属测练场景", examples=["unit_test"])
+
+
 class PaperResultListItemResponse(BaseSchema):
     """试卷结果列表项响应。"""
 

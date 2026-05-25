@@ -18,6 +18,14 @@ class SceneType(str, Enum):
     FINAL_EXAM = "final_exam"
 
 
+class QuestionType(str, Enum):
+    """题型类型。"""
+
+    SINGLE_CHOICE = "single_choice"
+    FILL_BLANK = "fill_blank"
+    SHORT_ANSWER = "short_answer"
+
+
 # 三类测练场景预设：题量、允许题型、难度区间与场景化 prompt 约束统一锁定在此，
 # 调用方仅需指定 scene_type，后端自动套用对应预设，不再接受任意策略 JSON。
 ASSESSMENT_SCENE_PRESETS: dict[str, dict[str, Any]] = {

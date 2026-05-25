@@ -1425,6 +1425,76 @@
         }
       }
     },
+    "/api/v1/parse-versions/{parse_version_id}/evidence-summary": {
+      "get": {
+        "tags": [
+          "解析"
+        ],
+        "summary": "获取解析证据摘要",
+        "description": "聚合解析版本的页数、block 统计、类型分布、MinerU 参数与示例 block，证明教材 PDF 已被结构化拆解。",
+        "operationId": "parsing_evidence_summary",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "parse_version_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "解析版本主键",
+              "examples": [
+                1
+              ],
+              "title": "Parse Version Id"
+            },
+            "description": "解析版本主键"
+          },
+          {
+            "name": "sample_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 10,
+              "minimum": 3,
+              "description": "示例证据 block 数量，限制在 3-10 之间",
+              "examples": [
+                6
+              ],
+              "default": 6,
+              "title": "Sample Size"
+            },
+            "description": "示例证据 block 数量，限制在 3-10 之间"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_ParseVersionEvidenceSummaryResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/parse-versions/{parse_version_id}/pages": {
       "get": {
         "tags": [
@@ -3068,6 +3138,203 @@
         }
       }
     },
+    "/api/v1/question-items": {
+      "get": {
+        "tags": [
+          "测评"
+        ],
+        "summary": "获取题库题目列表",
+        "description": "按批次、试卷、知识点、题型、难度、测练场景筛选当前教师可见的题目，支持分页。",
+        "operationId": "question_item_list",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "generation_batch_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "生成批次主键",
+              "examples": [
+                1
+              ],
+              "title": "Generation Batch Id"
+            },
+            "description": "生成批次主键"
+          },
+          {
+            "name": "paper_result_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "试卷结果主键",
+              "examples": [
+                1
+              ],
+              "title": "Paper Result Id"
+            },
+            "description": "试卷结果主键"
+          },
+          {
+            "name": "knowledge_point_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "知识点主键",
+              "examples": [
+                1
+              ],
+              "title": "Knowledge Point Id"
+            },
+            "description": "知识点主键"
+          },
+          {
+            "name": "question_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/QuestionType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "题型：single_choice=单选题，fill_blank=填空题，short_answer=简答题",
+              "examples": [
+                "single_choice"
+              ],
+              "title": "Question Type"
+            },
+            "description": "题型：single_choice=单选题，fill_blank=填空题，short_answer=简答题"
+          },
+          {
+            "name": "difficulty_level",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 5,
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "难度等级（1-5）",
+              "examples": [
+                3
+              ],
+              "title": "Difficulty Level"
+            },
+            "description": "难度等级（1-5）"
+          },
+          {
+            "name": "scene_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/SceneType"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "测练场景类型：homework=课后作业，unit_test=单元测试，final_exam=期末综合测",
+              "examples": [
+                "unit_test"
+              ],
+              "title": "Scene Type"
+            },
+            "description": "测练场景类型：homework=课后作业，unit_test=单元测试，final_exam=期末综合测"
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "页码",
+              "default": 1,
+              "title": "Page"
+            },
+            "description": "页码"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "每页大小",
+              "default": 20,
+              "title": "Page Size"
+            },
+            "description": "每页大小"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_PaginatedData_QuestionItemListItemResponse__"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/paper-results/{paper_result_id}/export-docx": {
       "post": {
         "tags": [
@@ -3545,7 +3812,7 @@
           "覆盖率"
         ],
         "summary": "获取覆盖率报告列表",
-        "description": "分页获取指定生成批次下的覆盖率分析报告。",
+        "description": "分页获取指定生成批次下的覆盖率分析报告，报告会展示课程大纲、教案、试卷题目与课件页面的知识点覆盖矩阵。",
         "operationId": "coverage_report_list",
         "security": [
           {
@@ -3646,6 +3913,59 @@
               "title": "Coverage Report Id"
             },
             "description": "覆盖率报告主键"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_CoverageReportDetailResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/generation-batches/{generation_batch_id}/coverage-reports/refresh": {
+      "post": {
+        "tags": [
+          "覆盖率"
+        ],
+        "summary": "重新分析覆盖率报告",
+        "description": "重新汇总指定生成批次下课程大纲、教案、试卷题目与课件页面的知识点引用，并刷新覆盖率报告和质量告警。",
+        "operationId": "coverage_report_refresh",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "generation_batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "生成批次主键",
+              "examples": [
+                1
+              ],
+              "title": "Generation Batch Id"
+            },
+            "description": "生成批次主键"
           }
         ],
         "responses": {
@@ -5406,6 +5726,61 @@
         ],
         "title": "ApiResponse[PaginatedData[ProjectListItemResponse]]"
       },
+      "ApiResponse_PaginatedData_QuestionItemListItemResponse__": {
+        "properties": {
+          "success": {
+            "title": "Success",
+            "description": "请求是否成功",
+            "examples": [
+              true
+            ]
+          },
+          "code": {
+            "title": "Code",
+            "description": "业务响应状态码",
+            "examples": [
+              200
+            ]
+          },
+          "message": {
+            "title": "Message",
+            "description": "响应消息",
+            "examples": [
+              "操作成功"
+            ]
+          },
+          "data": {
+            "description": "业务数据"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "description": "响应时间，UTC ISO8601 格式",
+            "examples": [
+              "2026-04-11T10:00:00.000000Z"
+            ]
+          },
+          "request_id": {
+            "title": "Request Id",
+            "description": "请求追踪 ID",
+            "examples": [
+              "a5c0f6b6-1234-5678-9abc-def012345678"
+            ]
+          },
+          "errors": {
+            "title": "Errors",
+            "description": "错误明细列表"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "code",
+          "message",
+          "timestamp",
+          "request_id"
+        ],
+        "title": "ApiResponse[PaginatedData[QuestionItemListItemResponse]]"
+      },
       "ApiResponse_PaginatedData_TaskListItemResponse__": {
         "properties": {
           "success": {
@@ -5625,6 +6000,61 @@
           "request_id"
         ],
         "title": "ApiResponse[ParseVersionDetailResponse]"
+      },
+      "ApiResponse_ParseVersionEvidenceSummaryResponse_": {
+        "properties": {
+          "success": {
+            "title": "Success",
+            "description": "请求是否成功",
+            "examples": [
+              true
+            ]
+          },
+          "code": {
+            "title": "Code",
+            "description": "业务响应状态码",
+            "examples": [
+              200
+            ]
+          },
+          "message": {
+            "title": "Message",
+            "description": "响应消息",
+            "examples": [
+              "操作成功"
+            ]
+          },
+          "data": {
+            "description": "业务数据"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "description": "响应时间，UTC ISO8601 格式",
+            "examples": [
+              "2026-04-11T10:00:00.000000Z"
+            ]
+          },
+          "request_id": {
+            "title": "Request Id",
+            "description": "请求追踪 ID",
+            "examples": [
+              "a5c0f6b6-1234-5678-9abc-def012345678"
+            ]
+          },
+          "errors": {
+            "title": "Errors",
+            "description": "错误明细列表"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "code",
+          "message",
+          "timestamp",
+          "request_id"
+        ],
+        "title": "ApiResponse[ParseVersionEvidenceSummaryResponse]"
       },
       "ApiResponse_ProjectDashboardResponse_": {
         "properties": {
@@ -10139,6 +10569,23 @@
         ],
         "title": "PaginatedData[ProjectListItemResponse]"
       },
+      "PaginatedData_QuestionItemListItemResponse_": {
+        "properties": {
+          "items": {
+            "title": "Items",
+            "description": "分页数据列表"
+          },
+          "pagination": {
+            "description": "分页元数据"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "pagination"
+        ],
+        "title": "PaginatedData[QuestionItemListItemResponse]"
+      },
       "PaginatedData_TaskListItemResponse_": {
         "properties": {
           "items": {
@@ -10500,6 +10947,242 @@
         ],
         "title": "ParseBlockResponse",
         "description": "解析块响应。"
+      },
+      "ParseEvidenceBlockTypeCount": {
+        "properties": {
+          "block_type": {
+            "title": "Block Type",
+            "description": "块类型",
+            "examples": [
+              "paragraph"
+            ]
+          },
+          "count": {
+            "title": "Count",
+            "description": "该类型块数量",
+            "examples": [
+              24
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "block_type",
+          "count"
+        ],
+        "title": "ParseEvidenceBlockTypeCount",
+        "description": "block 类型统计项。"
+      },
+      "ParseEvidenceMineruParameterSummary": {
+        "properties": {
+          "strategy_code": {
+            "title": "Strategy Code",
+            "description": "解析策略编码",
+            "examples": [
+              "mineru_vlm_default"
+            ]
+          },
+          "model_version": {
+            "title": "Model Version",
+            "description": "MinerU 模型版本",
+            "examples": [
+              "vlm"
+            ]
+          },
+          "is_ocr": {
+            "title": "Is Ocr",
+            "description": "是否启用 OCR",
+            "examples": [
+              false
+            ]
+          },
+          "enable_formula": {
+            "title": "Enable Formula",
+            "description": "是否启用公式解析",
+            "examples": [
+              true
+            ]
+          },
+          "enable_table": {
+            "title": "Enable Table",
+            "description": "是否启用表格解析",
+            "examples": [
+              true
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "strategy_code",
+          "is_ocr",
+          "enable_formula",
+          "enable_table"
+        ],
+        "title": "ParseEvidenceMineruParameterSummary",
+        "description": "MinerU 解析参数摘要。"
+      },
+      "ParseEvidenceSampleBlock": {
+        "properties": {
+          "parse_page_id": {
+            "title": "Parse Page Id",
+            "description": "解析页主键",
+            "examples": [
+              1
+            ]
+          },
+          "parse_block_id": {
+            "title": "Parse Block Id",
+            "description": "解析块主键",
+            "examples": [
+              1
+            ]
+          },
+          "page_no": {
+            "title": "Page No",
+            "description": "页码",
+            "examples": [
+              1
+            ]
+          },
+          "block_no": {
+            "title": "Block No",
+            "description": "块序号",
+            "examples": [
+              1
+            ]
+          },
+          "block_type": {
+            "title": "Block Type",
+            "description": "块类型",
+            "examples": [
+              "paragraph"
+            ]
+          },
+          "heading_level": {
+            "title": "Heading Level",
+            "description": "标题级别",
+            "examples": [
+              2
+            ]
+          },
+          "text_excerpt": {
+            "title": "Text Excerpt",
+            "description": "文本片段（已截断）",
+            "examples": [
+              "第一章 数与代数"
+            ]
+          },
+          "bbox_json": {
+            "title": "Bbox Json",
+            "description": "块坐标框",
+            "examples": [
+              {
+                "x0": 12.5,
+                "x1": 180.0,
+                "y0": 18.0,
+                "y1": 56.0
+              }
+            ]
+          },
+          "asset_file_id": {
+            "title": "Asset File Id",
+            "description": "关联资源文件主键",
+            "examples": [
+              1
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "parse_page_id",
+          "parse_block_id",
+          "page_no",
+          "block_no",
+          "block_type"
+        ],
+        "title": "ParseEvidenceSampleBlock",
+        "description": "证据示例 block。"
+      },
+      "ParseEvidenceVolumeSummary": {
+        "properties": {
+          "page_count": {
+            "title": "Page Count",
+            "description": "解析版本声明的总页数",
+            "examples": [
+              12
+            ]
+          },
+          "parsed_page_count": {
+            "title": "Parsed Page Count",
+            "description": "实际入库的解析页数量",
+            "examples": [
+              12
+            ]
+          },
+          "block_count": {
+            "title": "Block Count",
+            "description": "解析块总数",
+            "examples": [
+              58
+            ]
+          },
+          "issue_count": {
+            "title": "Issue Count",
+            "description": "解析异常数量",
+            "examples": [
+              0
+            ]
+          },
+          "asset_block_count": {
+            "title": "Asset Block Count",
+            "description": "带资源文件的块数量",
+            "examples": [
+              6
+            ]
+          },
+          "bbox_block_count": {
+            "title": "Bbox Block Count",
+            "description": "带坐标框的块数量",
+            "examples": [
+              40
+            ]
+          },
+          "image_block_count": {
+            "title": "Image Block Count",
+            "description": "图片类块数量",
+            "examples": [
+              4
+            ]
+          },
+          "table_block_count": {
+            "title": "Table Block Count",
+            "description": "表格类块数量",
+            "examples": [
+              2
+            ]
+          },
+          "equation_block_count": {
+            "title": "Equation Block Count",
+            "description": "公式/方程类块数量",
+            "examples": [
+              3
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "page_count",
+          "parsed_page_count",
+          "block_count",
+          "issue_count",
+          "asset_block_count",
+          "bbox_block_count",
+          "image_block_count",
+          "table_block_count",
+          "equation_block_count"
+        ],
+        "title": "ParseEvidenceVolumeSummary",
+        "description": "解析规模统计。"
       },
       "ParseIssueResponse": {
         "properties": {
@@ -11198,6 +11881,119 @@
         "title": "ParseVersionDetailResponse",
         "description": "解析版本详情响应。"
       },
+      "ParseVersionEvidenceSummaryResponse": {
+        "properties": {
+          "parse_version_id": {
+            "title": "Parse Version Id",
+            "description": "解析版本主键",
+            "examples": [
+              1
+            ]
+          },
+          "textbook_version_id": {
+            "title": "Textbook Version Id",
+            "description": "教材版本主键",
+            "examples": [
+              1
+            ]
+          },
+          "strategy_code": {
+            "title": "Strategy Code",
+            "description": "解析策略编码",
+            "examples": [
+              "mineru_vlm_default"
+            ]
+          },
+          "mineru_model": {
+            "title": "Mineru Model",
+            "description": "MinerU 模型名称",
+            "examples": [
+              "vlm"
+            ]
+          },
+          "parse_status": {
+            "title": "Parse Status",
+            "description": "解析状态",
+            "examples": [
+              "success"
+            ]
+          },
+          "review_status": {
+            "title": "Review Status",
+            "description": "审核状态",
+            "examples": [
+              "confirmed"
+            ]
+          },
+          "version_status": {
+            "title": "Version Status",
+            "description": "版本状态",
+            "examples": [
+              "ready"
+            ]
+          },
+          "volume": {
+            "description": "规模统计"
+          },
+          "block_type_counts": {
+            "title": "Block Type Counts",
+            "description": "block 类型分布，按数量倒序",
+            "examples": [
+              [
+                {
+                  "block_type": "paragraph",
+                  "count": 24
+                },
+                {
+                  "block_type": "heading",
+                  "count": 6
+                }
+              ]
+            ]
+          },
+          "mineru_parameters": {
+            "description": "MinerU 参数摘要"
+          },
+          "sample_blocks": {
+            "title": "Sample Blocks",
+            "description": "示例证据 block 列表",
+            "examples": [
+              [
+                {
+                  "bbox_json": {
+                    "x0": 12.5,
+                    "x1": 180.0,
+                    "y0": 18.0,
+                    "y1": 56.0
+                  },
+                  "block_no": 1,
+                  "block_type": "heading",
+                  "heading_level": 1,
+                  "page_no": 1,
+                  "parse_block_id": 1,
+                  "parse_page_id": 1,
+                  "text_excerpt": "第一章 数与代数"
+                }
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "parse_version_id",
+          "textbook_version_id",
+          "strategy_code",
+          "parse_status",
+          "review_status",
+          "version_status",
+          "volume",
+          "block_type_counts",
+          "mineru_parameters",
+          "sample_blocks"
+        ],
+        "title": "ParseVersionEvidenceSummaryResponse",
+        "description": "解析证据摘要响应。"
+      },
       "ParseVersionListItemResponse": {
         "properties": {
           "id": {
@@ -11821,6 +12617,114 @@
         "title": "ProjectListItemResponse",
         "description": "项目列表项响应。"
       },
+      "QuestionItemListItemResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "description": "题目主键",
+            "examples": [
+              1
+            ]
+          },
+          "generation_batch_id": {
+            "title": "Generation Batch Id",
+            "description": "生成批次主键",
+            "examples": [
+              1
+            ]
+          },
+          "paper_result_id": {
+            "title": "Paper Result Id",
+            "description": "试卷结果主键",
+            "examples": [
+              1
+            ]
+          },
+          "knowledge_point_id": {
+            "title": "Knowledge Point Id",
+            "description": "知识点主键"
+          },
+          "question_no": {
+            "title": "Question No",
+            "description": "题号",
+            "examples": [
+              1
+            ]
+          },
+          "question_type": {
+            "title": "Question Type",
+            "description": "题型",
+            "examples": [
+              "single_choice"
+            ]
+          },
+          "difficulty_level": {
+            "title": "Difficulty Level",
+            "description": "难度等级"
+          },
+          "score_value": {
+            "title": "Score Value",
+            "description": "分值"
+          },
+          "stem_text": {
+            "title": "Stem Text",
+            "description": "题干"
+          },
+          "options_json": {
+            "title": "Options Json",
+            "description": "选项"
+          },
+          "answer_text": {
+            "title": "Answer Text",
+            "description": "答案"
+          },
+          "analysis_text": {
+            "title": "Analysis Text",
+            "description": "解析"
+          },
+          "source_trace_json": {
+            "title": "Source Trace Json",
+            "description": "来源摘要"
+          },
+          "created_at": {
+            "title": "Created At",
+            "description": "创建时间"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "description": "更新时间"
+          },
+          "paper_title": {
+            "title": "Paper Title",
+            "description": "所属试卷标题",
+            "examples": [
+              "乘法单元测试"
+            ]
+          },
+          "scene_type": {
+            "title": "Scene Type",
+            "description": "所属测练场景",
+            "examples": [
+              "unit_test"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "generation_batch_id",
+          "paper_result_id",
+          "question_no",
+          "question_type",
+          "stem_text",
+          "created_at",
+          "updated_at",
+          "paper_title",
+          "scene_type"
+        ],
+        "title": "QuestionItemListItemResponse",
+        "description": "题库题目列表项响应。"
+      },
       "QuestionItemResponse": {
         "properties": {
           "id": {
@@ -11912,6 +12816,16 @@
         ],
         "title": "QuestionItemResponse",
         "description": "题目明细响应。"
+      },
+      "QuestionType": {
+        "type": "string",
+        "enum": [
+          "single_choice",
+          "fill_blank",
+          "short_answer"
+        ],
+        "title": "QuestionType",
+        "description": "题型类型。"
       },
       "ReadyResponse": {
         "properties": {

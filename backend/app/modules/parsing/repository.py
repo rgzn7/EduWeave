@@ -289,6 +289,70 @@ class ParsingRepository:
         statement = select(ParsePage).where(ParsePage.parse_version_id == parse_version_id, ParsePage.page_no == page_no)
         return self.session.scalar(statement)
 
+    def count_block_types(self, parse_version_id: int) -> list[tuple[str, int]]:
+        """统计解析版本下各 block 类型的数量。"""
+        statement = (
+            select(ParseBlock.block_type, func.count())
+            .where(
+                ParseBlock.parse_version_id == parse_version_id,
+                ParseBlock.is_deleted == 0,
+            )
+            .group_by(ParseBlock.block_type)
+        )
+        return [(row[0], int(row[1] or 0)) for row in self.session.execute(statement).all()]
+
+    def count_blocks_with_asset(self, parse_version_id: int) -> int:
+        """统计带资源文件的块数量。"""
+        statement = (
+            select(func.count())
+            .select_from(ParseBlock)
+            .where(
+                ParseBlock.parse_version_id == parse_version_id,
+                ParseBlock.is_deleted == 0,
+                ParseBlock.asset_file_id.is_not(None),
+            )
+        )
+        return int(self.session.scalar(statement) or 0)
+
+    def count_blocks_with_bbox(self, parse_version_id: int) -> int:
+        """统计带坐标框的块数量。"""
+        statement = (
+            select(func.count())
+            .select_from(ParseBlock)
+            .where(
+                ParseBlock.parse_version_id == parse_version_id,
+                ParseBlock.is_deleted == 0,
+                ParseBlock.bbox_json.is_not(None),
+            )
+        )
+        return int(self.session.scalar(statement) or 0)
+
+    def count_blocks_total(self, parse_version_id: int) -> int:
+        """统计解析版本下的有效块总数。"""
+        statement = (
+            select(func.count())
+            .select_from(ParseBlock)
+            .where(
+                ParseBlock.parse_version_id == parse_version_id,
+                ParseBlock.is_deleted == 0,
+            )
+        )
+        return int(self.session.scalar(statement) or 0)
+
+    def list_sample_blocks_with_page_no(self, parse_version_id: int, limit: int) -> list[tuple[ParseBlock, int]]:
+        """抽取证据示例 block 并带页码，优先覆盖多种类型。"""
+        statement = (
+            select(ParseBlock, ParsePage.page_no)
+            .join(ParsePage, ParsePage.id == ParseBlock.parse_page_id)
+            .where(
+                ParseBlock.parse_version_id == parse_version_id,
+                ParseBlock.is_deleted == 0,
+            )
+            .order_by(ParsePage.page_no.asc(), ParseBlock.block_no.asc())
+            .limit(max(limit * 4, limit))
+        )
+        return [(row[0], int(row[1])) for row in self.session.execute(statement).all()]
+
     def save(self, instance) -> None:
         """保存实体。"""
         self.session.add(instance)

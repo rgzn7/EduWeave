@@ -381,6 +381,82 @@ def test_reparse_task_should_create_child_parse_version(client) -> None:
     assert versions[1]["version_status"] == "archived"
 
 
+def test_parse_version_evidence_summary_should_return_statistics(client) -> None:
+    """证据摘要接口应返回规模统计、block 类型分布、MinerU 参数与示例块。"""
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    upload_response = client.post(
+        f"/api/v1/projects/{project_id}/textbooks",
+        headers=headers,
+        files={"file": ("textbook.pdf", build_pdf_bytes(page_count=2), "application/pdf")},
+    )
+    textbook_version_id = upload_response.json()["data"]["id"]
+    create_response = client.post(
+        f"/api/v1/textbook-versions/{textbook_version_id}/parse-tasks",
+        headers=headers,
+        json={"strategy_code": MINERU_STRATEGY_VLM_DEFAULT, "set_as_current_on_success": True},
+    )
+    parse_version_id = create_response.json()["data"]["result_json"]["parse_version_id"]
+
+    summary_response = client.get(
+        f"/api/v1/parse-versions/{parse_version_id}/evidence-summary",
+        headers=headers,
+    )
+
+    assert summary_response.status_code == 200
+    summary_payload = summary_response.json()["data"]
+    assert summary_payload["parse_version_id"] == parse_version_id
+    assert summary_payload["textbook_version_id"] == textbook_version_id
+    assert summary_payload["strategy_code"] == MINERU_STRATEGY_VLM_DEFAULT
+    assert summary_payload["parse_status"] == "success"
+    assert summary_payload["volume"]["page_count"] == 2
+    assert summary_payload["volume"]["parsed_page_count"] == 2
+    assert summary_payload["volume"]["block_count"] >= 1
+    block_type_counts = summary_payload["block_type_counts"]
+    assert isinstance(block_type_counts, list) and len(block_type_counts) >= 1
+    type_to_count = {item["block_type"]: item["count"] for item in block_type_counts}
+    assert summary_payload["volume"]["block_count"] == sum(type_to_count.values())
+    assert summary_payload["mineru_parameters"]["strategy_code"] == MINERU_STRATEGY_VLM_DEFAULT
+    assert summary_payload["mineru_parameters"]["enable_formula"] is True
+    assert summary_payload["mineru_parameters"]["enable_table"] is True
+    assert summary_payload["mineru_parameters"]["is_ocr"] is False
+    sample_blocks = summary_payload["sample_blocks"]
+    assert 1 <= len(sample_blocks) <= 10
+    first_sample = sample_blocks[0]
+    assert {"parse_page_id", "parse_block_id", "page_no", "block_no", "block_type"}.issubset(first_sample.keys())
+
+
+def test_parse_version_evidence_summary_should_reject_other_owner(client, seeded_session_factory) -> None:
+    """跨教师访问解析证据摘要时应返回 404。"""
+    from app.modules.auth.models import SysUser
+
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    textbook_version_id = upload_textbook(client, headers, project_id)
+    create_response = client.post(
+        f"/api/v1/textbook-versions/{textbook_version_id}/parse-tasks",
+        headers=headers,
+        json={"strategy_code": MINERU_STRATEGY_VLM_DEFAULT},
+    )
+    parse_version_id = create_response.json()["data"]["result_json"]["parse_version_id"]
+
+    session = seeded_session_factory()
+    try:
+        from sqlalchemy import select
+
+        other_user = session.scalar(select(SysUser).where(SysUser.username == "teacher_disabled"))
+        project = session.get(Project, project_id)
+        project.owner_user_id = other_user.id
+        session.add(project)
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.get(f"/api/v1/parse-versions/{parse_version_id}/evidence-summary", headers=headers)
+    assert response.status_code == 404
+    assert response.json()["errors"][0]["code"] == "PARSE_VERSION_NOT_FOUND"
+
+
 def test_manual_revision_should_create_new_parse_version(client) -> None:
     """人工修正应生成新解析版本。"""
     headers = build_auth_headers(client)

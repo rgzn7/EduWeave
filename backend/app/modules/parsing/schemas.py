@@ -228,3 +228,92 @@ class ParseVersionListItemResponse(BaseSchema):
 
 class ParseVersionDetailResponse(ParseVersionListItemResponse):
     """解析版本详情响应。"""
+
+
+class ParseEvidenceMineruParameterSummary(BaseSchema):
+    """MinerU 解析参数摘要。"""
+
+    strategy_code: str = Field(description="解析策略编码", examples=[MINERU_STRATEGY_VLM_DEFAULT])
+    model_version: str | None = Field(default=None, description="MinerU 模型版本", examples=["vlm"])
+    is_ocr: bool = Field(description="是否启用 OCR", examples=[False])
+    enable_formula: bool = Field(description="是否启用公式解析", examples=[True])
+    enable_table: bool = Field(description="是否启用表格解析", examples=[True])
+
+
+class ParseEvidenceVolumeSummary(BaseSchema):
+    """解析规模统计。"""
+
+    page_count: int = Field(description="解析版本声明的总页数", examples=[12])
+    parsed_page_count: int = Field(description="实际入库的解析页数量", examples=[12])
+    block_count: int = Field(description="解析块总数", examples=[58])
+    issue_count: int = Field(description="解析异常数量", examples=[0])
+    asset_block_count: int = Field(description="带资源文件的块数量", examples=[6])
+    bbox_block_count: int = Field(description="带坐标框的块数量", examples=[40])
+    image_block_count: int = Field(description="图片类块数量", examples=[4])
+    table_block_count: int = Field(description="表格类块数量", examples=[2])
+    equation_block_count: int = Field(description="公式/方程类块数量", examples=[3])
+
+
+class ParseEvidenceBlockTypeCount(BaseSchema):
+    """block 类型统计项。"""
+
+    block_type: str = Field(description="块类型", examples=["paragraph"])
+    count: int = Field(description="该类型块数量", examples=[24])
+
+
+class ParseEvidenceSampleBlock(BaseSchema):
+    """证据示例 block。"""
+
+    parse_page_id: int = Field(description="解析页主键", examples=[1])
+    parse_block_id: int = Field(description="解析块主键", examples=[1])
+    page_no: int = Field(description="页码", examples=[1])
+    block_no: int = Field(description="块序号", examples=[1])
+    block_type: str = Field(description="块类型", examples=["paragraph"])
+    heading_level: int | None = Field(default=None, description="标题级别", examples=[2])
+    text_excerpt: str | None = Field(
+        default=None,
+        description="文本片段（已截断）",
+        examples=["第一章 数与代数"],
+    )
+    bbox_json: dict | None = Field(
+        default=None,
+        description="块坐标框",
+        examples=[{"x0": 12.5, "y0": 18.0, "x1": 180.0, "y1": 56.0}],
+    )
+    asset_file_id: int | None = Field(default=None, description="关联资源文件主键", examples=[1])
+
+
+class ParseVersionEvidenceSummaryResponse(BaseSchema):
+    """解析证据摘要响应。"""
+
+    parse_version_id: int = Field(description="解析版本主键", examples=[1])
+    textbook_version_id: int = Field(description="教材版本主键", examples=[1])
+    strategy_code: str = Field(description="解析策略编码", examples=[MINERU_STRATEGY_VLM_DEFAULT])
+    mineru_model: str | None = Field(default=None, description="MinerU 模型名称", examples=["vlm"])
+    parse_status: str = Field(description="解析状态", examples=["success"])
+    review_status: str = Field(description="审核状态", examples=["confirmed"])
+    version_status: str = Field(description="版本状态", examples=["ready"])
+    volume: ParseEvidenceVolumeSummary = Field(description="规模统计")
+    block_type_counts: list[ParseEvidenceBlockTypeCount] = Field(
+        description="block 类型分布，按数量倒序",
+        examples=[[{"block_type": "paragraph", "count": 24}, {"block_type": "heading", "count": 6}]],
+    )
+    mineru_parameters: ParseEvidenceMineruParameterSummary = Field(description="MinerU 参数摘要")
+    sample_blocks: list[ParseEvidenceSampleBlock] = Field(
+        description="示例证据 block 列表",
+        examples=[
+            [
+                {
+                    "parse_page_id": 1,
+                    "parse_block_id": 1,
+                    "page_no": 1,
+                    "block_no": 1,
+                    "block_type": "heading",
+                    "heading_level": 1,
+                    "text_excerpt": "第一章 数与代数",
+                    "bbox_json": {"x0": 12.5, "y0": 18.0, "x1": 180.0, "y1": 56.0},
+                    "asset_file_id": None,
+                }
+            ]
+        ],
+    )
