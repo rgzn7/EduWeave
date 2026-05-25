@@ -10,13 +10,10 @@ from fastapi import APIRouter, Depends, File, Path, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db_session
-from app.core.exceptions import AppException, BusinessErrorCode
 from app.core.security import get_current_user
 from app.modules.auth.models import SysUser
 from app.modules.learner_profile.repository import LearnerProfileRepository
 from app.modules.learner_profile.schemas import (
-    LearnerProfileBatchUploadRequest,
-    LearnerProfileBatchUploadResponse,
     LearnerProfileFileDetailResponse,
     LearnerProfileFileListItemResponse,
     LearnerProfileManualRevisionRequest,
@@ -27,8 +24,6 @@ from app.modules.learner_profile.schemas import (
 from app.modules.learner_profile.service import LearnerProfileService
 from app.modules.task_center.schemas import TaskListItemResponse
 from app.schemas.response import ApiResponse, PaginatedData, ResponseFactory
-
-LEARNER_PROFILE_BATCH_UPLOAD_MAX_FILES = 20
 
 router = APIRouter(tags=["学情"])
 
@@ -69,56 +64,6 @@ async def upload_learner_profile(
         set_as_current=request.set_as_current,
     )
     return ResponseFactory.success(detail.model_dump(mode="json"), "上传学情文件成功", status_code=status.HTTP_201_CREATED)
-
-
-@router.post(
-    "/projects/{project_id}/learner-profiles/batch",
-    summary="批量上传学情文件",
-    description=(
-        "向指定项目一次性上传多份 docx 学情文件，单批最多 "
-        f"{LEARNER_PROFILE_BATCH_UPLOAD_MAX_FILES} 份。"
-        "每份文件独立创建学情抽取任务，单个失败不影响其它文件，"
-        "失败原因会按 filename 汇总在响应 failed 列表中。"
-    ),
-    operation_id="learner_profile_create_batch",
-    response_model=ApiResponse[LearnerProfileBatchUploadResponse],
-    status_code=status.HTTP_201_CREATED,
-)
-async def upload_learner_profiles_batch(
-    project_id: int = Path(..., description="项目主键", examples=[1]),
-    files: list[UploadFile] = File(..., description=f"学情 docx 文件列表（≤{LEARNER_PROFILE_BATCH_UPLOAD_MAX_FILES} 份）"),
-    request: LearnerProfileBatchUploadRequest = Depends(LearnerProfileBatchUploadRequest.as_form),
-    service: Annotated[LearnerProfileService, Depends(get_learner_profile_service)] = None,
-    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
-):
-    """批量上传学情文件。"""
-    if not files:
-        raise AppException(BusinessErrorCode.INVALID_FILE_TYPE, "学情批量上传至少需要 1 份文件")
-    if len(files) > LEARNER_PROFILE_BATCH_UPLOAD_MAX_FILES:
-        raise AppException(
-            BusinessErrorCode.INVALID_FILE_TYPE,
-            f"学情批量上传单批最多 {LEARNER_PROFILE_BATCH_UPLOAD_MAX_FILES} 份文件",
-            {"received_count": len(files)},
-        )
-    prepared_files: list[tuple[str, bytes, str | None]] = []
-    for upload_file in files:
-        file_bytes = await upload_file.read()
-        prepared_files.append((upload_file.filename or "learner_profile.docx", file_bytes, upload_file.content_type))
-    batch_response = service.upload_profile_files_batch(
-        owner_user_id=current_user.id,
-        project_id=project_id,
-        files=prepared_files,
-        grade_code=request.grade_code,
-        subject_scope=request.subject_scope,
-        textbook_version_hint_id=request.textbook_version_hint_id,
-        auto_extract=request.auto_extract,
-        set_as_current=request.set_as_current,
-    )
-    return ResponseFactory.success(
-        batch_response.model_dump(mode="json"),
-        "学情批量上传完成",
-        status_code=status.HTTP_201_CREATED,
-    )
 
 
 @router.get(

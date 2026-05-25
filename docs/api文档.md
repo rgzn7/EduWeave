@@ -805,59 +805,6 @@
 
 ---
 
-### POST `/api/v1/projects/{project_id}/learner-profiles/batch`
-
-**批量上传学情文件**
-
-向指定项目一次性上传多份 docx 学情文件，单批最多 20 份。每份文件独立创建学情抽取任务，单个失败不影响其它文件，失败原因会按 filename 汇总在响应 failed 列表中。
-
-**参数**
-
-| 位置 | 名称 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- | --- |
-| path | `project_id` | integer | 是 | 项目主键 |
-
-**请求体**
-
-```json
-{
-  files: array[string]  # 学情 docx 文件列表（≤20 份）
-  grade_code?: string | null  # 年级编码（应用到所有文件）
-  subject_scope?: string | null  # 学科范围（应用到所有文件）
-  textbook_version_hint_id?: integer | null  # 教材提示版本主键
-  auto_extract?: boolean  # 是否立即为每份文件创建抽取任务
-  set_as_current?: boolean  # 是否将最后一份成功文件设为当前学情版本
-}
-```
-
-**响应**
-
-`201` Successful Response
-
-```json
-{
-  success: boolean  # 请求是否成功
-  code: integer  # 业务响应状态码
-  message: string  # 响应消息
-  data?: {
-    succeeded_count: integer  # 成功上传文件数
-    failed_count: integer  # 失败文件数
-    succeeded: object  # 成功文件详情列表
-    failed: object  # 失败文件列表，按入参顺序保留 filename 与错误信息
-  }
-  timestamp: string  # 响应时间，UTC ISO8601 格式
-  request_id: string  # 请求追踪 ID
-  errors?: array[{
-    code: string  # 错误码
-    message: string  # 错误描述
-    details?: object  # 补充信息
-    field?: object  # 字段名
-  }]
-}
-```
-
----
-
 ### GET `/api/v1/projects/{project_id}/learner-profiles/{profile_file_id}`
 
 **获取学情文件详情**

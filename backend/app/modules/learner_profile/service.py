@@ -21,8 +21,6 @@ from app.core.exceptions import AppException, BusinessErrorCode
 from app.core.middleware import get_request_id
 from app.modules.learner_profile.repository import LearnerProfileRepository
 from app.modules.learner_profile.schemas import (
-    LearnerProfileBatchUploadFailureItem,
-    LearnerProfileBatchUploadResponse,
     LearnerProfileFileDetailResponse,
     LearnerProfileFileListItemResponse,
     LearnerProfileManualRevisionRequest,
@@ -183,56 +181,6 @@ class LearnerProfileService:
                 self.session.commit()
 
         return self.get_profile_file_detail(owner_user_id=owner_user_id, project_id=project.id, profile_file_id=profile_file.id)
-
-    def upload_profile_files_batch(
-        self,
-        *,
-        owner_user_id: int,
-        project_id: int,
-        files: list[tuple[str, bytes, str | None]],
-        grade_code: str | None,
-        subject_scope: str | None,
-        textbook_version_hint_id: int | None,
-        auto_extract: bool,
-        set_as_current: bool,
-    ) -> LearnerProfileBatchUploadResponse:
-        """批量上传学情文件：逐份调用单文件上传逻辑，独立收集成功与失败。"""
-        succeeded: list[LearnerProfileFileDetailResponse] = []
-        failed: list[LearnerProfileBatchUploadFailureItem] = []
-        last_index = len(files) - 1
-        for current_index, (filename, content, content_type) in enumerate(files):
-            # 仅当本批最后一个文件且整体配置为 True 时才把当前学情版本切换为新值，
-            # 避免中间文件成功后把项目当前学情版本来回覆盖
-            effective_set_as_current = set_as_current and current_index == last_index
-            try:
-                detail = self.upload_profile_file(
-                    owner_user_id=owner_user_id,
-                    project_id=project_id,
-                    filename=filename,
-                    content=content,
-                    content_type=content_type,
-                    title=None,
-                    grade_code=grade_code,
-                    subject_scope=subject_scope,
-                    textbook_version_hint_id=textbook_version_hint_id,
-                    auto_extract=auto_extract,
-                    set_as_current=effective_set_as_current,
-                )
-                succeeded.append(detail)
-            except AppException as exc:
-                failed.append(
-                    LearnerProfileBatchUploadFailureItem(
-                        filename=filename,
-                        error_code=exc.code.value,
-                        message=exc.message,
-                    )
-                )
-        return LearnerProfileBatchUploadResponse(
-            succeeded_count=len(succeeded),
-            failed_count=len(failed),
-            succeeded=succeeded,
-            failed=failed,
-        )
 
     def list_profile_files(
         self,
