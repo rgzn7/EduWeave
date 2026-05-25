@@ -45,6 +45,42 @@ class LearnerProfileUploadRequest(BaseSchema):
         )
 
 
+class LearnerProfileBatchUploadRequest(BaseSchema):
+    """学情批量上传请求。"""
+
+    grade_code: str | None = Field(default=None, description="年级编码（应用到所有文件）", examples=["grade_6"])
+    subject_scope: str | None = Field(default=None, description="学科范围（应用到所有文件）", examples=["english,math"])
+    textbook_version_hint_id: int | None = Field(default=None, description="教材提示版本主键（应用到所有文件）", examples=[1])
+    auto_extract: bool = Field(default=True, description="是否立即为每份文件创建抽取任务", examples=[True])
+    set_as_current: bool = Field(default=False, description="是否在成功后将最后一份成功文件设为当前学情版本", examples=[False])
+
+    @classmethod
+    def as_form(
+        cls,
+        grade_code: Annotated[str | None, Form(description="年级编码（应用到所有文件）", examples=["grade_6"])] = None,
+        subject_scope: Annotated[str | None, Form(description="学科范围（应用到所有文件）", examples=["english,math"])] = None,
+        textbook_version_hint_id: Annotated[int | None, Form(description="教材提示版本主键", examples=[1])] = None,
+        auto_extract: Annotated[bool, Form(description="是否立即为每份文件创建抽取任务", examples=[True])] = True,
+        set_as_current: Annotated[bool, Form(description="是否将最后一份成功文件设为当前学情版本", examples=[False])] = False,
+    ) -> "LearnerProfileBatchUploadRequest":
+        """将 multipart/form-data 字段转换为批量上传请求模型。"""
+        return cls(
+            grade_code=grade_code,
+            subject_scope=subject_scope,
+            textbook_version_hint_id=textbook_version_hint_id,
+            auto_extract=auto_extract,
+            set_as_current=set_as_current,
+        )
+
+
+class LearnerProfileBatchUploadFailureItem(BaseSchema):
+    """学情批量上传中失败的单个文件信息。"""
+
+    filename: str = Field(description="失败文件原始名", examples=["学生5.docx"])
+    error_code: str = Field(description="业务错误码", examples=["INVALID_FILE_TYPE"])
+    message: str = Field(description="失败原因说明", examples=["学情文件仅支持 docx"])
+
+
 class LearnerProfileManualRevisionRecordRequest(BaseSchema):
     """学情画像人工修正记录请求。"""
 
@@ -177,3 +213,12 @@ class LearnerProfileFileListItemResponse(BaseSchema):
 
 class LearnerProfileFileDetailResponse(LearnerProfileFileListItemResponse):
     """学情文件详情响应。"""
+
+
+class LearnerProfileBatchUploadResponse(BaseSchema):
+    """学情批量上传响应。"""
+
+    succeeded_count: int = Field(description="成功上传文件数", examples=[18])
+    failed_count: int = Field(description="失败文件数", examples=[2])
+    succeeded: list[LearnerProfileFileDetailResponse] = Field(description="成功文件详情列表")
+    failed: list[LearnerProfileBatchUploadFailureItem] = Field(description="失败文件列表，按入参顺序保留 filename 与错误信息")

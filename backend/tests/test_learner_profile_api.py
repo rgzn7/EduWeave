@@ -122,3 +122,82 @@ def test_learner_profile_versions_and_manual_revision_should_succeed(client) -> 
     assert payload["review_status"] == "confirmed"
     assert payload["summary_text"] == "人工修正后的学情摘要"
     assert payload["records"][0]["is_anonymous"] is True
+
+
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def test_learner_profile_batch_upload_should_succeed_for_valid_files(client) -> None:
+    """批量上传多份合法 docx 应全部成功并各自创建抽取任务。"""
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+
+    batch_files = [
+        ("files", (f"学生{index}.docx", b"fake-docx-content", DOCX_MIME))
+        for index in range(1, 4)
+    ]
+    response = client.post(
+        f"/api/v1/projects/{project_id}/learner-profiles/batch",
+        headers=headers,
+        files=batch_files,
+        data={"subject_scope": "chinese,math", "auto_extract": "true"},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()["data"]
+    assert payload["succeeded_count"] == 3
+    assert payload["failed_count"] == 0
+    assert len(payload["succeeded"]) == 3
+    assert payload["failed"] == []
+    for item in payload["succeeded"]:
+        assert item["latest_version"]["extract_status"] == "success"
+        assert len(item["latest_version"]["records"]) == 2
+
+
+def test_learner_profile_batch_upload_should_collect_partial_failure(client) -> None:
+    """批量上传遇到非法文件类型时应单独收集失败项而不影响其它文件。"""
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+
+    batch_files = [
+        ("files", ("学生1.docx", b"fake-docx-content", DOCX_MIME)),
+        ("files", ("学生2.doc", b"fake-doc-content", "application/msword")),
+        ("files", ("学生3.docx", b"fake-docx-content", DOCX_MIME)),
+    ]
+    response = client.post(
+        f"/api/v1/projects/{project_id}/learner-profiles/batch",
+        headers=headers,
+        files=batch_files,
+        data={"auto_extract": "true"},
+    )
+
+    assert response.status_code == 201
+    payload = response.json()["data"]
+    assert payload["succeeded_count"] == 2
+    assert payload["failed_count"] == 1
+    succeeded_filenames = {item["source_file"]["original_filename"] for item in payload["succeeded"]}
+    assert succeeded_filenames == {"学生1.docx", "学生3.docx"}
+    assert payload["failed"][0]["filename"] == "学生2.doc"
+    assert payload["failed"][0]["error_code"] == "INVALID_FILE_TYPE"
+    assert "docx" in payload["failed"][0]["message"]
+
+
+def test_learner_profile_batch_upload_should_reject_too_many_files(client) -> None:
+    """批量上传超过 20 份文件应直接拒绝。"""
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+
+    batch_files = [
+        ("files", (f"学生{index}.docx", b"fake-docx-content", DOCX_MIME))
+        for index in range(1, 22)
+    ]
+    response = client.post(
+        f"/api/v1/projects/{project_id}/learner-profiles/batch",
+        headers=headers,
+        files=batch_files,
+    )
+
+    assert response.status_code == 422
+    error_payload = response.json()["errors"][0]
+    assert error_payload["code"] == "INVALID_FILE_TYPE"
+    assert "20" in error_payload["message"]
