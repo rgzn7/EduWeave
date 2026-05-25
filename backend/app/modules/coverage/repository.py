@@ -125,10 +125,14 @@ class CoverageRepository:
         return list(self.session.scalars(statement))
 
     def list_homework_questions_by_batch(self, generation_batch_id: int) -> list[HomeworkQuestion]:
-        """查询批次下全部作业题目明细。"""
+        """查询批次下成功课后作业的题目明细。"""
         statement = (
             select(HomeworkQuestion)
-            .where(HomeworkQuestion.generation_batch_id == generation_batch_id)
+            .join(HomeworkResult, HomeworkResult.id == HomeworkQuestion.homework_result_id)
+            .where(
+                HomeworkQuestion.generation_batch_id == generation_batch_id,
+                HomeworkResult.result_status == TASK_STATUS_SUCCESS,
+            )
             .order_by(
                 HomeworkQuestion.lesson_plan_id.asc(),
                 HomeworkQuestion.question_no.asc(),

@@ -7,6 +7,7 @@
 import pytest
 
 from app.core.exceptions import BusinessErrorCode
+from app.modules.p0_models import HomeworkResult
 from test_assessment_api import build_other_auth_headers, create_generation_baseline, create_generation_batch
 from test_pipeline_curriculum_api import build_auth_headers, generation_test_stubs
 
@@ -244,3 +245,48 @@ def test_homework_should_refresh_coverage_with_homework_bucket(
     strategy_checks = report_json["assessment_quality"]["strategy_checks"]
     source_types = {check["source_type"] for check in strategy_checks}
     assert "homework_result" in source_types
+
+
+def test_coverage_report_should_only_count_success_homework(
+    client,
+    seeded_session_factory,
+    generation_test_stubs,
+) -> None:
+    """覆盖率报告只统计成功状态课后作业的题目。"""
+    _ = generation_test_stubs
+    headers = build_auth_headers(client)
+    project_id, knowledge_version_id, learner_profile_version_id = create_generation_baseline(client, headers)
+    batch_payload = create_generation_batch(client, headers, project_id, knowledge_version_id, learner_profile_version_id)
+    lesson_plan = _list_lesson_plans(client, headers, batch_payload["curriculum_plan_id"])[0]
+
+    create_response = client.post(
+        f"/api/v1/lesson-plans/{lesson_plan['id']}/homework-tasks",
+        headers=headers,
+    )
+    assert create_response.status_code == 201
+    homework_result_id = create_response.json()["data"]["result_json"]["homework_result_id"]
+
+    coverage_response = client.get(
+        f"/api/v1/coverage-reports?generation_batch_id={batch_payload['id']}",
+        headers=headers,
+    )
+    assert coverage_response.status_code == 200
+    report_json = coverage_response.json()["data"]["items"][0]["report_json"]
+    assert report_json["artifact_coverage"]["homework_question"]["item_count"] == 6
+
+    session = seeded_session_factory()
+    try:
+        homework_result = session.query(HomeworkResult).filter(HomeworkResult.id == homework_result_id).one()
+        homework_result.result_status = "failure"
+        session.commit()
+    finally:
+        session.close()
+
+    refresh_response = client.post(
+        f"/api/v1/generation-batches/{batch_payload['id']}/coverage-reports/refresh",
+        headers=headers,
+    )
+    assert refresh_response.status_code == 200
+    refreshed_report = refresh_response.json()["data"]["report_json"]
+    assert refreshed_report["artifact_coverage"]["homework_question"]["item_count"] == 0
+    assert refreshed_report["assessment_quality"]["question_count"] == 0
