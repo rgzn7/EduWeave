@@ -1171,6 +1171,7 @@ class QuestionItem(TimestampMixin, Base):
     answer_text: Mapped[str | None] = mapped_column(Text, nullable=True, comment="答案")
     analysis_text: Mapped[str | None] = mapped_column(Text, nullable=True, comment="解析")
     source_trace_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="题目来源摘要")
+    question_basis_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="题目考查依据")
 
 
 class HomeworkBlueprint(TimestampMixin, Base):
@@ -1317,6 +1318,7 @@ class HomeworkQuestion(TimestampMixin, Base):
     answer_text: Mapped[str | None] = mapped_column(Text, nullable=True, comment="答案")
     analysis_text: Mapped[str | None] = mapped_column(Text, nullable=True, comment="解析")
     source_trace_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="题目来源摘要")
+    question_basis_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="题目考查依据")
 
 
 class CoverageReport(TimestampMixin, Base):

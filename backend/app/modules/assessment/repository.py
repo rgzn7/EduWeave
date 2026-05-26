@@ -75,6 +75,13 @@ class AssessmentRepository:
         )
         return list(self.session.scalars(statement))
 
+    def list_knowledge_points_by_ids(self, ids: list[int]) -> list[KnowledgePoint]:
+        """按主键批量查询知识点。"""
+        if not ids:
+            return []
+        statement = select(KnowledgePoint).where(KnowledgePoint.id.in_(ids))
+        return list(self.session.scalars(statement))
+
     def list_chapter_nodes(self, knowledge_version_id: int) -> list[ChapterNode]:
         """查询知识版本下章节节点。"""
         statement = (
@@ -83,6 +90,18 @@ class AssessmentRepository:
             .order_by(ChapterNode.node_path.asc(), ChapterNode.id.asc())
         )
         return list(self.session.scalars(statement))
+
+    def list_chapter_nodes_by_ids(self, ids: list[int]) -> list[ChapterNode]:
+        """按主键批量查询章节节点。"""
+        if not ids:
+            return []
+        statement = select(ChapterNode).where(ChapterNode.id.in_(ids))
+        return list(self.session.scalars(statement))
+
+    def get_assessment_blueprint(self, assessment_blueprint_id: int) -> AssessmentBlueprint | None:
+        """按主键查询测评蓝图。"""
+        statement = select(AssessmentBlueprint).where(AssessmentBlueprint.id == assessment_blueprint_id)
+        return self.session.scalar(statement)
 
     def get_next_blueprint_version_no(self, curriculum_plan_id: int, scenario_type: str) -> int:
         """获取指定课程大纲与场景下一个蓝图版本号。"""

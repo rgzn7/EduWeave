@@ -27,11 +27,18 @@ from app.modules.assessment.schemas import (
     QuestionItemResponse,
 )
 from app.modules.file_asset.schemas import FileDownloadUrlResponse
+from app.modules.p0_models import PaperResult, QuestionItem
 from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.schemas import TaskListItemResponse
 from app.modules.task_center.service import TaskCenterService
 from app.shared.document import DocumentExportService
 from app.shared.queue import dispatch_task
+from app.shared.question_basis import (
+    build_question_basis,
+    extract_first_teaching_goal,
+    find_lesson_plan_for_knowledge_point,
+    index_blueprint_kp_weights,
+)
 
 
 class AssessmentService:
@@ -210,14 +217,29 @@ class AssessmentService:
             difficulty_level=difficulty_level,
             scene_type=scene_type,
         )
-        items = [
-            QuestionItemListItemResponse(
-                **QuestionItemResponse.model_validate(question_item, from_attributes=True).model_dump(),
-                paper_title=paper_result.title,
-                scene_type=paper_result.scene_type,
+        # 同一试卷共享一份蓝图与批次，先按试卷分组以便批量装配考查依据
+        questions_by_paper: dict[int, list[QuestionItem]] = {}
+        paper_lookup: dict[int, PaperResult] = {}
+        for question_item, paper_result in rows:
+            questions_by_paper.setdefault(paper_result.id, []).append(question_item)
+            paper_lookup[paper_result.id] = paper_result
+
+        enriched_by_question_id: dict[int, QuestionItemResponse] = {}
+        for paper_id, grouped_questions in questions_by_paper.items():
+            enriched = self._build_question_items_with_basis(paper_lookup[paper_id], grouped_questions)
+            for question_response in enriched:
+                enriched_by_question_id[question_response.id] = question_response
+
+        items: list[QuestionItemListItemResponse] = []
+        for question_item, paper_result in rows:
+            question_response = enriched_by_question_id[question_item.id]
+            items.append(
+                QuestionItemListItemResponse(
+                    **question_response.model_dump(),
+                    paper_title=paper_result.title,
+                    scene_type=paper_result.scene_type,
+                )
             )
-            for question_item, paper_result in rows
-        ]
         return items, total_count
 
     def get_paper_result_detail(self, *, owner_user_id: int, paper_result_id: int) -> PaperResultDetailResponse:
@@ -225,14 +247,72 @@ class AssessmentService:
         paper_result = self.repository.get_paper_result_for_owner(paper_result_id, owner_user_id)
         if paper_result is None:
             raise AppException(BusinessErrorCode.PAPER_RESULT_NOT_FOUND, "试卷结果不存在")
-        questions = [
-            QuestionItemResponse.model_validate(question, from_attributes=True)
-            for question in self.repository.list_question_items(paper_result.id)
-        ]
+        questions = self._build_question_items_with_basis(
+            paper_result,
+            self.repository.list_question_items(paper_result.id),
+        )
         return PaperResultDetailResponse(
             **self.build_paper_result_response(paper_result).model_dump(),
             questions=questions,
         )
+
+    def _build_question_items_with_basis(
+        self,
+        paper_result: PaperResult,
+        question_items: list[QuestionItem],
+    ) -> list[QuestionItemResponse]:
+        """为测评题目装配 knowledge_point_name 与 question_basis_json。"""
+        if not question_items:
+            return []
+        knowledge_point_ids = {q.knowledge_point_id for q in question_items if q.knowledge_point_id is not None}
+        knowledge_points = {
+            kp.id: kp for kp in self.repository.list_knowledge_points_by_ids(list(knowledge_point_ids))
+        }
+        chapter_node_ids = [
+            kp.chapter_node_id for kp in knowledge_points.values() if kp.chapter_node_id is not None
+        ]
+        chapter_nodes = {
+            node.id: node for node in self.repository.list_chapter_nodes_by_ids(chapter_node_ids)
+        }
+        blueprint = self.repository.get_assessment_blueprint(paper_result.assessment_blueprint_id)
+        blueprint_kp_weights = index_blueprint_kp_weights(blueprint.content_json if blueprint else None)
+        # 在批次内查找首个覆盖该知识点的课次，缺批次则降级为空列表
+        lesson_plans = self.repository.list_lesson_plans_by_batch(paper_result.generation_batch_id)
+
+        responses: list[QuestionItemResponse] = []
+        for question in question_items:
+            base = QuestionItemResponse.model_validate(question, from_attributes=True)
+            knowledge_point = knowledge_points.get(question.knowledge_point_id) if question.knowledge_point_id else None
+            chapter_node = (
+                chapter_nodes.get(knowledge_point.chapter_node_id)
+                if knowledge_point and knowledge_point.chapter_node_id is not None
+                else None
+            )
+            lesson_plan = (
+                find_lesson_plan_for_knowledge_point(lesson_plans, knowledge_point.id) if knowledge_point else None
+            )
+            teaching_goal = extract_first_teaching_goal(lesson_plan.content_json if lesson_plan else None)
+            # 优先使用持久化的 question_basis_json，DB 为空时回退到实时聚合（兼容历史数据）
+            basis = question.question_basis_json or build_question_basis(
+                scene="assessment",
+                knowledge_point=knowledge_point,
+                chapter_node=chapter_node,
+                lesson_plan=lesson_plan,
+                teaching_goal=teaching_goal,
+                difficulty_level=question.difficulty_level,
+                blueprint_kp_weights=blueprint_kp_weights,
+                blueprint_type="assessment",
+                blueprint_id=paper_result.assessment_blueprint_id,
+            )
+            responses.append(
+                base.model_copy(
+                    update={
+                        "knowledge_point_name": knowledge_point.point_name if knowledge_point else None,
+                        "question_basis_json": basis,
+                    }
+                )
+            )
+        return responses
 
     def export_paper_result_docx(self, *, owner_user_id: int, paper_result_id: int) -> FileDownloadUrlResponse:
         """导出试卷结果 DOCX。"""

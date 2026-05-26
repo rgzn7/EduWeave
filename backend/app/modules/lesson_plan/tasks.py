@@ -28,7 +28,7 @@ from app.modules.lesson_plan.schemas import LessonPlanGenerationResult
 from app.modules.p0_models import LessonPlan
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
-from app.shared.llm import ChatMessage, OpenAICompatibleLlmService, load_evidence_image_data_urls
+from app.shared.llm import ChatMessage, LlmUsage, OpenAICompatibleLlmService, load_evidence_image_data_urls
 from app.shared.queue import dispatch_task
 from app.shared.utils import DateTimeUtil
 from app.shared.utils.chapter_range_util import build_chapter_range_selection, filter_knowledge_points_by_chapter_selection
@@ -54,6 +54,28 @@ def _load_evidence_images(repository: LessonPlanRepository, knowledge_points: li
         loaded_image_count=len(data_urls),
     )
     return data_urls
+
+
+def _summarize_llm_usage(usage_records: list[LlmUsage]) -> dict[str, int]:
+    """聚合教案生成各课次的 LLM 使用量，用于上报到任务步骤 detail_json。
+
+    含 call_count（含修复重试），便于观测 cached_tokens 命中曲线（首次为 0、之后渐升）。
+    """
+    if not usage_records:
+        return {
+            "call_count": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cached_tokens": 0,
+        }
+    return {
+        "call_count": len(usage_records),
+        "prompt_tokens": sum(item.prompt_tokens for item in usage_records),
+        "completion_tokens": sum(item.completion_tokens for item in usage_records),
+        "total_tokens": sum(item.total_tokens for item in usage_records),
+        "cached_tokens": sum(item.cached_tokens for item in usage_records),
+    }
 
 
 def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
@@ -145,24 +167,36 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
         session.commit()
 
         evidence_images = _load_evidence_images(repository, knowledge_points)
+        # 同一批次跨课次复用稳定前缀消息，让上游 prompt cache 在第 2 次起命中前缀缓存。
+        stable_messages = _build_lesson_plan_stable_messages(
+            project=project,
+            generation_batch=generation_batch,
+            curriculum_plan=curriculum_plan,
+            profile_version=profile_version,
+            knowledge_points=knowledge_points,
+            profile_records=profile_records,
+            evidence_images=evidence_images,
+        )
+        # cache_biz_key 按批次分片：同批 N 次课次共享同一上游缓存分片，跨批次互不污染。
+        cache_biz_key = f"lesson-batch-{generation_batch.id}"
+        cache_user_id = payload.get("operator_user_id")
+        usage_records: list[LlmUsage] = []
 
         lesson_plan_ids: list[int] = []
         next_version_no = repository.get_next_lesson_plan_version_no(curriculum_plan.id)
         for index, lesson_session in enumerate(lesson_sessions, start=1):
             class_session_no = int(lesson_session["session_no"])
             llm_messages = _build_lesson_plan_messages(
-                project=project,
-                generation_batch=generation_batch,
-                curriculum_plan=curriculum_plan,
+                stable_messages=stable_messages,
                 target_lesson_session=lesson_session,
-                profile_version=profile_version,
-                knowledge_points=knowledge_points,
-                profile_records=profile_records,
-                evidence_images=evidence_images,
             )
             generation_result = llm_service.generate_structured_output(
                 messages=llm_messages,
                 response_model=LessonPlanGenerationResult,
+                cache_biz_key=cache_biz_key,
+                stable_prefix_message_count=len(stable_messages),
+                cache_user_id=cache_user_id,
+                on_usage=usage_records.append,
             )
             _validate_lesson_plan_result(
                 generation_result,
@@ -194,7 +228,11 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
             step_map["invoke_llm_lesson_plan"],
             TASK_STATUS_SUCCESS,
             100,
-            detail_json={"lesson_plan_count": len(lesson_plan_ids), "lesson_plan_ids": lesson_plan_ids},
+            detail_json={
+                "lesson_plan_count": len(lesson_plan_ids),
+                "lesson_plan_ids": lesson_plan_ids,
+                "llm_usage": _summarize_llm_usage(usage_records),
+            },
             finished_at=DateTimeUtil.now_utc(),
         )
         _mark_step(step_map["persist_lesson_plan"], TASK_STATUS_PROCESSING, 45, started_at=DateTimeUtil.now_utc())
@@ -293,21 +331,49 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
         session.close()
 
 
-def _build_lesson_plan_messages(
+# 拆分为两段独立 system 提示，便于上游 prompt cache 命中前缀；调整任一段不击穿另一段缓存。
+_LESSON_PLAN_ROLE_AND_SCHEMA_PROMPT = (
+    "你是教案生成助手。请基于课程大纲中的 target_lesson_session、教材知识点和学生学情生成中文教师教案。"
+    "必须严格输出 JSON 对象，字段如下，类型必须严格匹配，不允许将字符串字段替换为对象或数组："
+    "lesson_title（字符串，不超过 255 字）；"
+    "summary_text（字符串）；"
+    "course_overview（对象，可包含 audience、duration、focus 等键，禁止使用字符串或数组）；"
+    "material_list（字符串数组，每项是一句简述，例如 \"单词卡片若干\"）；"
+    "core_knowledge（字符串数组，每项是一条核心知识的纯文本描述，禁止使用对象）；"
+    "teaching_flow（对象数组，标准行课流程，每项必须包含 step_no（从 1 起的整数）、stage_name（字符串，简短环节名）、"
+    "duration_minutes（整数）、teacher_actions（字符串数组，至少 1 条）、student_activities（字符串数组，至少 1 条）、"
+    "knowledge_point_refs（输入知识点 id 的整数数组，至少 1 个），不要使用 stage 字段替代 stage_name）；"
+    "session_plans（对象数组，必须且只能包含 1 个课次安排，对应 target_lesson_session.session_no，"
+    "每项必须包含 session_no（整数）、title（字符串）、objectives（字符串数组）、teaching_focus（字符串数组）、"
+    "teaching_steps（与 teaching_flow 同结构的对象数组）、homework（字符串数组）、knowledge_point_refs（整数数组））；"
+    "after_class_plan（对象，可包含 review、homework、parent_communication 等键，禁止使用字符串或数组）；"
+    "learner_adjustments（字符串数组，每项是一句策略说明，禁止使用对象）；"
+    "knowledge_point_refs（输入知识点 id 的整数数组）。"
+)
+
+_LESSON_PLAN_OUTPUT_RULES_PROMPT = (
+    "teaching_flow 和 session_plans 中的 knowledge_point_refs 必须只引用输入中的知识点 id。"
+    "教案需覆盖课程概述、物料清单、核心知识、导入、讲解、练习、总结和课后安排。"
+    "不得返回空数组或空对象骨架；教师动作、学生活动、课次目标、教学重点、课后任务和学情适配都必须有可执行内容。"
+    "不要输出 Markdown、解释文字或代码块。"
+)
+
+
+def _build_lesson_plan_stable_messages(
     *,
     project,
     generation_batch,
     curriculum_plan,
-    target_lesson_session: dict[str, Any],
     profile_version,
     knowledge_points: list,
     profile_records: list,
     evidence_images: list[str] | None = None,
 ) -> list[ChatMessage]:
-    """构造教案生成提示词。
+    """构造教案生成的稳定前缀消息（同一批次跨课次复用）。
 
-    evidence_images 非空时，user 消息使用中性多模态 part 列表注入教材证据图片；
-    为空时保持纯文本字符串（与改造前行为完全一致）。
+    包含 2 条 system（角色与字段定义、硬性输出规则）+ 1 条 user（项目/大纲/知识点/学情
+    的 JSON 上下文与可选证据图片）。target_lesson_session 由 _build_lesson_plan_messages
+    在循环内追加为第 4 条 user 消息，避免击穿稳定前缀的上游缓存。
     """
     point_payload = [
         {
@@ -339,7 +405,7 @@ def _build_lesson_plan_messages(
         }
         for record in profile_records
     ]
-    user_payload = {
+    stable_payload = {
         "project": {
             "id": project.id,
             "name": project.name,
@@ -361,7 +427,6 @@ def _build_lesson_plan_messages(
             "summary_text": curriculum_plan.summary_text,
             "content_json": curriculum_plan.content_json,
         },
-        "target_lesson_session": target_lesson_session,
         "knowledge_points": point_payload,
         "learner_profile_version": {
             "id": profile_version.id,
@@ -371,44 +436,40 @@ def _build_lesson_plan_messages(
             "records": profile_payload,
         },
     }
-    system_prompt = (
-        "你是教案生成助手。请基于课程大纲中的 target_lesson_session、教材知识点和学生学情生成中文教师教案。"
-        "必须严格输出 JSON 对象，字段如下，类型必须严格匹配，不允许将字符串字段替换为对象或数组："
-        "lesson_title（字符串，不超过 255 字）；"
-        "summary_text（字符串）；"
-        "course_overview（对象，可包含 audience、duration、focus 等键，禁止使用字符串或数组）；"
-        "material_list（字符串数组，每项是一句简述，例如 \"单词卡片若干\"）；"
-        "core_knowledge（字符串数组，每项是一条核心知识的纯文本描述，禁止使用对象）；"
-        "teaching_flow（对象数组，标准行课流程，每项必须包含 step_no（从 1 起的整数）、stage_name（字符串，简短环节名）、"
-        "duration_minutes（整数）、teacher_actions（字符串数组，至少 1 条）、student_activities（字符串数组，至少 1 条）、"
-        "knowledge_point_refs（输入知识点 id 的整数数组，至少 1 个），不要使用 stage 字段替代 stage_name）；"
-        "session_plans（对象数组，必须且只能包含 1 个课次安排，对应 target_lesson_session.session_no，"
-        "每项必须包含 session_no（整数）、title（字符串）、objectives（字符串数组）、teaching_focus（字符串数组）、"
-        "teaching_steps（与 teaching_flow 同结构的对象数组）、homework（字符串数组）、knowledge_point_refs（整数数组））；"
-        "after_class_plan（对象，可包含 review、homework、parent_communication 等键，禁止使用字符串或数组）；"
-        "learner_adjustments（字符串数组，每项是一句策略说明，禁止使用对象）；"
-        "knowledge_point_refs（输入知识点 id 的整数数组）。"
-        "teaching_flow 和 session_plans 中的 knowledge_point_refs 必须只引用输入中的知识点 id。"
-        "教案需覆盖课程概述、物料清单、核心知识、导入、讲解、练习、总结和课后安排。"
-        "不得返回空数组或空对象骨架；教师动作、学生活动、课次目标、教学重点、课后任务和学情适配都必须有可执行内容。"
-        "不要输出 Markdown、解释文字或代码块。"
-    )
-    user_text = json.dumps(user_payload, ensure_ascii=False)
+    stable_text = json.dumps(stable_payload, ensure_ascii=False)
     if evidence_images:
-        user_content: str | list[dict[str, Any]] = [
+        stable_user_content: str | list[dict[str, Any]] = [
             {
                 "type": "text",
                 "text": "以下提供教材中与本课知识点相关的证据插图，请结合图片内容生成更贴合教材的教案。",
             },
-            {"type": "text", "text": user_text},
+            {"type": "text", "text": stable_text},
             *({"type": "image", "data_url": data_url} for data_url in evidence_images),
         ]
     else:
-        user_content = user_text
+        stable_user_content = stable_text
     return [
-        ChatMessage(role="system", content=system_prompt),
-        ChatMessage(role="user", content=user_content),
+        ChatMessage(role="system", content=_LESSON_PLAN_ROLE_AND_SCHEMA_PROMPT),
+        ChatMessage(role="system", content=_LESSON_PLAN_OUTPUT_RULES_PROMPT),
+        ChatMessage(role="user", content=stable_user_content),
     ]
+
+
+def _build_lesson_plan_messages(
+    *,
+    stable_messages: list[ChatMessage],
+    target_lesson_session: dict[str, Any],
+) -> list[ChatMessage]:
+    """组装单次课次的完整请求消息：稳定前缀 + 本课次变量段。
+
+    variable user 消息显式包含 "JSON 对象" 字样，避免 Chat Completions 端再追加兜底
+    的纯文本兜底消息，让前 3 条稳定前缀消息成为真正的缓存锚点。
+    """
+    variable_text = (
+        "请基于上述稳定上下文与下方 target_lesson_session 严格以 JSON 对象输出本课次教案：\n"
+        + json.dumps({"target_lesson_session": target_lesson_session}, ensure_ascii=False)
+    )
+    return [*stable_messages, ChatMessage(role="user", content=variable_text)]
 
 
 def _get_curriculum_lesson_sessions(curriculum_plan) -> list[dict[str, Any]]:

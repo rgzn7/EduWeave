@@ -33,6 +33,42 @@ from app.shared.ppt import RaccoonPptJobState, RaccoonPptService
 from app.shared.vector import MilvusVectorService
 
 
+def _merge_user_payload_dicts(messages) -> dict:
+    """扫描所有 user 消息内容里的 JSON 对象并合并，兼容教案新 4 条与旧 2 条布局。
+
+    对 list 形态的 content 仅取 text part；对带 "请基于上述..." 前缀的变量段也能正确
+    提取其中的 {target_lesson_session: ...} 块。
+    """
+    merged: dict = {}
+    decoder = json.JSONDecoder()
+    for message in messages:
+        if getattr(message, "role", None) != "user":
+            continue
+        raw_content = message.content
+        if isinstance(raw_content, list):
+            text = "\n".join(
+                str(part.get("text") or "")
+                for part in raw_content
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+        else:
+            text = str(raw_content or "")
+        idx = 0
+        while idx < len(text):
+            brace = text.find("{", idx)
+            if brace < 0:
+                break
+            try:
+                obj, end = decoder.raw_decode(text[brace:])
+            except json.JSONDecodeError:
+                idx = brace + 1
+                continue
+            if isinstance(obj, dict):
+                merged.update(obj)
+            idx = brace + end
+    return merged
+
+
 def build_auth_headers(client) -> dict[str, str]:
     """构造认证请求头。"""
     login_response = client.post(
@@ -211,8 +247,10 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
     """替换知识抽取、课程生成和向量写入依赖。"""
     vector_store: dict[str, list] = {}
 
-    def fake_generate_structured_output(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
-        _ = (self, temperature)
+    def fake_generate_structured_output(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
+        """额外 kwargs（cache_biz_key / stable_prefix_message_count / cache_user_id / on_usage 等）一律忽略；
+        user_payload 通过扫描所有 user 消息中的 JSON 块合并得到，兼容旧 2 条与新 4 条消息布局。"""
+        _ = (self, temperature, _extra_kwargs)
         if response_model is KnowledgeChapterBoundaryResult:
             return KnowledgeChapterBoundaryResult(
                 items=[
@@ -256,7 +294,7 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
                 ],
             )
 
-        user_payload = json.loads(messages[1].content)
+        user_payload = _merge_user_payload_dicts(messages)
         if response_model is CurriculumGenerationResult:
             course_count = int(user_payload["generation_batch"]["course_count"])
             point_id = int(user_payload["knowledge_version"]["knowledge_points"][0]["id"])
@@ -856,14 +894,15 @@ def test_curriculum_prompt_should_use_chapter_range_scope(
     captured_assessment_payloads: list[dict] = []
     original_generate = OpenAICompatibleLlmService.generate_structured_output
 
-    def capture_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
+    def capture_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
         if response_model is CurriculumGenerationResult:
             captured_curriculum_payloads.append(json.loads(messages[1].content))
         if response_model is LessonPlanGenerationResult:
-            captured_lesson_payloads.append(json.loads(messages[1].content))
+            # 教案改为 4 条消息布局（2 system + 2 user），按 user 消息合并 JSON 取得完整上下文。
+            captured_lesson_payloads.append(_merge_user_payload_dicts(messages))
         if response_model is AssessmentGenerationResult:
             captured_assessment_payloads.append(json.loads(messages[1].content))
-        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature)
+        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature, **_extra_kwargs)
 
     monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", capture_generate)
     headers = build_auth_headers(client)
@@ -1574,10 +1613,10 @@ def test_generation_batch_should_mark_failure_when_llm_invalid(
 
     original_generate = OpenAICompatibleLlmService.generate_structured_output
 
-    def mixed_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
+    def mixed_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
         if response_model is CurriculumGenerationResult:
             raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 返回课程大纲非法")
-        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature)
+        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature, **_extra_kwargs)
 
     monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", mixed_generate)
     response = client.post(
@@ -1633,7 +1672,8 @@ def test_generation_batch_should_mark_failure_when_lesson_plan_has_invalid_knowl
 
     original_generate = OpenAICompatibleLlmService.generate_structured_output
 
-    def mixed_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
+    def mixed_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
+        _ = _extra_kwargs
         if response_model is LessonPlanGenerationResult:
             return LessonPlanGenerationResult(
                 lesson_title="非法知识点教案",

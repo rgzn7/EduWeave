@@ -76,8 +76,9 @@ def knowledge_test_stubs(monkeypatch: pytest.MonkeyPatch):
     """替换知识阶段依赖的 LLM、Embedding 与向量写入。"""
     vector_store: dict[str, list] = {}
 
-    def fake_generate_structured_output(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
-        _ = (self, messages, response_model, temperature)
+    def fake_generate_structured_output(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
+        """额外 kwargs（cache_biz_key / stable_prefix_message_count / cache_user_id / on_usage 等）一律忽略。"""
+        _ = (self, messages, response_model, temperature, _extra_kwargs)
         if response_model is KnowledgeChapterBoundaryResult:
             return KnowledgeChapterBoundaryResult(
                 items=[

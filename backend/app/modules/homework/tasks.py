@@ -33,6 +33,10 @@ from app.modules.p0_models import HomeworkBlueprint, HomeworkQuestion, HomeworkR
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
+from app.shared.question_basis import (
+    build_question_basis_from_context,
+    index_blueprint_kp_weights,
+)
 from app.shared.utils import DateTimeUtil
 from app.shared.utils.chapter_range_util import build_chapter_range_selection, filter_knowledge_points_by_chapter_selection
 
@@ -188,6 +192,18 @@ def run_generate_homework_task(payload: dict) -> dict[str, int | str]:
                 export_file_id=None,
             )
         )
+        # 在落库前装配考查依据，所有题目共享同一份教案与作业蓝图
+        knowledge_points_by_id = {point.id: point for point in lesson_knowledge_points}
+        chapter_node_ids = {
+            point.chapter_node_id
+            for point in lesson_knowledge_points
+            if point.chapter_node_id is not None
+        }
+        chapter_nodes_by_id = {
+            node.id: node
+            for node in repository.list_chapter_nodes_by_ids(list(chapter_node_ids))
+        }
+        blueprint_kp_weights = index_blueprint_kp_weights(homework_blueprint.content_json)
         repository.create_homework_questions(
             [
                 HomeworkQuestion(
@@ -204,6 +220,18 @@ def run_generate_homework_task(payload: dict) -> dict[str, int | str]:
                     answer_text=question.answer_text,
                     analysis_text=question.analysis_text,
                     source_trace_json=question.source_trace_json,
+                    question_basis_json=build_question_basis_from_context(
+                        scene="homework",
+                        knowledge_point_id=question.knowledge_point_id,
+                        knowledge_points_by_id=knowledge_points_by_id,
+                        chapter_nodes_by_id=chapter_nodes_by_id,
+                        lesson_plans=[],
+                        fixed_lesson_plan=lesson_plan,
+                        difficulty_level=question.difficulty_level,
+                        blueprint_kp_weights=blueprint_kp_weights,
+                        blueprint_type="homework",
+                        blueprint_id=homework_blueprint.id,
+                    ),
                 )
                 for question in generation_result.questions
             ]

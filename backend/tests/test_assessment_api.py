@@ -145,6 +145,20 @@ def test_assessment_apis_should_query_results_and_protect_owner(
     assert len(paper_detail_payload["questions"]) == 10
     assert paper_detail_payload["questions"][0]["question_no"] == 1
 
+    # 验证题目考查依据字段
+    first_question = paper_detail_payload["questions"][0]
+    assert first_question["knowledge_point_name"] == "乘法口诀"
+    basis = first_question["question_basis_json"]
+    assert basis is not None
+    assert basis["knowledge_point_id"] == first_question["knowledge_point_id"]
+    assert basis["knowledge_point_name"] == "乘法口诀"
+    assert basis["assessment_position"] in {"基础掌握题", "典型应用题", "综合提升题"}
+    assert "乘法口诀" in basis["basis_summary"]
+    assert basis["source"]["blueprint_type"] == "assessment"
+    assert basis["source"]["blueprint_id"] == assessment_blueprint_id
+    assert basis["source"]["weight_percent"] == 100
+    assert basis["source"]["suggested_question_count"] == 10
+
     other_headers = build_other_auth_headers(client, seeded_session_factory)
     forbidden_blueprint_response = client.get(f"/api/v1/assessment-blueprints/{blueprint_id}", headers=other_headers)
     assert forbidden_blueprint_response.status_code == 404
@@ -185,6 +199,9 @@ def test_question_item_list_should_filter_and_protect_owner(
     assert first_item["paper_result_id"] == paper_id
     assert first_item["generation_batch_id"] == batch_payload["id"]
     knowledge_point_id = first_item["knowledge_point_id"]
+    # 列表项也应携带考查依据
+    assert first_item["knowledge_point_name"] == "乘法口诀"
+    assert first_item["question_basis_json"]["source"]["blueprint_type"] == "assessment"
 
     batch_response = client.get(
         f"/api/v1/question-items?generation_batch_id={batch_payload['id']}",
@@ -306,11 +323,11 @@ def test_assessment_prompt_should_apply_scene_preset(
     captured_user_payloads: list[dict] = []
     original_generate = OpenAICompatibleLlmService.generate_structured_output
 
-    def capture_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
+    def capture_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
         if response_model is AssessmentGenerationResult:
             captured_system_prompts.append(messages[0].content)
             captured_user_payloads.append(json.loads(messages[1].content))
-        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature)
+        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature, **_extra_kwargs)
 
     monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", capture_generate)
     headers = build_auth_headers(client)
@@ -370,7 +387,8 @@ def test_assessment_should_recalculate_inconsistent_distribution(
     batch_payload = create_generation_batch(client, headers, project_id, knowledge_version_id, learner_profile_version_id)
     original_generate = OpenAICompatibleLlmService.generate_structured_output
 
-    def mixed_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
+    def mixed_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
+        _ = _extra_kwargs
         if response_model is AssessmentGenerationResult:
             user_payload = json.loads(messages[1].content)
             point_id = int(user_payload["knowledge_points"][0]["id"])
@@ -550,7 +568,8 @@ def test_generation_batch_should_mark_failure_when_assessment_has_invalid_knowle
     )
     original_generate = OpenAICompatibleLlmService.generate_structured_output
 
-    def mixed_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
+    def mixed_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
+        _ = _extra_kwargs
         if response_model is AssessmentGenerationResult:
             return AssessmentGenerationResult(
                 blueprint_name="非法测评蓝图",
