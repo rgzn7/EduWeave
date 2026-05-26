@@ -19,6 +19,7 @@ from app.modules.courseware.router import router as courseware_router
 from app.modules.coverage.router import router as coverage_router
 from app.modules.curriculum.router import router as curriculum_router
 from app.modules.file_asset.router import router as file_asset_router
+from app.modules.generation_process.router import router as generation_process_router
 from app.modules.homework.router import router as homework_router
 from app.modules.knowledge.router import router as knowledge_router
 from app.modules.learner_profile.router import router as learner_profile_router
@@ -69,6 +70,7 @@ app.include_router(system_router)
 app.include_router(auth_router, prefix=settings.api_v1_prefix)
 app.include_router(file_asset_router, prefix=settings.api_v1_prefix)
 app.include_router(project_router, prefix=settings.api_v1_prefix)
+app.include_router(generation_process_router, prefix=settings.api_v1_prefix)
 app.include_router(textbook_router, prefix=settings.api_v1_prefix)
 app.include_router(learner_profile_router, prefix=settings.api_v1_prefix)
 app.include_router(parsing_router, prefix=settings.api_v1_prefix)

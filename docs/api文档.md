@@ -8,6 +8,7 @@
 - [认证](#认证)
 - [文件](#文件)
 - [项目](#项目)
+- [生成过程](#生成过程)
 - [教材](#教材)
 - [学情](#学情)
 - [解析](#解析)
@@ -478,6 +479,49 @@
     owner_user_id: integer  # 负责人主键
     current_textbook?: object  # 当前教材引用
     current_learner_profile?: object  # 当前学情引用
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+## 生成过程
+
+### GET `/api/v1/projects/{project_id}/generation-process`
+
+**获取项目生成过程**
+
+将项目当前的内部任务聚合成 6 个产品化展示步骤（MinerU 教材解析、学情理解、知识点梳理、课程规划、教案生成、覆盖检查），用于 Phase 2 页面展示。响应只包含面向用户的文案与状态，不暴露内部任务 ID、队列名、step_code 等细节。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `project_id` | integer | 是 | 项目主键 |
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    project_id: integer  # 项目主键
+    batch_id?: integer  # 最近一次生成批次主键
+    status: string  # 整体展示状态
+    current_step_code?: string  # 当前正在进行的展示步骤编码
+    steps: object  # 展示步骤列表，固定 6 步
   }
   timestamp: string  # 响应时间，UTC ISO8601 格式
   request_id: string  # 请求追踪 ID

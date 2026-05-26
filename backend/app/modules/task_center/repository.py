@@ -220,6 +220,26 @@ class TaskCenterRepository:
         )
         return self.session.scalar(statement)
 
+    def get_latest_task_by_biz_key(
+        self,
+        *,
+        module_code: str,
+        task_type: str,
+        biz_key: str,
+    ) -> TaskRecord | None:
+        """查询业务键下最近一条任务（不区分状态）。"""
+        statement = (
+            select(TaskRecord)
+            .where(
+                TaskRecord.module_code == module_code,
+                TaskRecord.task_type == task_type,
+                TaskRecord.biz_key == biz_key,
+            )
+            .order_by(TaskRecord.created_at.desc(), TaskRecord.id.desc())
+            .limit(1)
+        )
+        return self.session.scalar(statement)
+
     def get_task_by_id(self, task_id: int) -> TaskRecord | None:
         """按主键查询任务。"""
         statement = select(TaskRecord).where(TaskRecord.id == task_id)

@@ -487,6 +487,59 @@
         }
       }
     },
+    "/api/v1/projects/{project_id}/generation-process": {
+      "get": {
+        "tags": [
+          "生成过程"
+        ],
+        "summary": "获取项目生成过程",
+        "description": "将项目当前的内部任务聚合成 6 个产品化展示步骤（MinerU 教材解析、学情理解、知识点梳理、课程规划、教案生成、覆盖检查），用于 Phase 2 页面展示。响应只包含面向用户的文案与状态，不暴露内部任务 ID、队列名、step_code 等细节。",
+        "operationId": "generation_process_detail",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "项目主键",
+              "examples": [
+                1
+              ],
+              "title": "Project Id"
+            },
+            "description": "项目主键"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_GenerationProcessResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/projects/{project_id}/textbooks": {
       "post": {
         "tags": [
@@ -5067,6 +5120,61 @@
         ],
         "title": "ApiResponse[GenerationBatchDetailResponse]"
       },
+      "ApiResponse_GenerationProcessResponse_": {
+        "properties": {
+          "success": {
+            "title": "Success",
+            "description": "请求是否成功",
+            "examples": [
+              true
+            ]
+          },
+          "code": {
+            "title": "Code",
+            "description": "业务响应状态码",
+            "examples": [
+              200
+            ]
+          },
+          "message": {
+            "title": "Message",
+            "description": "响应消息",
+            "examples": [
+              "操作成功"
+            ]
+          },
+          "data": {
+            "description": "业务数据"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "description": "响应时间，UTC ISO8601 格式",
+            "examples": [
+              "2026-04-11T10:00:00.000000Z"
+            ]
+          },
+          "request_id": {
+            "title": "Request Id",
+            "description": "请求追踪 ID",
+            "examples": [
+              "a5c0f6b6-1234-5678-9abc-def012345678"
+            ]
+          },
+          "errors": {
+            "title": "Errors",
+            "description": "错误明细列表"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "code",
+          "message",
+          "timestamp",
+          "request_id"
+        ],
+        "title": "ApiResponse[GenerationProcessResponse]"
+      },
       "ApiResponse_HealthResponse_": {
         "properties": {
           "success": {
@@ -8966,6 +9074,121 @@
         ],
         "title": "GenerationBatchListItemResponse",
         "description": "生成批次列表项响应。"
+      },
+      "GenerationProcessResponse": {
+        "properties": {
+          "project_id": {
+            "title": "Project Id",
+            "description": "项目主键",
+            "examples": [
+              1
+            ]
+          },
+          "batch_id": {
+            "title": "Batch Id",
+            "description": "最近一次生成批次主键",
+            "examples": [
+              1
+            ]
+          },
+          "status": {
+            "title": "Status",
+            "description": "整体展示状态",
+            "examples": [
+              "running"
+            ]
+          },
+          "current_step_code": {
+            "title": "Current Step Code",
+            "description": "当前正在进行的展示步骤编码",
+            "examples": [
+              "lesson_plan_generate"
+            ]
+          },
+          "steps": {
+            "title": "Steps",
+            "description": "展示步骤列表，固定 6 步"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "status",
+          "steps"
+        ],
+        "title": "GenerationProcessResponse",
+        "description": "生成过程展示响应。"
+      },
+      "GenerationProcessStepResponse": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "description": "展示步骤编码",
+            "examples": [
+              "mineru_parse"
+            ]
+          },
+          "display_name": {
+            "title": "Display Name",
+            "description": "展示步骤名称",
+            "examples": [
+              "调用 MinerU 教材解析工具"
+            ]
+          },
+          "description": {
+            "title": "Description",
+            "description": "展示步骤说明",
+            "examples": [
+              "识别教材章节、页码、图表、题目和知识点。"
+            ]
+          },
+          "status": {
+            "title": "Status",
+            "description": "展示状态",
+            "examples": [
+              "running"
+            ]
+          },
+          "progress_percent": {
+            "title": "Progress Percent",
+            "description": "进度百分比",
+            "examples": [
+              60
+            ]
+          },
+          "summary": {
+            "title": "Summary",
+            "description": "面向用户的步骤摘要",
+            "examples": [
+              "已识别 12 页教材内容。"
+            ]
+          },
+          "started_at": {
+            "title": "Started At",
+            "description": "开始时间"
+          },
+          "finished_at": {
+            "title": "Finished At",
+            "description": "结束时间"
+          },
+          "error_message": {
+            "title": "Error Message",
+            "description": "面向用户的错误文案，仅失败时返回",
+            "examples": [
+              "教材解析失败，请确认上传文件是否为清晰的 PDF。"
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "display_name",
+          "description",
+          "status",
+          "progress_percent"
+        ],
+        "title": "GenerationProcessStepResponse",
+        "description": "生成过程展示步骤响应。"
       },
       "HTTPValidationError": {
         "properties": {
