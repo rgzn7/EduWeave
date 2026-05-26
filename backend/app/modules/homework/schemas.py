@@ -37,6 +37,7 @@ class HomeworkQuestionResponse(BaseSchema):
     homework_result_id: int = Field(description="作业结果主键", examples=[1])
     lesson_plan_id: int = Field(description="所属教案主键", examples=[1])
     knowledge_point_id: int | None = Field(default=None, description="知识点主键")
+    knowledge_point_name: str | None = Field(default=None, description="知识点名称，前端考查标签使用")
     question_no: int = Field(description="题号", examples=[1])
     question_type: str = Field(description="题型", examples=["single_choice"])
     difficulty_level: int | None = Field(default=None, description="难度等级")
@@ -46,6 +47,10 @@ class HomeworkQuestionResponse(BaseSchema):
     answer_text: str | None = Field(default=None, description="答案")
     analysis_text: str | None = Field(default=None, description="解析")
     source_trace_json: dict[str, Any] | None = Field(default=None, description="来源摘要")
+    question_basis_json: dict[str, Any] | None = Field(
+        default=None,
+        description="题目考查依据：包含知识点、章节、课次、教学目标、测评定位、依据说明与蓝图来源",
+    )
     created_at: datetime = Field(description="创建时间")
     updated_at: datetime = Field(description="更新时间")
 

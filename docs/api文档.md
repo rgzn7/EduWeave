@@ -2933,6 +2933,7 @@
       generation_batch_id: integer  # 生成批次主键
       paper_result_id: integer  # 试卷结果主键
       knowledge_point_id?: object  # 知识点主键
+      knowledge_point_name?: object  # 知识点名称，前端考查标签使用
       question_no: integer  # 题号
       question_type: string  # 题型
       difficulty_level?: object  # 难度等级
@@ -2942,6 +2943,7 @@
       answer_text?: object  # 答案
       analysis_text?: object  # 解析
       source_trace_json?: object  # 来源摘要
+      question_basis_json?: object  # 题目考查依据：包含知识点、章节、课次、教学目标、测评定位、依据说明与蓝图来源
       created_at: object  # 创建时间
       updated_at: object  # 更新时间
       paper_title: string  # 所属试卷标题
@@ -3367,6 +3369,7 @@
       homework_result_id: integer  # 作业结果主键
       lesson_plan_id: integer  # 所属教案主键
       knowledge_point_id?: object  # 知识点主键
+      knowledge_point_name?: object  # 知识点名称，前端考查标签使用
       question_no: integer  # 题号
       question_type: string  # 题型
       difficulty_level?: object  # 难度等级
@@ -3376,6 +3379,7 @@
       answer_text?: object  # 答案
       analysis_text?: object  # 解析
       source_trace_json?: object  # 来源摘要
+      question_basis_json?: object  # 题目考查依据：包含知识点、章节、课次、教学目标、测评定位、依据说明与蓝图来源
       created_at: object  # 创建时间
       updated_at: object  # 更新时间
       homework_title: string  # 所属作业标题

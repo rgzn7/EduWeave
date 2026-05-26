@@ -7,7 +7,7 @@
 import pytest
 
 from app.core.exceptions import BusinessErrorCode
-from app.modules.p0_models import HomeworkResult
+from app.modules.p0_models import HomeworkQuestion, HomeworkResult
 from test_assessment_api import build_other_auth_headers, create_generation_baseline, create_generation_batch
 from test_pipeline_curriculum_api import build_auth_headers, generation_test_stubs
 
@@ -57,6 +57,21 @@ def test_homework_task_create_should_produce_per_lesson_result(
     assert detail_payload["content_json"]["scene_type"] == "homework"
     assert detail_payload["content_json"]["scene_label"] == "课后作业"
     assert detail_payload["class_session_no"] == lesson_plan["class_session_no"]
+
+    # 验证题目考查依据字段
+    first_question = detail_payload["questions"][0]
+    assert first_question["knowledge_point_name"] == "乘法口诀"
+    basis = first_question["question_basis_json"]
+    assert basis is not None
+    assert basis["knowledge_point_id"] == first_question["knowledge_point_id"]
+    assert basis["knowledge_point_name"] == "乘法口诀"
+    assert basis["lesson_no"] == lesson_plan["class_session_no"]
+    assert basis["lesson_title"] == lesson_plan["lesson_title"]
+    assert basis["teaching_goal"] == "掌握乘法口诀"
+    assert basis["assessment_position"] in {"基础掌握题", "典型应用题", "综合提升题"}
+    assert "乘法口诀" in basis["basis_summary"]
+    assert basis["source"]["blueprint_type"] == "homework"
+    assert basis["source"]["blueprint_id"] == result_json["homework_blueprint_id"]
 
     duplicate_response = client.post(
         f"/api/v1/lesson-plans/{lesson_plan['id']}/homework-tasks",
@@ -132,6 +147,9 @@ def test_homework_questions_list_should_filter_by_lesson_plan(
     assert first_item["lesson_plan_id"] == lesson_plan["id"]
     assert first_item["homework_result_id"] == homework_result_id
     assert first_item["homework_title"]
+    # 列表项也应携带考查依据
+    assert first_item["knowledge_point_name"] == "乘法口诀"
+    assert first_item["question_basis_json"]["source"]["blueprint_type"] == "homework"
 
     by_result_response = client.get(
         f"/api/v1/homework-questions?homework_result_id={homework_result_id}",
@@ -290,3 +308,56 @@ def test_coverage_report_should_only_count_success_homework(
     refreshed_report = refresh_response.json()["data"]["report_json"]
     assert refreshed_report["artifact_coverage"]["homework_question"]["item_count"] == 0
     assert refreshed_report["assessment_quality"]["question_count"] == 0
+
+
+def test_homework_question_basis_should_persist_to_db_and_be_returned(
+    client,
+    seeded_session_factory,
+    generation_test_stubs,
+) -> None:
+    """作业题目生成时应把 question_basis_json 持久化到 DB；响应优先返回 DB 值。"""
+    _ = generation_test_stubs
+    headers = build_auth_headers(client)
+    project_id, knowledge_version_id, learner_profile_version_id = create_generation_baseline(client, headers)
+    batch_payload = create_generation_batch(client, headers, project_id, knowledge_version_id, learner_profile_version_id)
+    lesson_plan = _list_lesson_plans(client, headers, batch_payload["curriculum_plan_id"])[0]
+
+    create_response = client.post(
+        f"/api/v1/lesson-plans/{lesson_plan['id']}/homework-tasks",
+        headers=headers,
+    )
+    assert create_response.status_code == 201
+    homework_result_id = create_response.json()["data"]["result_json"]["homework_result_id"]
+
+    # 校验 DB 中 question_basis_json 已落库
+    session = seeded_session_factory()
+    try:
+        questions = (
+            session.query(HomeworkQuestion)
+            .filter(HomeworkQuestion.homework_result_id == homework_result_id)
+            .order_by(HomeworkQuestion.question_no.asc())
+            .all()
+        )
+        assert questions, "应至少落库一道作业题目"
+        first_basis = questions[0].question_basis_json
+        assert first_basis is not None, "question_basis_json 必须持久化"
+        assert first_basis["knowledge_point_name"] == "乘法口诀"
+        assert first_basis["source"]["blueprint_type"] == "homework"
+
+        # 篡改 DB 中的 basis_summary，确认响应层优先使用 DB 值而非实时回退
+        sentinel = "DB_PERSISTED_BASIS_SENTINEL"
+        mutated = dict(first_basis)
+        mutated["basis_summary"] = sentinel
+        questions[0].question_basis_json = mutated
+        session.commit()
+    finally:
+        session.close()
+
+    detail_response = client.get(
+        f"/api/v1/homework-results/{homework_result_id}",
+        headers=headers,
+    )
+    assert detail_response.status_code == 200
+    detail_payload = detail_response.json()["data"]
+    sentinel_question = next(q for q in detail_payload["questions"] if q["question_no"] == 1)
+    assert sentinel_question["question_basis_json"]["basis_summary"] == sentinel

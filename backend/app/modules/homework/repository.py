@@ -67,6 +67,13 @@ class HomeworkRepository:
         )
         return list(self.session.scalars(statement))
 
+    def list_knowledge_points_by_ids(self, ids: list[int]) -> list[KnowledgePoint]:
+        """按主键批量查询知识点。"""
+        if not ids:
+            return []
+        statement = select(KnowledgePoint).where(KnowledgePoint.id.in_(ids))
+        return list(self.session.scalars(statement))
+
     def list_chapter_nodes(self, knowledge_version_id: int) -> list[ChapterNode]:
         """查询知识版本下章节节点。"""
         statement = (
@@ -75,6 +82,18 @@ class HomeworkRepository:
             .order_by(ChapterNode.node_path.asc(), ChapterNode.id.asc())
         )
         return list(self.session.scalars(statement))
+
+    def list_chapter_nodes_by_ids(self, ids: list[int]) -> list[ChapterNode]:
+        """按主键批量查询章节节点。"""
+        if not ids:
+            return []
+        statement = select(ChapterNode).where(ChapterNode.id.in_(ids))
+        return list(self.session.scalars(statement))
+
+    def get_homework_blueprint(self, homework_blueprint_id: int) -> HomeworkBlueprint | None:
+        """按主键查询作业蓝图。"""
+        statement = select(HomeworkBlueprint).where(HomeworkBlueprint.id == homework_blueprint_id)
+        return self.session.scalar(statement)
 
     def get_next_homework_blueprint_version_no(self, lesson_plan_id: int) -> int:
         """获取指定教案下一个作业蓝图版本号。"""

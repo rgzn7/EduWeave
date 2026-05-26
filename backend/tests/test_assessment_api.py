@@ -145,6 +145,20 @@ def test_assessment_apis_should_query_results_and_protect_owner(
     assert len(paper_detail_payload["questions"]) == 10
     assert paper_detail_payload["questions"][0]["question_no"] == 1
 
+    # 验证题目考查依据字段
+    first_question = paper_detail_payload["questions"][0]
+    assert first_question["knowledge_point_name"] == "乘法口诀"
+    basis = first_question["question_basis_json"]
+    assert basis is not None
+    assert basis["knowledge_point_id"] == first_question["knowledge_point_id"]
+    assert basis["knowledge_point_name"] == "乘法口诀"
+    assert basis["assessment_position"] in {"基础掌握题", "典型应用题", "综合提升题"}
+    assert "乘法口诀" in basis["basis_summary"]
+    assert basis["source"]["blueprint_type"] == "assessment"
+    assert basis["source"]["blueprint_id"] == assessment_blueprint_id
+    assert basis["source"]["weight_percent"] == 100
+    assert basis["source"]["suggested_question_count"] == 10
+
     other_headers = build_other_auth_headers(client, seeded_session_factory)
     forbidden_blueprint_response = client.get(f"/api/v1/assessment-blueprints/{blueprint_id}", headers=other_headers)
     assert forbidden_blueprint_response.status_code == 404
@@ -185,6 +199,9 @@ def test_question_item_list_should_filter_and_protect_owner(
     assert first_item["paper_result_id"] == paper_id
     assert first_item["generation_batch_id"] == batch_payload["id"]
     knowledge_point_id = first_item["knowledge_point_id"]
+    # 列表项也应携带考查依据
+    assert first_item["knowledge_point_name"] == "乘法口诀"
+    assert first_item["question_basis_json"]["source"]["blueprint_type"] == "assessment"
 
     batch_response = client.get(
         f"/api/v1/question-items?generation_batch_id={batch_payload['id']}",

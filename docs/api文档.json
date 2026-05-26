@@ -9362,6 +9362,10 @@
             "title": "Knowledge Point Id",
             "description": "知识点主键"
           },
+          "knowledge_point_name": {
+            "title": "Knowledge Point Name",
+            "description": "知识点名称，前端考查标签使用"
+          },
           "question_no": {
             "title": "Question No",
             "description": "题号",
@@ -9403,6 +9407,10 @@
           "source_trace_json": {
             "title": "Source Trace Json",
             "description": "来源摘要"
+          },
+          "question_basis_json": {
+            "title": "Question Basis Json",
+            "description": "题目考查依据：包含知识点、章节、课次、教学目标、测评定位、依据说明与蓝图来源"
           },
           "created_at": {
             "title": "Created At",
@@ -9477,6 +9485,10 @@
             "title": "Knowledge Point Id",
             "description": "知识点主键"
           },
+          "knowledge_point_name": {
+            "title": "Knowledge Point Name",
+            "description": "知识点名称，前端考查标签使用"
+          },
           "question_no": {
             "title": "Question No",
             "description": "题号",
@@ -9518,6 +9530,10 @@
           "source_trace_json": {
             "title": "Source Trace Json",
             "description": "来源摘要"
+          },
+          "question_basis_json": {
+            "title": "Question Basis Json",
+            "description": "题目考查依据：包含知识点、章节、课次、教学目标、测评定位、依据说明与蓝图来源"
           },
           "created_at": {
             "title": "Created At",
@@ -14179,6 +14195,10 @@
             "title": "Knowledge Point Id",
             "description": "知识点主键"
           },
+          "knowledge_point_name": {
+            "title": "Knowledge Point Name",
+            "description": "知识点名称，前端考查标签使用"
+          },
           "question_no": {
             "title": "Question No",
             "description": "题号",
@@ -14220,6 +14240,10 @@
           "source_trace_json": {
             "title": "Source Trace Json",
             "description": "来源摘要"
+          },
+          "question_basis_json": {
+            "title": "Question Basis Json",
+            "description": "题目考查依据：包含知识点、章节、课次、教学目标、测评定位、依据说明与蓝图来源"
           },
           "created_at": {
             "title": "Created At",
@@ -14287,6 +14311,10 @@
             "title": "Knowledge Point Id",
             "description": "知识点主键"
           },
+          "knowledge_point_name": {
+            "title": "Knowledge Point Name",
+            "description": "知识点名称，前端考查标签使用"
+          },
           "question_no": {
             "title": "Question No",
             "description": "题号",
@@ -14328,6 +14356,10 @@
           "source_trace_json": {
             "title": "Source Trace Json",
             "description": "来源摘要"
+          },
+          "question_basis_json": {
+            "title": "Question Basis Json",
+            "description": "题目考查依据：包含知识点、章节、课次、教学目标、测评定位、依据说明与蓝图来源"
           },
           "created_at": {
             "title": "Created At",

@@ -26,12 +26,17 @@ from app.modules.homework.schemas import (
     HomeworkResultDetailResponse,
     HomeworkResultListItemResponse,
 )
-from app.modules.p0_models import HomeworkResult, LessonPlan
+from app.modules.p0_models import HomeworkQuestion, HomeworkResult, LessonPlan
 from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.schemas import TaskListItemResponse
 from app.modules.task_center.service import TaskCenterService
 from app.shared.document import DocumentExportService
 from app.shared.queue import dispatch_task
+from app.shared.question_basis import (
+    build_question_basis,
+    extract_first_teaching_goal,
+    index_blueprint_kp_weights,
+)
 
 
 class HomeworkService:
@@ -199,14 +204,35 @@ class HomeworkService:
             question_type=question_type,
             difficulty_level=difficulty_level,
         )
-        items = [
-            HomeworkQuestionListItemResponse(
-                **HomeworkQuestionResponse.model_validate(question, from_attributes=True).model_dump(),
-                homework_title=homework_result.title,
-                class_session_no=lesson_plan.class_session_no,
+        # 同一作业共享一份蓝图与教案，先按作业分组以便批量装配考查依据
+        questions_by_result: dict[int, list[HomeworkQuestion]] = {}
+        result_lookup: dict[int, HomeworkResult] = {}
+        lesson_plan_lookup: dict[int, LessonPlan] = {}
+        for question, homework_result, lesson_plan in rows:
+            questions_by_result.setdefault(homework_result.id, []).append(question)
+            result_lookup[homework_result.id] = homework_result
+            lesson_plan_lookup[homework_result.id] = lesson_plan
+
+        enriched_by_question_id: dict[int, HomeworkQuestionResponse] = {}
+        for result_id, grouped_questions in questions_by_result.items():
+            enriched = self._build_question_items_with_basis(
+                result_lookup[result_id],
+                lesson_plan_lookup[result_id],
+                grouped_questions,
             )
-            for question, homework_result, lesson_plan in rows
-        ]
+            for question_response in enriched:
+                enriched_by_question_id[question_response.id] = question_response
+
+        items: list[HomeworkQuestionListItemResponse] = []
+        for question, homework_result, lesson_plan in rows:
+            question_response = enriched_by_question_id[question.id]
+            items.append(
+                HomeworkQuestionListItemResponse(
+                    **question_response.model_dump(),
+                    homework_title=homework_result.title,
+                    class_session_no=lesson_plan.class_session_no,
+                )
+            )
         return items, total_count
 
     def export_homework_result_docx(
@@ -306,10 +332,11 @@ class HomeworkService:
         lesson_plan: LessonPlan | None,
     ) -> HomeworkResultDetailResponse:
         """构造作业结果详情。"""
-        questions = [
-            HomeworkQuestionResponse.model_validate(question, from_attributes=True)
-            for question in self.repository.list_homework_questions(homework_result.id)
-        ]
+        questions = self._build_question_items_with_basis(
+            homework_result,
+            lesson_plan,
+            self.repository.list_homework_questions(homework_result.id),
+        )
         base = HomeworkResultDetailResponse.model_validate(homework_result, from_attributes=True)
         return base.model_copy(
             update={
@@ -318,3 +345,57 @@ class HomeworkService:
                 "questions": questions,
             }
         )
+
+    def _build_question_items_with_basis(
+        self,
+        homework_result: HomeworkResult,
+        lesson_plan: LessonPlan | None,
+        homework_questions: list[HomeworkQuestion],
+    ) -> list[HomeworkQuestionResponse]:
+        """为作业题目装配 knowledge_point_name 与 question_basis_json。"""
+        if not homework_questions:
+            return []
+        knowledge_point_ids = {q.knowledge_point_id for q in homework_questions if q.knowledge_point_id is not None}
+        knowledge_points = {
+            kp.id: kp for kp in self.repository.list_knowledge_points_by_ids(list(knowledge_point_ids))
+        }
+        chapter_node_ids = [
+            kp.chapter_node_id for kp in knowledge_points.values() if kp.chapter_node_id is not None
+        ]
+        chapter_nodes = {
+            node.id: node for node in self.repository.list_chapter_nodes_by_ids(chapter_node_ids)
+        }
+        blueprint = self.repository.get_homework_blueprint(homework_result.homework_blueprint_id)
+        blueprint_kp_weights = index_blueprint_kp_weights(blueprint.content_json if blueprint else None)
+        teaching_goal = extract_first_teaching_goal(lesson_plan.content_json if lesson_plan else None)
+
+        responses: list[HomeworkQuestionResponse] = []
+        for question in homework_questions:
+            base = HomeworkQuestionResponse.model_validate(question, from_attributes=True)
+            knowledge_point = knowledge_points.get(question.knowledge_point_id) if question.knowledge_point_id else None
+            chapter_node = (
+                chapter_nodes.get(knowledge_point.chapter_node_id)
+                if knowledge_point and knowledge_point.chapter_node_id is not None
+                else None
+            )
+            # 优先使用持久化的 question_basis_json，DB 为空时回退到实时聚合（兼容历史数据）
+            basis = question.question_basis_json or build_question_basis(
+                scene="homework",
+                knowledge_point=knowledge_point,
+                chapter_node=chapter_node,
+                lesson_plan=lesson_plan,
+                teaching_goal=teaching_goal,
+                difficulty_level=question.difficulty_level,
+                blueprint_kp_weights=blueprint_kp_weights,
+                blueprint_type="homework",
+                blueprint_id=homework_result.homework_blueprint_id,
+            )
+            responses.append(
+                base.model_copy(
+                    update={
+                        "knowledge_point_name": knowledge_point.point_name if knowledge_point else None,
+                        "question_basis_json": basis,
+                    }
+                )
+            )
+        return responses
