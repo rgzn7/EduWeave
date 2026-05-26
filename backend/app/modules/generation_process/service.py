@@ -41,6 +41,7 @@ from app.modules.p0_models import (
     Project,
     TaskRecord,
 )
+from app.modules.orchestrator.repository import OrchestratorRepository
 from app.modules.parsing.repository import ParsingRepository
 from app.modules.project.repository import ProjectRepository
 from app.modules.task_center.repository import TaskCenterRepository
@@ -154,6 +155,7 @@ class GenerationProcessService:
         self.project_repository = ProjectRepository(session)
         self.task_repository = TaskCenterRepository(session)
         self.parsing_repository = ParsingRepository(session)
+        self.orchestrator_repository = OrchestratorRepository(session)
 
     def get_process(self, *, owner_user_id: int, project_id: int) -> GenerationProcessResponse:
         """聚合并返回项目当前生成过程。"""
@@ -163,12 +165,19 @@ class GenerationProcessService:
 
         step_contexts = self._collect_step_contexts(project)
         steps = [self._build_step_response(ctx) for ctx in step_contexts]
-        overall_status, current_step_code = self._compute_overall_status(steps)
+        # 当前活跃的一键生成 run 决定整体细化状态（waiting_dispatch / blocked / waiting_user_confirm）
+        active_run = self.orchestrator_repository.get_active_run_for_project(project.id)
+        overall_status, status_detail, blocked_reason, current_step_code = self._compute_overall_status(
+            steps, active_run
+        )
 
         return GenerationProcessResponse(
             project_id=project.id,
             batch_id=project.latest_generation_batch_id,
+            generation_run_id=active_run.id if active_run is not None else None,
             status=overall_status,
+            status_detail=status_detail,
+            blocked_reason=blocked_reason,
             current_step_code=current_step_code,
             steps=steps,
         )
@@ -252,6 +261,7 @@ class GenerationProcessService:
                 display_name=ctx.display_name,
                 description=ctx.description,
                 status="pending",
+                status_detail=None,
                 progress_percent=0,
                 summary=None,
                 started_at=None,
@@ -262,17 +272,28 @@ class GenerationProcessService:
         display_status = INTERNAL_TO_DISPLAY_STATUS.get(task.task_status, "pending")
         summary = self._build_summary(ctx, display_status)
         error_message = self._build_error_message(ctx.code, task, display_status)
+        step_status_detail = self._compute_step_status_detail(task, display_status)
         return GenerationProcessStepResponse(
             code=ctx.code,
             display_name=ctx.display_name,
             description=ctx.description,
             status=display_status,
+            status_detail=step_status_detail,
             progress_percent=int(task.progress_percent or 0),
             summary=summary,
             started_at=task.started_at,
             finished_at=task.finished_at,
             error_message=error_message,
         )
+
+    @staticmethod
+    def _compute_step_status_detail(task: TaskRecord, display_status: str) -> str | None:
+        """识别 step 的 retrying 状态：task 因 reaper 重排后回到 pending 且带历史错误码。"""
+        if display_status != "pending":
+            return None
+        if (task.retry_count or 0) > 0 and task.last_error_code:
+            return "retrying"
+        return None
 
     def _build_summary(self, ctx: _StepContext, display_status: str) -> str | None:
         """根据展示状态拼接面向用户的摘要文案。"""
@@ -363,19 +384,57 @@ class GenerationProcessService:
     @staticmethod
     def _compute_overall_status(
         steps: list[GenerationProcessStepResponse],
-    ) -> tuple[str, str | None]:
-        """根据 6 步状态计算整体状态与当前步骤编码。"""
+        active_run=None,
+    ) -> tuple[str, str | None, str | None, str | None]:
+        """根据 6 步状态计算 (整体状态, 细化状态, blocked_reason, 当前步骤编码)。
+
+        细化状态优先级：blocked > waiting_user_confirm > retrying > waiting_dispatch。
+        整体状态保持 pending/running/succeeded/failed 四值；细化状态不参与该枚举。
+        """
+        # 失败优先
         for step in steps:
             if step.status == "failed":
-                return "failed", step.code
+                return "failed", None, None, step.code
+
+        # 来自 active_run 的高优先级细化语义
+        run_blocked_reason = None
+        run_detail: str | None = None
+        if active_run is not None:
+            if active_run.run_status == "waiting_user_confirm":
+                run_detail = "waiting_user_confirm"
+            elif active_run.run_status == "running" and active_run.blocked_reason:
+                run_detail = "blocked"
+                run_blocked_reason = active_run.blocked_reason
+
+        # 来自 step 的 retrying 细化
+        retrying_step = next((step for step in steps if step.status_detail == "retrying"), None)
+        # 有 running step → integrate 步骤层级 retrying，整体仍 running
         for step in steps:
             if step.status == "running":
-                return "running", step.code
+                if run_detail is not None:
+                    return "running", run_detail, run_blocked_reason, step.code
+                if retrying_step is not None:
+                    return "running", "retrying", None, retrying_step.code
+                return "running", None, None, step.code
+
         if all(step.status == "succeeded" for step in steps):
-            return "succeeded", None
+            return "succeeded", None, None, None
+
         if any(step.status == "succeeded" for step in steps):
-            for step in steps:
-                if step.status == "pending":
-                    return "running", step.code
-            return "running", None
-        return "pending", None
+            # 部分完成但没有 running step → 等待后端调度下一步
+            next_pending = next((step for step in steps if step.status == "pending"), None)
+            if run_detail is not None:
+                return "running", run_detail, run_blocked_reason, (next_pending.code if next_pending else None)
+            if retrying_step is not None:
+                return "running", "retrying", None, retrying_step.code
+            if active_run is not None and active_run.run_status == "running":
+                return "running", "waiting_dispatch", None, (next_pending.code if next_pending else None)
+            return "running", None, None, (next_pending.code if next_pending else None)
+
+        # 全 pending：若 active_run 在跑，说明等后端调度起步
+        if active_run is not None and active_run.run_status in {"running", "pending", "waiting_user_confirm"}:
+            next_pending = next((step for step in steps if step.status == "pending"), None)
+            if run_detail is not None:
+                return "running", run_detail, run_blocked_reason, (next_pending.code if next_pending else None)
+            return "running", "waiting_dispatch", None, (next_pending.code if next_pending else None)
+        return "pending", None, None, None

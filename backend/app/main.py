@@ -24,6 +24,7 @@ from app.modules.homework.router import router as homework_router
 from app.modules.knowledge.router import router as knowledge_router
 from app.modules.learner_profile.router import router as learner_profile_router
 from app.modules.lesson_plan.router import router as lesson_plan_router
+from app.modules.orchestrator.router import router as orchestrator_router
 from app.modules.parsing.router import router as parsing_router
 from app.modules.pipeline.router import router as pipeline_router
 from app.modules.project.router import router as project_router
@@ -76,6 +77,7 @@ app.include_router(learner_profile_router, prefix=settings.api_v1_prefix)
 app.include_router(parsing_router, prefix=settings.api_v1_prefix)
 app.include_router(knowledge_router, prefix=settings.api_v1_prefix)
 app.include_router(pipeline_router, prefix=settings.api_v1_prefix)
+app.include_router(orchestrator_router, prefix=settings.api_v1_prefix)
 app.include_router(curriculum_router, prefix=settings.api_v1_prefix)
 app.include_router(lesson_plan_router, prefix=settings.api_v1_prefix)
 app.include_router(assessment_router, prefix=settings.api_v1_prefix)

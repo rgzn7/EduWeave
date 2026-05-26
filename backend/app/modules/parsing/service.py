@@ -51,11 +51,11 @@ from app.modules.parsing.schemas import (
     ParseVersionEvidenceSummaryResponse,
     ParseVersionListItemResponse,
 )
+from app.modules.task_center.heartbeat import dispatch_with_attempt
 from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.schemas import TaskListItemResponse
 from app.modules.task_center.service import TaskCenterService
 from app.shared.mineru import MineruDocumentService
-from app.shared.queue import dispatch_task
 from app.shared.storage import ObsStorageClient
 from app.shared.utils import DateTimeUtil
 from app.shared.utils.page_range_util import parse_page_range_text
@@ -95,9 +95,11 @@ class ParsingService:
                 "set_as_current_on_success": request.set_as_current_on_success,
             },
         )
-        dispatch_result = dispatch_task(
-            "app.modules.parsing.tasks.run_parse_task",
-            {
+        dispatch_result = dispatch_with_attempt(
+            self.task_repository,
+            task=parse_task,
+            callable_path="app.modules.parsing.tasks.run_parse_task",
+            payload={
                 "task_record_id": parse_task.id,
                 "textbook_version_id": textbook_version_id,
                 "operator_user_id": owner_user_id,
@@ -105,7 +107,6 @@ class ParsingService:
                 "set_as_current_on_success": request.set_as_current_on_success,
             },
             queue=PARSING_QUEUE_NAME,
-            session=self.session,
         )
         if dispatch_result.worker_task_id:
             parse_task.worker_task_id = dispatch_result.worker_task_id
@@ -143,9 +144,11 @@ class ParsingService:
                 "set_as_current_on_success": request.set_as_current_on_success,
             },
         )
-        dispatch_result = dispatch_task(
-            "app.modules.parsing.tasks.run_reparse_task",
-            {
+        dispatch_result = dispatch_with_attempt(
+            self.task_repository,
+            task=task,
+            callable_path="app.modules.parsing.tasks.run_reparse_task",
+            payload={
                 "task_record_id": task.id,
                 "parse_version_id": parse_version_id,
                 "operator_user_id": owner_user_id,
@@ -154,7 +157,6 @@ class ParsingService:
                 "set_as_current_on_success": request.set_as_current_on_success,
             },
             queue=PARSING_QUEUE_NAME,
-            session=self.session,
         )
         if dispatch_result.worker_task_id:
             task.worker_task_id = dispatch_result.worker_task_id
@@ -300,6 +302,22 @@ class ParsingService:
         self.repository.save(parse_version)
         self.session.commit()
         self.session.refresh(parse_version)
+        # 触发 orchestrator 钩子：若有停在 waiting_user_confirm 的 run，自动续跑
+        try:
+            from app.modules.orchestrator.service import OrchestratorService  # 延迟导入避免循环
+
+            OrchestratorService(self.session).advance_after_parse_confirmed(
+                parse_version=parse_version,
+                owner_user_id=owner_user_id,
+            )
+        except Exception:  # noqa: BLE001
+            from app.core.logging import get_logger as _get_logger
+
+            _get_logger(__name__).warning(
+                "orchestrator parse_confirmed hook 调用失败",
+                parse_version_id=parse_version.id,
+                exc_info=True,
+            )
         return ParseVersionDetailResponse(**self.build_parse_version_response(parse_version).model_dump())
 
     def list_parse_pages(

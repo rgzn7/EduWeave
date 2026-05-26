@@ -26,6 +26,11 @@ from app.modules.knowledge.schemas import (
     KnowledgeChapterPointExtractionResult,
 )
 from app.modules.knowledge.service import _build_knowledge_version_model, upsert_vectors_for_knowledge_version
+from app.modules.task_center.heartbeat import (
+    StaleAttemptError,
+    TaskHeartbeat,
+    ensure_attempt,
+)
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleEmbeddingService, OpenAICompatibleLlmService
@@ -44,10 +49,14 @@ def run_extract_task(payload: dict) -> dict[str, int]:
     task = task_repository.get_task_by_id(payload["task_record_id"])
     step_map = _get_step_map(task_repository, payload["task_record_id"])
     now = DateTimeUtil.now_utc()
+    attempt_id = ensure_attempt(task_repository, payload["task_record_id"], payload.get("execution_attempt_id"))
+    heartbeat = TaskHeartbeat(session, payload["task_record_id"], attempt_id)
 
     try:
         if task is None:
             raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "知识抽取任务不存在")
+        if task.execution_attempt_id and task.execution_attempt_id != attempt_id:
+            raise StaleAttemptError(task.id, attempt_id)
         _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="prepare_parse_source", progress_percent=10, started_at=now)
         _mark_step(step_map["prepare_parse_source"], TASK_STATUS_PROCESSING, 20, started_at=now)
         task_repository.save(task)
@@ -91,10 +100,13 @@ def run_extract_task(payload: dict) -> dict[str, int]:
             task_repository.save(step)
         session.commit()
 
+        # 章节边界识别 LLM 调用——耗时较长，调用前后 touch 心跳
+        heartbeat.touch()
         boundary_result = llm_service.generate_structured_output(
             messages=_build_chapter_boundary_messages(parse_version=parse_version, line_index=line_index),
             response_model=KnowledgeChapterBoundaryResult,
         )
+        heartbeat.touch()
         try:
             chapter_drafts = build_chapter_drafts_from_boundaries(boundary_result.items, line_index)
         except ValueError as exc:
@@ -108,12 +120,25 @@ def run_extract_task(payload: dict) -> dict[str, int]:
         if not semantic_chunk_drafts:
             raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "章节切块结果为空")
 
+        # 切块完成后初始化 step detail，让前端立刻能看到总块数
+        total_chunks = len(semantic_chunk_drafts)
+        heartbeat.update_step_detail(
+            step_id=step_map["invoke_llm_extract"].id,
+            progress_percent=10,
+            detail_json={
+                "processed_chunks": 0,
+                "total_chunks": total_chunks,
+                "chapter_count": len(chapter_drafts),
+            },
+        )
+
         point_drafts = []
         chapter_summaries: list[dict] = []
-        for semantic_chunk_draft in semantic_chunk_drafts:
+        for chunk_index, semantic_chunk_draft in enumerate(semantic_chunk_drafts, start=1):
             chapter_draft = next(
                 chapter for chapter in chapter_drafts if chapter.draft_id == semantic_chunk_draft.chapter_ref_id
             )
+            heartbeat.touch()
             point_result = llm_service.generate_structured_output(
                 messages=_build_chapter_point_extraction_messages(
                     parse_version=parse_version,
@@ -142,6 +167,19 @@ def run_extract_task(payload: dict) -> dict[str, int]:
                     "summary_json": point_result.summary_json,
                 }
             )
+            # 每完成一个 chunk → 推进 task 进度（35→60 线性映射），并把已处理 / 总块数写到 step detail
+            chunk_progress = 35 + int(25 * chunk_index / total_chunks)
+            heartbeat.tick(progress_percent=chunk_progress, current_stage="invoke_llm_extract")
+            heartbeat.update_step_detail(
+                step_id=step_map["invoke_llm_extract"].id,
+                progress_percent=int(100 * chunk_index / total_chunks),
+                detail_json={
+                    "processed_chunks": chunk_index,
+                    "total_chunks": total_chunks,
+                    "chapter_count": len(chapter_drafts),
+                    "current_chapter_path": chapter_draft.node_path,
+                },
+            )
         if not point_drafts:
             raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 未返回可落库的知识点")
 
@@ -153,6 +191,9 @@ def run_extract_task(payload: dict) -> dict[str, int]:
                 "chapter_count": len(chapter_drafts),
                 "point_count": len(point_drafts),
                 "llm_call_count": len(semantic_chunk_drafts) + 1,
+                # 保留循环中累积的处理进度，便于复盘
+                "processed_chunks": len(semantic_chunk_drafts),
+                "total_chunks": len(semantic_chunk_drafts),
             },
             finished_at=DateTimeUtil.now_utc(),
         )
@@ -201,6 +242,8 @@ def run_extract_task(payload: dict) -> dict[str, int]:
             task_repository.save(step)
         session.commit()
 
+        # 向量写入是较长的 IO+embedding 阶段，触发前后各 touch 一次
+        heartbeat.touch()
         vector_counts = upsert_vectors_for_knowledge_version(
             repository=repository,
             parse_version=parse_version,
@@ -210,6 +253,7 @@ def run_extract_task(payload: dict) -> dict[str, int]:
             embedding_service=embedding_service,
             vector_service=vector_service,
         )
+        heartbeat.touch()
 
         _mark_step(
             step_map["upsert_vectors"],
@@ -235,12 +279,17 @@ def run_extract_task(payload: dict) -> dict[str, int]:
         for step in step_map.values():
             task_repository.save(step)
         session.commit()
+        _notify_orchestrator_knowledge_success(session=session, task=task, knowledge_version_id=knowledge_version.id)
         return {
             "knowledge_version_id": knowledge_version.id,
             "chapter_count": len(snapshot.chapters),
             "point_count": len(snapshot.points),
             **vector_counts,
         }
+    except StaleAttemptError:
+        # 被新 attempt 抢占，安静退出；新 worker 已接管，不再写任何 task 状态
+        session.rollback()
+        return {"stale_attempt": True}
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         _mark_task_failure(task_repository, repository, payload, exc)
@@ -372,12 +421,41 @@ def _mark_task_failure(task_repository: TaskCenterRepository, repository: Knowle
     task = task_repository.get_task_by_id(payload["task_record_id"])
     if task is None:
         return
-    requeue_or_fail_task(
+    terminal_failed = not requeue_or_fail_task(
         task_repository,
         task,
         exc=exc,
         fallback_error_code=BusinessErrorCode.KNOWLEDGE_TASK_FAILED,
     )
+    if terminal_failed:
+        _notify_orchestrator_failure(session=task_repository.session, task=task, exc=exc)
+
+
+def _notify_orchestrator_knowledge_success(*, session, task, knowledge_version_id: int) -> None:
+    """知识抽取成功后通知 orchestrator 续跑课程规划。"""
+    try:
+        from app.modules.orchestrator.service import OrchestratorService
+
+        OrchestratorService(session).advance_after_knowledge_success(task=task, knowledge_version_id=knowledge_version_id)
+    except Exception:  # noqa: BLE001
+        from app.core.logging import get_logger as _get_logger
+
+        _get_logger(__name__).warning("orchestrator knowledge hook 调用失败", task_id=task.id, exc_info=True)
+
+
+def _notify_orchestrator_failure(*, session, task, exc) -> None:
+    """终态失败时通知 orchestrator 把 run 标为 failed。"""
+    try:
+        from app.core.exceptions import AppException as _AppException
+        from app.modules.orchestrator.service import OrchestratorService
+
+        error_code = exc.code.value if isinstance(exc, _AppException) else type(exc).__name__
+        error_message = exc.message if isinstance(exc, _AppException) else str(exc)
+        OrchestratorService(session).mark_run_failed(task=task, error_code=error_code, error_message=error_message)
+    except Exception:  # noqa: BLE001
+        from app.core.logging import get_logger as _get_logger
+
+        _get_logger(__name__).warning("orchestrator failure hook 调用失败", task_id=task.id, exc_info=True)
 
 
 def _create_session(payload: dict) -> Session:

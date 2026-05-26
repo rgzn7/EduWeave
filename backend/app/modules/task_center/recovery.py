@@ -31,6 +31,7 @@ from app.core.database import SessionLocal
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.core.logging import get_logger
 from app.modules.p0_models import TaskRecord
+from app.modules.task_center.heartbeat import StaleAttemptError, start_attempt
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.queue.app import celery_app, dispatch_task
 from app.shared.utils import DateTimeUtil
@@ -55,15 +56,28 @@ TASK_HANDLER_REGISTRY: dict[str, str] = {
 _STALE_REAP_BATCH_LIMIT = 50
 _ERROR_MESSAGE_MAX_LENGTH = 500
 
+# 阶段级 stale 阈值覆盖（秒）：按 (task_type, current_stage) 命中后替换默认 task_stale_threshold_seconds。
+# 知识抽取的 LLM 阶段单次抽取很慢，130 页教材合理用时即达 30+ 分钟，沿用默认阈值会误判。
+STAGE_STALE_OVERRIDES: dict[tuple[str, str], int] = {
+    (KNOWLEDGE_EXTRACT_TASK_TYPE, "invoke_llm_extract"): 3600,
+    (LESSON_PLAN_GENERATE_TASK_TYPE, "invoke_llm_lesson_plan"): 3600,
+    (COVERAGE_ANALYZE_TASK_TYPE, "invoke_llm_coverage"): 1800,
+    (TEXTBOOK_PARSE_TASK_TYPE, "poll_mineru"): 1800,
+    (TEXTBOOK_REPARSE_TASK_TYPE, "poll_mineru"): 1800,
+}
+
 
 def is_retryable_error(exc: Exception | None) -> bool:
     """判断异常是否值得重试。
 
     业务校验类 AppException（如各类 NOT_FOUND、BASELINE_INVALID）重试无意义；
     基础设施/外部依赖类瞬时错误与意外异常默认可重试。
+    StaleAttemptError 永远不可重试——被抢占的 worker 必须安静退出，不能再触发新一轮重排。
     """
     if exc is None:
         return True
+    if isinstance(exc, StaleAttemptError):
+        return False
     if isinstance(exc, AppException):
         return exc.code.value in RETRYABLE_TASK_ERROR_CODES
     return True
@@ -73,13 +87,16 @@ def build_dispatch_payload(task: TaskRecord) -> dict:
     """从任务记录重建派发 payload。
 
     create_task 落库的 payload_json 不含 task_record_id、operator_user_id
-    （后者是独立列），需补齐这些 worker 必读字段。数据库连接串不在此重建，
-    由 dispatch_task 在内联执行时按需注入。
+    （后者是独立列），需补齐这些 worker 必读字段。execution_attempt_id 必须
+    一同携带，worker 才能在 CAS UPDATE 中校验自己是否仍是当前权威执行者。
+    数据库连接串不在此重建，由 dispatch_task 在内联执行时按需注入。
     """
     payload = dict(task.payload_json or {})
     payload["task_record_id"] = task.id
     payload["generation_batch_id"] = task.generation_batch_id
     payload["operator_user_id"] = task.operator_user_id
+    if task.execution_attempt_id:
+        payload["execution_attempt_id"] = task.execution_attempt_id
     return payload
 
 
@@ -98,7 +115,18 @@ def requeue_or_fail_task(
     返回 True 表示已重排（task_status=pending 并重新派发）；
     返回 False 表示已判终态失败（task_status=failure）。
     调用方仅需在返回 False 时补充模块级联失败副作用（如生成批次状态）。
+
+    StaleAttemptError 视为 no-op：被抢占的 worker 不应触发任何 task_record 写入，
+    直接返回 False（不重排、不判失败）。新权威 worker 已在运行，状态由其推进。
     """
+    if isinstance(exc, StaleAttemptError):
+        logger.info(
+            "忽略被抢占 worker 的 StaleAttemptError，跳过重排/判失败",
+            task_id=task.id,
+            task_type=task.task_type,
+        )
+        return False
+
     settings = get_settings()
     now = DateTimeUtil.now_utc()
     retryable = force_retryable if force_retryable is not None else is_retryable_error(exc)
@@ -114,12 +142,15 @@ def requeue_or_fail_task(
         retryable = False
 
     if retryable and task.retry_count < task.max_retry_count:
+        # 先 best-effort 终止原 worker；attempt_id 轮换是最终安全网，revoke 没生效也不会双写
+        _revoke_worker_if_present(task)
         task.retry_count += 1
         task.task_status = TASK_STATUS_PENDING
         task.current_stage = None
         task.progress_percent = 0
         task.started_at = None
         task.worker_task_id = None
+        task.last_heartbeat_at = None
         task.last_error_code = resolved_error_code
         task.last_error_message = _truncate(resolved_error_message)
         task_repository.save(task)
@@ -129,6 +160,9 @@ def requeue_or_fail_task(
             step.started_at = None
             step.finished_at = None
             task_repository.save(step)
+        # 轮换 attempt_id：原 worker 即使仍在跑，下一次 CAS UPDATE 会因 rowcount==0 退出
+        new_attempt_id = start_attempt(task_repository, task.id)
+        task.execution_attempt_id = new_attempt_id
         task_repository.session.commit()
         countdown = settings.task_retry_backoff_base_seconds * (2 ** (task.retry_count - 1))
         _redispatch_task(task, callable_path, countdown, task_repository.session)
@@ -137,6 +171,7 @@ def requeue_or_fail_task(
             task_id=task.id,
             task_type=task.task_type,
             retry_count=task.retry_count,
+            new_attempt_id=new_attempt_id,
         )
         return True
 
@@ -164,36 +199,65 @@ def requeue_or_fail_task(
     return False
 
 
+def _stage_threshold(task: TaskRecord, default_threshold: int) -> int:
+    """按 (task_type, current_stage) 命中阶段级阈值覆盖。"""
+    if task.current_stage is None:
+        return default_threshold
+    return STAGE_STALE_OVERRIDES.get((task.task_type, task.current_stage), default_threshold)
+
+
 def reap_stale_tasks_once(session, *, threshold_seconds: int, limit: int = _STALE_REAP_BATCH_LIMIT) -> dict[str, int]:
     """扫描一批僵尸任务并逐条重排或判失败。
 
-    僵尸判定：task_status 仍为 processing，且 updated_at 超过阈值未更新——
-    各任务每个步骤推进都会写库刷新 updated_at，长任务正常推进不会被误判。
+    僵尸判定：
+    - task_status 仍为 processing
+    - COALESCE(last_heartbeat_at, updated_at) 超过阈值未更新
+      （长任务通过 TaskHeartbeat.touch/tick 主动刷 heartbeat，业务进度推进同步刷 updated_at；
+       历史在途 / 短任务无 heartbeat 时退化为 updated_at 判定，与旧行为一致）
+    - 不在等待外部结果的合法停泊阶段（EXTERNAL_WAIT_TASK_STAGES，如 Raccoon PPT 远程轮询）
+
     阈值比较使用数据库自身时钟（NOW()），规避应用与 MySQL 的时区差异。
-    等待外部异步结果阶段（EXTERNAL_WAIT_TASK_STAGES）的任务并无 worker 在执行，
-    属于合法停泊状态，必须排除，否则会把正常等待 Raccoon PPT 的课件任务误判重排。
+    候选集合用默认阈值粗筛后，再按 STAGE_STALE_OVERRIDES 在 Python 端做阶段级二次校验，
+    避免 SQL 里写一个巨大的 CASE WHEN。
     """
     interval_clause = text(f"INTERVAL {int(threshold_seconds)} SECOND")
     stale_cutoff = func.date_sub(func.now(), interval_clause)
-    stale_tasks = list(
+    activity_at = func.coalesce(TaskRecord.last_heartbeat_at, TaskRecord.updated_at)
+    candidate_tasks = list(
         session.scalars(
             select(TaskRecord)
             .where(
                 TaskRecord.task_status == TASK_STATUS_PROCESSING,
-                TaskRecord.updated_at < stale_cutoff,
+                activity_at < stale_cutoff,
                 or_(
                     TaskRecord.current_stage.is_(None),
                     TaskRecord.current_stage.not_in(tuple(EXTERNAL_WAIT_TASK_STAGES)),
                 ),
             )
-            .order_by(TaskRecord.updated_at.asc())
+            .order_by(activity_at.asc())
             .limit(limit)
         )
     )
     task_repository = TaskCenterRepository(session)
     requeued_count = 0
     failed_count = 0
-    for task in stale_tasks:
+    skipped_count = 0
+    for task in candidate_tasks:
+        # 阶段级阈值：知识抽取等已知长阶段适当放宽
+        stage_threshold = _stage_threshold(task, threshold_seconds)
+        if stage_threshold > threshold_seconds:
+            # 用 DB 自身时钟做秒级差值比较，规避应用与 MySQL 的时区差异
+            elapsed_seconds = session.execute(
+                text(
+                    "SELECT TIMESTAMPDIFF(SECOND, "
+                    "COALESCE(last_heartbeat_at, updated_at), NOW(3)) "
+                    "FROM task_record WHERE id = :task_id"
+                ),
+                {"task_id": task.id},
+            ).scalar()
+            if elapsed_seconds is not None and int(elapsed_seconds) < stage_threshold:
+                skipped_count += 1
+                continue
         retried = requeue_or_fail_task(
             task_repository,
             task,
@@ -205,7 +269,12 @@ def reap_stale_tasks_once(session, *, threshold_seconds: int, limit: int = _STAL
             requeued_count += 1
         else:
             failed_count += 1
-    return {"scanned": len(stale_tasks), "requeued": requeued_count, "failed": failed_count}
+    return {
+        "scanned": len(candidate_tasks),
+        "requeued": requeued_count,
+        "failed": failed_count,
+        "skipped_by_stage": skipped_count,
+    }
 
 
 @celery_app.task(name="system.reap_stale_tasks")
@@ -220,6 +289,22 @@ def reap_stale_tasks() -> dict[str, int]:
         return summary
     finally:
         session.close()
+
+
+def _revoke_worker_if_present(task: TaskRecord) -> None:
+    """best-effort 终止原 Celery worker 上的任务。
+
+    eager 模式或 broker 不可达时静默忽略——attempt_id CAS 是最终安全网，
+    revoke 没生效时原 worker 下次写库会 rowcount==0 自动退出。
+    """
+    if not task.worker_task_id:
+        return
+    if get_settings().task_eager_mode:
+        return
+    try:
+        celery_app.control.revoke(task.worker_task_id, terminate=True, signal="SIGKILL")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("revoke 原 worker 失败，依赖 attempt_id 兜底", task_id=task.id, error=str(exc))
 
 
 def _redispatch_task(task: TaskRecord, callable_path: str, countdown: int, session) -> None:

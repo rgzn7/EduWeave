@@ -180,6 +180,12 @@ def test_knowledge_task_should_create_version_and_query_details(client, seeded_s
         "persist_knowledge_result",
         "upsert_vectors",
     ]
+    # invoke_llm_extract 步骤的 detail_json 应包含处理进度统计
+    invoke_step = next(step for step in steps if step["step_code"] == "invoke_llm_extract")
+    assert invoke_step["detail_json"]["chapter_count"] == 1
+    assert invoke_step["detail_json"]["processed_chunks"] >= 1
+    assert invoke_step["detail_json"]["total_chunks"] >= 1
+    assert invoke_step["detail_json"]["processed_chunks"] == invoke_step["detail_json"]["total_chunks"]
 
     version_list_response = client.get(
         f"/api/v1/parse-versions/{parse_version_id}/knowledge-versions",

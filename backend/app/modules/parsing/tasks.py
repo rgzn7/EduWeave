@@ -33,6 +33,11 @@ from app.modules.parsing.domain import (
     render_pdf_page_images,
 )
 from app.modules.parsing.repository import ParsingRepository
+from app.modules.task_center.heartbeat import (
+    StaleAttemptError,
+    TaskHeartbeat,
+    ensure_attempt,
+)
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.mineru import MineruDocumentService
@@ -51,10 +56,14 @@ def run_parse_task(payload: dict) -> dict[str, int | str]:
     task = task_repository.get_task_by_id(payload["task_record_id"])
     step_map = _get_step_map(task_repository, payload["task_record_id"])
     now = DateTimeUtil.now_utc()
+    attempt_id = ensure_attempt(task_repository, payload["task_record_id"], payload.get("execution_attempt_id"))
+    heartbeat = TaskHeartbeat(session, payload["task_record_id"], attempt_id)
 
     try:
         if task is None:
             raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "解析任务不存在")
+        if task.execution_attempt_id and task.execution_attempt_id != attempt_id:
+            raise StaleAttemptError(task.id, attempt_id)
         _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="prepare_source", progress_percent=5, started_at=now)
         _mark_step(step_map["prepare_source"], TASK_STATUS_PROCESSING, 10, started_at=now)
         task_repository.save(task)
@@ -83,12 +92,15 @@ def run_parse_task(payload: dict) -> dict[str, int | str]:
         task_repository.save(step_map["submit_mineru"])
         session.commit()
 
+        # MinerU 同步轮询可能长达数分钟，前后 touch 心跳避免被 reaper 误判
+        heartbeat.touch()
         normalized_document = mineru_service.parse_document(
             file_name=source_file.original_filename,
             content=source_content,
             strategy_code=payload["strategy_code"],
             data_id=f"textbook_{textbook_version.id}_task_{task.id}",
         )
+        heartbeat.touch()
         _mark_step(
             step_map["submit_mineru"],
             TASK_STATUS_SUCCESS,
@@ -235,7 +247,11 @@ def run_parse_task(payload: dict) -> dict[str, int | str]:
         for step in step_map.values():
             task_repository.save(step)
         session.commit()
+        _notify_orchestrator_parse_success(session=session, task=task, parse_version=parse_version)
         return {"parse_version_id": parse_version.id, "page_count": len(page_drafts), "batch_id": normalized_document.batch_id}
+    except StaleAttemptError:
+        session.rollback()
+        return {"stale_attempt": True}
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         _mark_task_failure(task_repository, repository, payload, exc)
@@ -254,10 +270,14 @@ def run_reparse_task(payload: dict) -> dict[str, int | str]:
     task = task_repository.get_task_by_id(payload["task_record_id"])
     step_map = _get_step_map(task_repository, payload["task_record_id"])
     now = DateTimeUtil.now_utc()
+    attempt_id = ensure_attempt(task_repository, payload["task_record_id"], payload.get("execution_attempt_id"))
+    heartbeat = TaskHeartbeat(session, payload["task_record_id"], attempt_id)
 
     try:
         if task is None:
             raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "重解析任务不存在")
+        if task.execution_attempt_id and task.execution_attempt_id != attempt_id:
+            raise StaleAttemptError(task.id, attempt_id)
         parent_parse_version = repository.get_parse_version(payload["parse_version_id"])
         if parent_parse_version is None:
             raise AppException(BusinessErrorCode.PARSE_VERSION_NOT_FOUND, "父解析版本不存在")
@@ -297,12 +317,14 @@ def run_reparse_task(payload: dict) -> dict[str, int | str]:
             task_repository.save(step)
         session.commit()
 
+        heartbeat.touch()
         normalized_document = mineru_service.parse_document(
             file_name=f"reparse_{textbook_version.id}.pdf",
             content=subset_pdf_bytes,
             strategy_code=payload["strategy_code"],
             data_id=f"reparse_{parent_parse_version.id}_task_{task.id}",
         )
+        heartbeat.touch()
         _mark_step(
             step_map["submit_mineru"],
             TASK_STATUS_SUCCESS,
@@ -447,6 +469,9 @@ def run_reparse_task(payload: dict) -> dict[str, int | str]:
             task_repository.save(step)
         session.commit()
         return {"parse_version_id": parse_version.id, "page_count": len(merged_pages), "batch_id": normalized_document.batch_id}
+    except StaleAttemptError:
+        session.rollback()
+        return {"stale_attempt": True}
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         _mark_task_failure(task_repository, repository, payload, exc)
@@ -636,6 +661,38 @@ def _mark_task_failure(task_repository: TaskCenterRepository, repository: Parsin
         textbook_version.parse_status = "failure"
         repository.save(textbook_version)
         repository.session.commit()
+    _notify_orchestrator_failure(session=repository.session, task=task, exc=exc)
+
+
+def _notify_orchestrator_parse_success(*, session, task, parse_version) -> None:
+    """成功后通知 orchestrator 续跑。失败不阻塞任务结果。"""
+    try:
+        from app.modules.orchestrator.service import OrchestratorService  # 延迟导入避免循环
+
+        OrchestratorService(session).advance_after_parse_success(task=task, parse_version=parse_version)
+    except Exception:  # noqa: BLE001
+        from app.core.logging import get_logger as _get_logger
+
+        _get_logger(__name__).warning("orchestrator parse hook 调用失败", task_id=task.id, exc_info=True)
+
+
+def _notify_orchestrator_failure(*, session, task, exc) -> None:
+    """终态失败时通知 orchestrator 把 run 标为 failed。"""
+    try:
+        from app.core.exceptions import AppException as _AppException
+        from app.modules.orchestrator.service import OrchestratorService
+
+        error_code = exc.code.value if isinstance(exc, _AppException) else type(exc).__name__
+        error_message = exc.message if isinstance(exc, _AppException) else str(exc)
+        OrchestratorService(session).mark_run_failed(
+            task=task,
+            error_code=error_code,
+            error_message=error_message,
+        )
+    except Exception:  # noqa: BLE001
+        from app.core.logging import get_logger as _get_logger
+
+        _get_logger(__name__).warning("orchestrator failure hook 调用失败", task_id=task.id, exc_info=True)
 
 
 def _guess_mime_type(filename: str) -> str:

@@ -285,3 +285,92 @@ def test_build_dispatch_payload_includes_required_keys(seeded_session_factory) -
         assert "generation_batch_id" in payload
     finally:
         session.close()
+
+
+def test_reap_stale_tasks_respects_recent_heartbeat(seeded_session_factory, monkeypatch) -> None:
+    """即便 updated_at 老旧，只要 last_heartbeat_at 近期就不应被回收。"""
+    monkeypatch.setattr(recovery, "dispatch_task", lambda *a, **k: None)
+    session = seeded_session_factory()
+    try:
+        task = _create_processing_task(session)
+        # updated_at 远在过去，但心跳是近期 → 不算僵尸
+        session.execute(
+            text(
+                "UPDATE task_record SET updated_at = NOW() - INTERVAL 7200 SECOND, "
+                "last_heartbeat_at = NOW() - INTERVAL 60 SECOND WHERE id = :task_id"
+            ),
+            {"task_id": task.id},
+        )
+        session.commit()
+        session.expire_all()
+        summary = reap_stale_tasks_once(session, threshold_seconds=1800)
+        assert summary["scanned"] == 0
+        session.refresh(task)
+        assert task.task_status == TASK_STATUS_PROCESSING
+    finally:
+        session.close()
+
+
+def test_reap_stale_tasks_uses_stage_threshold_for_long_stages(seeded_session_factory, monkeypatch) -> None:
+    """命中 STAGE_STALE_OVERRIDES 的阶段应按更宽阈值判定，不被默认阈值误判回收。"""
+    monkeypatch.setattr(recovery, "dispatch_task", lambda *a, **k: None)
+    session = seeded_session_factory()
+    try:
+        task = _create_processing_task(session, task_type=KNOWLEDGE_EXTRACT_TASK_TYPE)
+        # 切到 invoke_llm_extract 长阶段（阈值 3600s）；心跳 2000s 前 → 默认 1800 阈值会回收，
+        # 但 stage 阈值 3600 应跳过
+        session.execute(
+            text(
+                "UPDATE task_record SET current_stage = 'invoke_llm_extract', "
+                "updated_at = NOW() - INTERVAL 2000 SECOND, "
+                "last_heartbeat_at = NOW() - INTERVAL 2000 SECOND WHERE id = :task_id"
+            ),
+            {"task_id": task.id},
+        )
+        session.commit()
+        session.expire_all()
+        summary = reap_stale_tasks_once(session, threshold_seconds=1800)
+        assert summary["scanned"] == 1
+        assert summary["requeued"] == 0
+        assert summary["failed"] == 0
+        assert summary["skipped_by_stage"] == 1
+        session.refresh(task)
+        assert task.task_status == TASK_STATUS_PROCESSING
+    finally:
+        session.close()
+
+
+def test_requeue_rotates_execution_attempt_id(seeded_session_factory, monkeypatch) -> None:
+    """重排重试时应轮换 execution_attempt_id，使旧 worker 的 CAS UPDATE 失效。"""
+    monkeypatch.setattr(recovery, "dispatch_task", lambda *a, **k: None)
+    session = seeded_session_factory()
+    try:
+        task = _create_processing_task(session)
+        session.execute(
+            text("UPDATE task_record SET execution_attempt_id = :attempt WHERE id = :task_id"),
+            {"attempt": "old-attempt-id", "task_id": task.id},
+        )
+        session.commit()
+        session.expire_all()
+
+        task_repository = TaskCenterRepository(session)
+        retried = requeue_or_fail_task(
+            task_repository,
+            task,
+            error_code="EXTERNAL_SERVICE_ERROR",
+            error_message="瞬时错误",
+            force_retryable=True,
+        )
+        assert retried is True
+        session.refresh(task)
+        assert task.execution_attempt_id is not None
+        assert task.execution_attempt_id != "old-attempt-id"
+    finally:
+        session.close()
+
+
+def test_stale_attempt_error_is_not_retryable(seeded_session_factory) -> None:
+    """StaleAttemptError 必须被判定为不可重试，避免循环触发重排。"""
+    from app.modules.task_center.heartbeat import StaleAttemptError as _StaleAttemptError
+
+    assert is_retryable_error(_StaleAttemptError(task_id=1, attempt_id="x")) is False

@@ -12,6 +12,11 @@ from app.core.database import SessionLocal
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.coverage.repository import CoverageRepository
 from app.modules.coverage.service import CoverageService
+from app.modules.task_center.heartbeat import (
+    StaleAttemptError,
+    TaskHeartbeat,
+    ensure_attempt,
+)
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.utils import DateTimeUtil
@@ -26,10 +31,14 @@ def run_analyze_coverage_task(payload: dict) -> dict[str, int | float]:
     task = task_repository.get_task_by_id(payload["task_record_id"])
     step_map = _get_step_map(task_repository, payload["task_record_id"])
     now = DateTimeUtil.now_utc()
+    attempt_id = ensure_attempt(task_repository, payload["task_record_id"], payload.get("execution_attempt_id"))
+    heartbeat = TaskHeartbeat(session, payload["task_record_id"], attempt_id)
 
     try:
         if task is None:
             raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "覆盖率分析任务不存在")
+        if task.execution_attempt_id and task.execution_attempt_id != attempt_id:
+            raise StaleAttemptError(task.id, attempt_id)
         generation_batch = repository.get_generation_batch(payload["generation_batch_id"])
         if generation_batch is None:
             raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "生成批次不存在")
@@ -68,7 +77,9 @@ def run_analyze_coverage_task(payload: dict) -> dict[str, int | float]:
             task_repository.save(step)
         session.commit()
 
+        heartbeat.touch()
         coverage_payload = service.build_coverage_payload(generation_batch.id)
+        heartbeat.touch()
         _mark_step(
             step_map["collect_artifact_refs"],
             TASK_STATUS_SUCCESS,
@@ -144,12 +155,16 @@ def run_analyze_coverage_task(payload: dict) -> dict[str, int | float]:
         for step in step_map.values():
             task_repository.save(step)
         session.commit()
+        _notify_orchestrator_coverage_success(session=session, task=task)
         return {
             "generation_batch_id": generation_batch.id,
             "coverage_report_id": report.id,
             "coverage_rate": coverage_payload["coverage_rate"],
             "warning_count": coverage_payload["warning_count"],
         }
+    except StaleAttemptError:
+        session.rollback()
+        return {"stale_attempt": True}
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         _mark_task_failure(task_repository, repository, payload, exc)
@@ -234,6 +249,34 @@ def _mark_task_failure(
             generation_batch.finished_at = DateTimeUtil.now_utc()
             repository.save(generation_batch)
             repository.session.commit()
+        _notify_orchestrator_failure(session=repository.session, task=task, exc=exc)
+
+
+def _notify_orchestrator_coverage_success(*, session, task) -> None:
+    """覆盖检查成功后通知 orchestrator 关闭 run。"""
+    try:
+        from app.modules.orchestrator.service import OrchestratorService
+
+        OrchestratorService(session).advance_after_coverage_success(task=task)
+    except Exception:  # noqa: BLE001
+        from app.core.logging import get_logger as _get_logger
+
+        _get_logger(__name__).warning("orchestrator coverage hook 调用失败", task_id=task.id, exc_info=True)
+
+
+def _notify_orchestrator_failure(*, session, task, exc) -> None:
+    """终态失败时通知 orchestrator 把 run 标为 failed。"""
+    try:
+        from app.core.exceptions import AppException as _AppException
+        from app.modules.orchestrator.service import OrchestratorService
+
+        error_code = exc.code.value if isinstance(exc, _AppException) else type(exc).__name__
+        error_message = exc.message if isinstance(exc, _AppException) else str(exc)
+        OrchestratorService(session).mark_run_failed(task=task, error_code=error_code, error_message=error_message)
+    except Exception:  # noqa: BLE001
+        from app.core.logging import get_logger as _get_logger
+
+        _get_logger(__name__).warning("orchestrator failure hook 调用失败", task_id=task.id, exc_info=True)
 
 
 def _create_session(payload: dict) -> Session:

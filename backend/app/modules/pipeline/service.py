@@ -23,9 +23,9 @@ from app.modules.pipeline.schemas import (
     GenerationBatchDetailResponse,
     GenerationBatchListItemResponse,
 )
+from app.modules.task_center.heartbeat import dispatch_with_attempt
 from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.service import TaskCenterService
-from app.shared.queue import dispatch_task
 from app.shared.utils import DateTimeUtil
 
 
@@ -42,8 +42,13 @@ class PipelineService:
         *,
         owner_user_id: int,
         request: GenerationBatchCreateRequest,
+        generation_run_id: int | None = None,
     ) -> GenerationBatchDetailResponse:
-        """创建生成批次并投递课程大纲生成任务。"""
+        """创建生成批次并投递课程大纲生成任务。
+
+        generation_run_id 由 OrchestratorService 在一键生成场景注入，会随每个下游任务的
+        payload_json 携带，使任务 success/failure 钩子能反查回 run 状态。
+        """
         project = self.repository.get_project_for_owner(request.project_id, owner_user_id)
         if project is None:
             raise AppException(BusinessErrorCode.PROJECT_NOT_FOUND, "项目不存在")
@@ -87,18 +92,23 @@ class PipelineService:
             generation_batch=generation_batch,
             owner_user_id=owner_user_id,
             request=request,
+            generation_run_id=generation_run_id,
         )
         self.session.commit()
 
-        dispatch_result = dispatch_task(
-            "app.modules.curriculum.tasks.run_generate_curriculum_task",
-            {
-                "task_record_id": task.id,
-                "generation_batch_id": generation_batch.id,
-                "operator_user_id": owner_user_id,
-            },
+        dispatch_payload: dict[str, object] = {
+            "task_record_id": task.id,
+            "generation_batch_id": generation_batch.id,
+            "operator_user_id": owner_user_id,
+        }
+        if generation_run_id is not None:
+            dispatch_payload["generation_run_id"] = generation_run_id
+        dispatch_result = dispatch_with_attempt(
+            self.task_repository,
+            task=task,
+            callable_path="app.modules.curriculum.tasks.run_generate_curriculum_task",
+            payload=dispatch_payload,
             queue=GENERATION_QUEUE_NAME,
-            session=self.session,
         )
         if dispatch_result.worker_task_id:
             task.worker_task_id = dispatch_result.worker_task_id
@@ -159,8 +169,18 @@ class PipelineService:
         generation_batch: GenerationBatch,
         owner_user_id: int,
         request: GenerationBatchCreateRequest,
+        generation_run_id: int | None = None,
     ):
         """创建课程大纲生成任务。"""
+        payload_json: dict[str, object] = {
+            "generation_batch_id": generation_batch.id,
+            "knowledge_version_id": request.knowledge_version_id,
+            "learner_profile_version_id": request.learner_profile_version_id,
+            "course_count": request.course_count,
+            "session_duration_minutes": request.session_duration_minutes,
+        }
+        if generation_run_id is not None:
+            payload_json["generation_run_id"] = generation_run_id
         task = self.task_repository.create_task(
             project_id=generation_batch.project_id,
             generation_batch_id=generation_batch.id,
@@ -170,13 +190,7 @@ class PipelineService:
             queue_name=GENERATION_QUEUE_NAME,
             biz_key=f"generation_batch:{generation_batch.id}:curriculum",
             operator_user_id=owner_user_id,
-            payload_json={
-                "generation_batch_id": generation_batch.id,
-                "knowledge_version_id": request.knowledge_version_id,
-                "learner_profile_version_id": request.learner_profile_version_id,
-                "course_count": request.course_count,
-                "session_duration_minutes": request.session_duration_minutes,
-            },
+            payload_json=payload_json,
             request_id=get_request_id() or None,
         )
         step_names = [

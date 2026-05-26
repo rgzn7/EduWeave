@@ -22,6 +22,11 @@ from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.learner_profile.repository import LearnerProfileRepository
 from app.modules.learner_profile.rules import LearnerProfileRecordDraft, parse_learner_profile_text
 from app.modules.p0_models import FileObject, LearnerProfileRecord, LearnerProfileVersion
+from app.modules.task_center.heartbeat import (
+    StaleAttemptError,
+    TaskHeartbeat,
+    ensure_attempt,
+)
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.document import LocalDocxParseService
@@ -39,10 +44,14 @@ def run_extract_task(payload: dict) -> dict[str, int | str]:
     task = task_repository.get_task_by_id(payload["task_record_id"])
     step_map = _get_step_map(task_repository, payload["task_record_id"])
     now = DateTimeUtil.now_utc()
+    attempt_id = ensure_attempt(task_repository, payload["task_record_id"], payload.get("execution_attempt_id"))
+    heartbeat = TaskHeartbeat(session, payload["task_record_id"], attempt_id)
 
     try:
         if task is None:
             raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "学情抽取任务不存在")
+        if task.execution_attempt_id and task.execution_attempt_id != attempt_id:
+            raise StaleAttemptError(task.id, attempt_id)
         _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="prepare_source", progress_percent=5, started_at=now)
         _mark_step(step_map["prepare_source"], TASK_STATUS_PROCESSING, 15, started_at=now)
         task_repository.save(task)
@@ -244,13 +253,29 @@ def run_extract_task(payload: dict) -> dict[str, int | str]:
         for step in step_map.values():
             task_repository.save(step)
         session.commit()
+        _notify_orchestrator_profile_success(session=session, task=task, profile_version=profile_version)
         return {"profile_version_id": profile_version.id, "record_count": len(created_records), "batch_id": normalized_document.batch_id}
+    except StaleAttemptError:
+        session.rollback()
+        return {"stale_attempt": True}
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         _mark_task_failure(task_repository, repository, payload, exc)
         raise
     finally:
         session.close()
+
+
+def _notify_orchestrator_profile_success(*, session, task, profile_version) -> None:
+    """学情抽取成功后通知 orchestrator 续跑。"""
+    try:
+        from app.modules.orchestrator.service import OrchestratorService  # 延迟导入避免循环
+
+        OrchestratorService(session).advance_after_profile_success(task=task, profile_version=profile_version)
+    except Exception:  # noqa: BLE001
+        import structlog as _structlog
+
+        _structlog.get_logger(__name__).warning("orchestrator profile hook 调用失败", task_id=task.id, exc_info=True)
 
 
 def _resolve_textbook_version_hint_id(
@@ -414,6 +439,22 @@ def _mark_task_failure(task_repository: TaskCenterRepository, repository: Learne
             profile_file.file_status = "failure"
             repository.save(profile_file)
             repository.session.commit()
+        _notify_orchestrator_failure(session=repository.session, task=task, exc=exc)
+
+
+def _notify_orchestrator_failure(*, session, task, exc) -> None:
+    """终态失败时通知 orchestrator 把 run 标为 failed。"""
+    try:
+        from app.core.exceptions import AppException as _AppException
+        from app.modules.orchestrator.service import OrchestratorService
+
+        error_code = exc.code.value if isinstance(exc, _AppException) else type(exc).__name__
+        error_message = exc.message if isinstance(exc, _AppException) else str(exc)
+        OrchestratorService(session).mark_run_failed(task=task, error_code=error_code, error_message=error_message)
+    except Exception:  # noqa: BLE001
+        import structlog as _structlog
+
+        _structlog.get_logger(__name__).warning("orchestrator failure hook 调用失败", task_id=task.id, exc_info=True)
 
 
 def _guess_mime_type(filename: str) -> str:
