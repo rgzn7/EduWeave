@@ -110,6 +110,10 @@ def test_requeue_or_fail_task_retries_retryable_error(seeded_session_factory, mo
     try:
         task = _create_processing_task(session)
         repository = TaskCenterRepository(session)
+        for step in repository.list_task_steps(task.id):
+            step.detail_json = {"processed_sessions": 3, "curriculum_plan_id": 456}
+            repository.save(step)
+        session.commit()
         result = requeue_or_fail_task(
             repository,
             task,
@@ -124,6 +128,7 @@ def test_requeue_or_fail_task_retries_retryable_error(seeded_session_factory, mo
         assert len(calls) == 1
         steps = repository.list_task_steps(task.id)
         assert all(step.step_status == TASK_STATUS_PENDING for step in steps)
+        assert all(step.detail_json is None for step in steps)
     finally:
         session.close()
 

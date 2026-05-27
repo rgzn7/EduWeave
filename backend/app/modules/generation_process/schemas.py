@@ -1,11 +1,11 @@
 """
-@Date: 2026-05-26
+@Date: 2026-05-27
 @Author: xisy
 @Discription: 生成过程展示模块请求与响应模型
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -43,6 +43,21 @@ class GenerationProcessStepResponse(BaseSchema):
         examples=["retrying"],
     )
     progress_percent: int = Field(description="进度百分比", examples=[60])
+    current_stage: str | None = Field(
+        default=None,
+        description="当前内部阶段编码，仅用于前端展示当前阶段与调试定位",
+        examples=["invoke_llm_lesson_plan"],
+    )
+    progress_detail: dict[str, Any] | None = Field(
+        default=None,
+        description="公开进度指标，例如 processed/total/parallel_limit/last_completed 等，不包含内部任务字段",
+        examples=[{"processed_sessions": 3, "total_sessions": 10, "parallel_limit": 4}],
+    )
+    result_detail: dict[str, Any] | None = Field(
+        default=None,
+        description="公开结果指标，例如页数、画像记录数、课程课次数、覆盖统计等",
+        examples=[{"covered_count": 23, "total_count": 24, "coverage_rate": 95.83}],
+    )
     summary: str | None = Field(default=None, description="面向用户的步骤摘要", examples=["已识别 12 页教材内容。"])
     started_at: datetime | None = Field(default=None, description="开始时间")
     finished_at: datetime | None = Field(default=None, description="结束时间")
@@ -57,7 +72,14 @@ class GenerationProcessResponse(BaseSchema):
     """生成过程展示响应。"""
 
     project_id: int = Field(description="项目主键", examples=[1])
-    batch_id: int | None = Field(default=None, description="最近一次生成批次主键", examples=[1])
+    batch_id: int | None = Field(
+        default=None,
+        description=(
+            "当前展示批次主键：活跃 run 已创建批次时为 run 批次；"
+            "活跃 run 未创建批次时为 null；无活跃 run 时为项目最近生成批次"
+        ),
+        examples=[1],
+    )
     generation_run_id: int | None = Field(
         default=None,
         description="当前活跃一键生成 run 主键；无 run 则为 null",

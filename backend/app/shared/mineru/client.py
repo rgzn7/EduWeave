@@ -5,6 +5,7 @@
 """
 
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -149,6 +150,7 @@ class MineruClient:
         batch_id: str,
         data_id: str | None = None,
         file_name: str | None = None,
+        on_progress: Callable[[MineruBatchFileResult], None] | None = None,
     ) -> MineruBatchFileResult:
         """轮询指定批量任务中的单文件结果。"""
         deadline = time.monotonic() + self.settings.mineru_poll_timeout_seconds
@@ -183,6 +185,8 @@ class MineruClient:
                         "state": target_result.state,
                     },
                 )
+            if on_progress is not None:
+                on_progress(target_result)
             time.sleep(self.settings.mineru_poll_interval_seconds)
 
         raise AppException(

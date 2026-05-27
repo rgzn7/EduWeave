@@ -937,7 +937,7 @@ def test_lesson_plan_generation_should_warm_cache_before_parallel_sessions(
     )
     assert invoke_step["detail_json"]["processed_sessions"] == 12
     assert invoke_step["detail_json"]["total_sessions"] == 12
-    assert invoke_step["detail_json"]["class_session_no"] == 12
+    assert invoke_step["detail_json"]["last_completed_class_session_no"] == 12
     assert invoke_step["detail_json"]["parallel_limit"] == 10
     assert invoke_step["detail_json"]["cache_warmup_completed"] is True
 

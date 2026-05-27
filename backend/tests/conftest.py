@@ -310,8 +310,8 @@ def mock_obs_storage(monkeypatch: pytest.MonkeyPatch):
 def mock_mineru_service(monkeypatch: pytest.MonkeyPatch):
     """用内存桩替换 MinerU 实际调用。"""
 
-    def fake_parse_document(self, *, file_name: str, content: bytes, strategy_code: str, data_id: str, language=None):  # noqa: ANN001
-        _ = (self, strategy_code, language)
+    def fake_parse_document(self, *, file_name: str, content: bytes, strategy_code: str, data_id: str, language=None, on_progress=None):  # noqa: ANN001
+        _ = (self, strategy_code, language, on_progress)
         if file_name.lower().endswith((".doc", ".docx")):
             markdown_text = (
                 "王xx — 学情分析\n"

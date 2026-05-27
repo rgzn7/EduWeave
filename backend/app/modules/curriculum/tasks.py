@@ -28,9 +28,11 @@ from app.modules.p0_models import CurriculumPlan
 from app.modules.task_center.heartbeat import (
     StaleAttemptError,
     TaskHeartbeat,
+    TaskProgressPulse,
     dispatch_with_attempt,
     ensure_attempt,
 )
+from app.modules.task_center.progress import assign_monotonic_progress
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
@@ -146,10 +148,18 @@ def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
         )
         # LLM 调用前先 touch 心跳：长生成不会被 reaper 误判，attempt 抢占也会立即中断
         heartbeat.touch()
-        generation_result = llm_service.generate_structured_output(
-            messages=llm_messages,
-            response_model=CurriculumGenerationResult,
-        )
+        with TaskProgressPulse.from_session(
+            session,
+            task_id=task.id,
+            attempt_id=attempt_id,
+            current_stage="invoke_llm_curriculum",
+            start_progress=40,
+            max_progress=74,
+        ):
+            generation_result = llm_service.generate_structured_output(
+                messages=llm_messages,
+                response_model=CurriculumGenerationResult,
+            )
         heartbeat.touch()
         _validate_curriculum_result(
             generation_result,
@@ -503,7 +513,7 @@ def _create_lesson_plan_task(
 def _mark_task(task, *, task_status: str, current_stage: str, progress_percent: int, started_at=None, finished_at=None, result_json: dict | None = None) -> None:
     task.task_status = task_status
     task.current_stage = current_stage
-    task.progress_percent = progress_percent
+    assign_monotonic_progress(task, progress_percent)
     if started_at is not None:
         task.started_at = task.started_at or started_at
     if finished_at is not None:
@@ -514,7 +524,7 @@ def _mark_task(task, *, task_status: str, current_stage: str, progress_percent: 
 
 def _mark_step(step, step_status: str, progress_percent: int, *, detail_json: dict | None = None, started_at=None, finished_at=None) -> None:
     step.step_status = step_status
-    step.progress_percent = progress_percent
+    assign_monotonic_progress(step, progress_percent)
     if detail_json is not None:
         step.detail_json = detail_json
     if started_at is not None:

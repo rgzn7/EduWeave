@@ -500,7 +500,7 @@
 
 **获取项目生成过程**
 
-将项目当前的内部任务聚合成 6 个产品化展示步骤（MinerU 教材解析、学情理解、知识点梳理、课程规划、教案生成、覆盖检查），用于 Phase 2 页面展示。响应只包含面向用户的文案与状态，不暴露内部任务 ID、队列名、step_code 等细节。
+将项目当前的内部任务聚合成 6 个产品化展示步骤（MinerU 教材解析、学情理解、知识点梳理、课程规划、教案生成、覆盖检查），用于 Phase 2 页面展示。响应包含面向用户的文案、状态、当前阶段、公开进度指标与公开结果指标，不暴露内部任务 ID、队列名、worker 信息等实现细节。
 
 **参数**
 
@@ -519,7 +519,7 @@
   message: string  # 响应消息
   data?: {
     project_id: integer  # 项目主键
-    batch_id?: integer  # 最近一次生成批次主键
+    batch_id?: integer  # 当前展示批次主键：活跃 run 已创建批次时为 run 批次；活跃 run 未创建批次时为 null；无活跃 run 时为项目最近生成批次
     generation_run_id?: integer  # 当前活跃一键生成 run 主键；无 run 则为 null
     status: string  # 整体展示状态
     status_detail?: string  # 整体细化状态：waiting_dispatch=等待后端调度下一步；waiting_user_confirm=等待用户确认教材解析；retrying=任务被 reaper 重排重试中；blocked=前置缺失，无法继续

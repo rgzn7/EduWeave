@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-26
+@Date: 2026-05-27
 @Author: xisy
 @Discription: 生成过程展示模块路由
 """
@@ -31,8 +31,8 @@ def get_generation_process_service(
     summary="获取项目生成过程",
     description=(
         "将项目当前的内部任务聚合成 6 个产品化展示步骤（MinerU 教材解析、学情理解、知识点梳理、"
-        "课程规划、教案生成、覆盖检查），用于 Phase 2 页面展示。响应只包含面向用户的文案与状态，"
-        "不暴露内部任务 ID、队列名、step_code 等细节。"
+        "课程规划、教案生成、覆盖检查），用于 Phase 2 页面展示。响应包含面向用户的文案、状态、"
+        "当前阶段、公开进度指标与公开结果指标，不暴露内部任务 ID、队列名、worker 信息等实现细节。"
     ),
     operation_id="generation_process_detail",
     response_model=ApiResponse[GenerationProcessResponse],

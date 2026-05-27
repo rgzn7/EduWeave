@@ -31,8 +31,10 @@ from app.modules.knowledge.service import _build_knowledge_version_model, upsert
 from app.modules.task_center.heartbeat import (
     StaleAttemptError,
     TaskHeartbeat,
+    TaskProgressPulse,
     ensure_attempt,
 )
+from app.modules.task_center.progress import assign_monotonic_progress
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleEmbeddingService, OpenAICompatibleLlmService
@@ -95,7 +97,7 @@ def run_extract_task(payload: dict) -> dict[str, int]:
             detail_json={"parse_version_id": parse_version.id, "page_count": len(parse_pages), "block_count": len(parse_blocks)},
             finished_at=DateTimeUtil.now_utc(),
         )
-        _mark_step(step_map["invoke_llm_extract"], TASK_STATUS_PROCESSING, 30, started_at=DateTimeUtil.now_utc())
+        _mark_step(step_map["invoke_llm_extract"], TASK_STATUS_PROCESSING, 0, started_at=DateTimeUtil.now_utc())
         _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="invoke_llm_extract", progress_percent=35)
         task_repository.save(task)
         for step in step_map.values():
@@ -104,10 +106,18 @@ def run_extract_task(payload: dict) -> dict[str, int]:
 
         # 章节边界识别 LLM 调用——耗时较长，调用前后 touch 心跳
         heartbeat.touch()
-        boundary_result = llm_service.generate_structured_output(
-            messages=_build_chapter_boundary_messages(parse_version=parse_version, line_index=line_index),
-            response_model=KnowledgeChapterBoundaryResult,
-        )
+        with TaskProgressPulse.from_session(
+            session,
+            task_id=task.id,
+            attempt_id=attempt_id,
+            current_stage="invoke_llm_extract",
+            start_progress=35,
+            max_progress=44,
+        ):
+            boundary_result = llm_service.generate_structured_output(
+                messages=_build_chapter_boundary_messages(parse_version=parse_version, line_index=line_index),
+                response_model=KnowledgeChapterBoundaryResult,
+            )
         heartbeat.touch()
         try:
             chapter_drafts = build_chapter_drafts_from_boundaries(boundary_result.items, line_index)
@@ -126,7 +136,7 @@ def run_extract_task(payload: dict) -> dict[str, int]:
         total_chunks = len(semantic_chunk_drafts)
         heartbeat.update_step_detail(
             step_id=step_map["invoke_llm_extract"].id,
-            progress_percent=10,
+            progress_percent=20,
             detail_json={
                 "processed_chunks": 0,
                 "total_chunks": total_chunks,
@@ -137,18 +147,26 @@ def run_extract_task(payload: dict) -> dict[str, int]:
         point_drafts = []
         chapter_summaries: list[dict] = []
         parallel_limit = min(get_settings().knowledge_extract_max_concurrency, total_chunks)
-        chunk_extraction_results = _extract_chunk_points_in_parallel(
-            llm_service=llm_service,
-            parse_version_id=parse_version.id,
-            chapter_drafts=chapter_drafts,
-            semantic_chunk_drafts=semantic_chunk_drafts,
-            parse_pages=parse_pages,
-            parse_blocks=parse_blocks,
-            heartbeat=heartbeat,
-            step_id=step_map["invoke_llm_extract"].id,
-            parallel_limit=parallel_limit,
-            total_chunks=total_chunks,
-        )
+        with TaskProgressPulse.from_session(
+            session,
+            task_id=task.id,
+            attempt_id=attempt_id,
+            current_stage="invoke_llm_extract",
+            start_progress=45,
+            max_progress=79,
+        ):
+            chunk_extraction_results = _extract_chunk_points_in_parallel(
+                llm_service=llm_service,
+                parse_version_id=parse_version.id,
+                chapter_drafts=chapter_drafts,
+                semantic_chunk_drafts=semantic_chunk_drafts,
+                parse_pages=parse_pages,
+                parse_blocks=parse_blocks,
+                heartbeat=heartbeat,
+                step_id=step_map["invoke_llm_extract"].id,
+                parallel_limit=parallel_limit,
+                total_chunks=total_chunks,
+            )
         for chunk_extraction_result in chunk_extraction_results:
             chapter_draft = chunk_extraction_result["chapter_draft"]
             semantic_chunk_draft = chunk_extraction_result["semantic_chunk_draft"]
@@ -191,7 +209,7 @@ def run_extract_task(payload: dict) -> dict[str, int]:
             finished_at=DateTimeUtil.now_utc(),
         )
         _mark_step(step_map["persist_knowledge_result"], TASK_STATUS_PROCESSING, 40, started_at=DateTimeUtil.now_utc())
-        _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="persist_knowledge_result", progress_percent=60)
+        _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="persist_knowledge_result", progress_percent=80)
         task_repository.save(task)
         for step in step_map.values():
             task_repository.save(step)
@@ -229,7 +247,7 @@ def run_extract_task(payload: dict) -> dict[str, int]:
             finished_at=DateTimeUtil.now_utc(),
         )
         _mark_step(step_map["upsert_vectors"], TASK_STATUS_PROCESSING, 60, started_at=DateTimeUtil.now_utc())
-        _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="upsert_vectors", progress_percent=85)
+        _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="upsert_vectors", progress_percent=90)
         task_repository.save(task)
         for step in step_map.values():
             task_repository.save(step)
@@ -331,16 +349,16 @@ def _extract_chunk_points_in_parallel(
                 completed_chunks += 1
                 results.append(result)
                 chapter_draft = result["chapter_draft"]
-                chunk_progress = 35 + int(25 * completed_chunks / total_chunks)
+                chunk_progress = 35 + int(45 * completed_chunks / total_chunks)
                 heartbeat.tick(progress_percent=chunk_progress, current_stage="invoke_llm_extract")
                 heartbeat.update_step_detail(
                     step_id=step_id,
-                    progress_percent=int(100 * completed_chunks / total_chunks),
+                    progress_percent=20 + int(80 * completed_chunks / total_chunks),
                     detail_json={
                         "processed_chunks": completed_chunks,
                         "total_chunks": total_chunks,
                         "chapter_count": len(chapter_drafts),
-                        "current_chapter_path": chapter_draft.node_path,
+                        "last_completed_chapter_path": chapter_draft.node_path,
                         "parallel_limit": parallel_limit,
                     },
                 )
@@ -471,7 +489,7 @@ def _validate_point_extraction_result(result: KnowledgeChapterPointExtractionRes
 def _mark_task(task, *, task_status: str, current_stage: str, progress_percent: int, started_at=None, finished_at=None, result_json: dict | None = None) -> None:
     task.task_status = task_status
     task.current_stage = current_stage
-    task.progress_percent = progress_percent
+    assign_monotonic_progress(task, progress_percent)
     if started_at is not None:
         task.started_at = task.started_at or started_at
     if finished_at is not None:
@@ -482,7 +500,7 @@ def _mark_task(task, *, task_status: str, current_stage: str, progress_percent: 
 
 def _mark_step(step, step_status: str, progress_percent: int, *, detail_json: dict | None = None, started_at=None, finished_at=None) -> None:
     step.step_status = step_status
-    step.progress_percent = progress_percent
+    assign_monotonic_progress(step, progress_percent)
     if detail_json is not None:
         step.detail_json = detail_json
     if started_at is not None:

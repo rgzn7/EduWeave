@@ -63,7 +63,9 @@ STAGE_STALE_OVERRIDES: dict[tuple[str, str], int] = {
     (LESSON_PLAN_GENERATE_TASK_TYPE, "invoke_llm_lesson_plan"): 3600,
     (COVERAGE_ANALYZE_TASK_TYPE, "invoke_llm_coverage"): 1800,
     (TEXTBOOK_PARSE_TASK_TYPE, "poll_mineru"): 1800,
+    (TEXTBOOK_PARSE_TASK_TYPE, "poll_mineru_result"): 1800,
     (TEXTBOOK_REPARSE_TASK_TYPE, "poll_mineru"): 1800,
+    (TEXTBOOK_REPARSE_TASK_TYPE, "poll_mineru_result"): 1800,
 }
 
 
@@ -157,6 +159,7 @@ def requeue_or_fail_task(
         for step in steps:
             step.step_status = TASK_STATUS_PENDING
             step.progress_percent = 0
+            step.detail_json = None
             step.started_at = None
             step.finished_at = None
             task_repository.save(step)
