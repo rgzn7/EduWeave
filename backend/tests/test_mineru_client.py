@@ -86,6 +86,58 @@ def test_mineru_client_should_raise_when_batch_failed() -> None:
     assert exc_info.value.code == BusinessErrorCode.MINERU_TASK_FAILED
 
 
+def test_mineru_client_should_emit_progress_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """轮询到运行中状态时应把 MinerU 进度回调给调用方。"""
+    states = iter(
+        [
+            {
+                "state": "running",
+                "full_zip_url": None,
+                "extract_progress": {"progress_percent": 35},
+            },
+            {
+                "state": "done",
+                "full_zip_url": "https://download.test/full.zip",
+                "extract_progress": {"progress_percent": 100},
+            },
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        item = next(states)
+        return httpx.Response(
+            status_code=200,
+            json={
+                "code": 0,
+                "msg": "ok",
+                "data": {
+                    "extract_result": [
+                        {
+                            "file_name": "demo.pdf",
+                            "data_id": "data-1",
+                            "err_msg": None,
+                            **item,
+                        }
+                    ]
+                },
+            },
+        )
+
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    progress_events = []
+    client = MineruClient(settings=build_settings(), http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    result = client.poll_batch_result(
+        batch_id="batch-1",
+        data_id="data-1",
+        file_name="demo.pdf",
+        on_progress=progress_events.append,
+    )
+
+    assert result.state == "done"
+    assert len(progress_events) == 1
+    assert progress_events[0].extract_progress == {"progress_percent": 35}
+
+
 def test_mineru_client_should_raise_when_poll_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     """轮询超时应抛出超时异常。"""
 

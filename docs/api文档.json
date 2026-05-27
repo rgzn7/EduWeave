@@ -9419,7 +9419,7 @@
           },
           "progress_detail": {
             "title": "Progress Detail",
-            "description": "公开进度指标，例如 processed/total/parallel_limit 等，不包含内部任务字段",
+            "description": "公开进度指标，例如 processed/total/parallel_limit/last_completed 等，不包含内部任务字段",
             "examples": [
               {
                 "parallel_limit": 4,

@@ -494,6 +494,8 @@ def test_generation_process_should_expose_running_knowledge_progress_detail(
                 "processed_chunks": 3,
                 "total_chunks": 8,
                 "parallel_limit": 4,
+                "last_completed_chapter_path": "Unit 1",
+                "current_chapter_path": "Unit 2",
                 "knowledge_version_id": 99,
                 "llm_usage": {"prompt_tokens": 100},
             },
@@ -514,6 +516,7 @@ def test_generation_process_should_expose_running_knowledge_progress_detail(
         "processed_chunks": 3,
         "total_chunks": 8,
         "parallel_limit": 4,
+        "last_completed_chapter_path": "Unit 1",
     }
     assert knowledge_step["result_detail"] is None
     _assert_no_internal_metric_keys(knowledge_step["progress_detail"])
@@ -553,7 +556,8 @@ def test_generation_process_should_expose_running_lesson_plan_progress_detail(
                 "processed_sessions": 6,
                 "total_sessions": 10,
                 "parallel_limit": 5,
-                "class_session_no": 7,
+                "class_session_no": 8,
+                "last_completed_class_session_no": 7,
                 "cache_warmup_completed": True,
                 "lesson_plan_ids": [1, 2],
             },
@@ -573,7 +577,7 @@ def test_generation_process_should_expose_running_lesson_plan_progress_detail(
         "processed_sessions": 6,
         "total_sessions": 10,
         "parallel_limit": 5,
-        "class_session_no": 7,
+        "last_completed_class_session_no": 7,
         "cache_warmup_completed": True,
     }
     assert lesson_step["result_detail"] is None

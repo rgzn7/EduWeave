@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from threading import Event, Thread
+from time import monotonic
 from typing import Any
 
 from sqlalchemy import text
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.exceptions import AppException, BusinessErrorCode
+from app.modules.task_center.progress import clamp_progress
 from app.modules.task_center.repository import TaskCenterRepository
 
 
@@ -123,8 +126,12 @@ class TaskHeartbeat:
         }
         assignments = ["last_heartbeat_at = CURRENT_TIMESTAMP(3)"]
         if progress_percent is not None:
-            params["progress_percent"] = max(0, min(100, int(progress_percent)))
-            assignments.append("progress_percent = :progress_percent")
+            params["progress_percent"] = clamp_progress(progress_percent)
+            assignments.append(
+                "progress_percent = CASE "
+                "WHEN progress_percent > :progress_percent THEN progress_percent "
+                "ELSE :progress_percent END"
+            )
         if current_stage is not None:
             params["current_stage"] = current_stage
             assignments.append("current_stage = :current_stage")
@@ -156,8 +163,12 @@ class TaskHeartbeat:
         params: dict[str, Any] = {"step_id": step_id}
         assignments: list[str] = []
         if progress_percent is not None:
-            params["progress_percent"] = max(0, min(100, int(progress_percent)))
-            assignments.append("progress_percent = :progress_percent")
+            params["progress_percent"] = clamp_progress(progress_percent)
+            assignments.append(
+                "progress_percent = CASE "
+                "WHEN progress_percent > :progress_percent THEN progress_percent "
+                "ELSE :progress_percent END"
+            )
         if detail_json is not None:
             import json as _json
 
@@ -168,6 +179,99 @@ class TaskHeartbeat:
         sql = "UPDATE task_step_record SET " + ", ".join(assignments) + " WHERE id = :step_id"
         self._binding.session.execute(text(sql), params)
         self._binding.session.commit()
+
+
+class TaskProgressPulse:
+    """长阻塞阶段估算进度脉冲。
+
+    该工具使用独立短生命周期 Session 周期性刷新 task_record，避免主线程卡在同步 LLM
+    或外部接口调用时，页面长期停留在固定跳点。
+    """
+
+    def __init__(
+        self,
+        *,
+        session_factory: sessionmaker[Session],
+        task_id: int,
+        attempt_id: str | None,
+        current_stage: str,
+        start_progress: int,
+        max_progress: int,
+        interval_seconds: float = 5.0,
+    ) -> None:
+        self._session_factory = session_factory
+        self._task_id = task_id
+        self._attempt_id = attempt_id
+        self._current_stage = current_stage
+        self._start_progress = clamp_progress(start_progress)
+        self._max_progress = max(self._start_progress, clamp_progress(max_progress))
+        self._interval_seconds = max(0.05, float(interval_seconds))
+        self._stop_event = Event()
+        self._thread: Thread | None = None
+        self._started_at = 0.0
+        self._stale_error: StaleAttemptError | None = None
+
+    def __enter__(self) -> "TaskProgressPulse":
+        self._started_at = monotonic()
+        self._thread = Thread(target=self._run, name=f"task-progress-pulse-{self._task_id}", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(1.0, self._interval_seconds))
+        if exc_type is None and self._stale_error is not None:
+            raise self._stale_error
+        return None
+
+    @classmethod
+    def from_session(
+        cls,
+        session: Session,
+        *,
+        task_id: int,
+        attempt_id: str | None,
+        current_stage: str,
+        start_progress: int,
+        max_progress: int,
+        interval_seconds: float = 5.0,
+    ) -> "TaskProgressPulse":
+        """基于当前 Session 的 bind 创建脉冲，实际刷新使用独立 Session。"""
+        factory = sessionmaker(
+            bind=session.get_bind(),
+            autoflush=False,
+            autocommit=False,
+            expire_on_commit=False,
+            class_=Session,
+        )
+        return cls(
+            session_factory=factory,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            current_stage=current_stage,
+            start_progress=start_progress,
+            max_progress=max_progress,
+            interval_seconds=interval_seconds,
+        )
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self._interval_seconds):
+            elapsed_steps = int((monotonic() - self._started_at) / self._interval_seconds)
+            target_progress = min(self._max_progress, self._start_progress + max(1, elapsed_steps))
+            pulse_session = self._session_factory()
+            try:
+                TaskHeartbeat(pulse_session, self._task_id, self._attempt_id).tick(
+                    progress_percent=target_progress,
+                    current_stage=self._current_stage,
+                )
+            except StaleAttemptError as exc:
+                self._stale_error = exc
+                self._stop_event.set()
+            except Exception:
+                pulse_session.rollback()
+            finally:
+                pulse_session.close()
 
 
 def ensure_attempt(task_repository: TaskCenterRepository, task_id: int, attempt_id: str | None) -> str:

@@ -30,6 +30,13 @@ from app.modules.coverage.service import CoverageService
 from app.modules.homework.presets import resolve_homework_strategy
 from app.modules.homework.repository import HomeworkRepository
 from app.modules.p0_models import HomeworkBlueprint, HomeworkQuestion, HomeworkResult
+from app.modules.task_center.heartbeat import (
+    StaleAttemptError,
+    TaskHeartbeat,
+    TaskProgressPulse,
+    ensure_attempt,
+)
+from app.modules.task_center.progress import assign_monotonic_progress
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
@@ -57,10 +64,14 @@ def run_generate_homework_task(payload: dict) -> dict[str, int | str]:
     task = task_repository.get_task_by_id(payload["task_record_id"])
     step_map = _get_step_map(task_repository, payload["task_record_id"])
     now = DateTimeUtil.now_utc()
+    attempt_id = ensure_attempt(task_repository, payload["task_record_id"], payload.get("execution_attempt_id"))
+    heartbeat = TaskHeartbeat(session, payload["task_record_id"], attempt_id)
 
     try:
         if task is None:
             raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "课后作业生成任务不存在")
+        if task.execution_attempt_id and task.execution_attempt_id != attempt_id:
+            raise StaleAttemptError(task.id, attempt_id)
         generation_batch = repository.get_generation_batch(payload["generation_batch_id"])
         lesson_plan = repository.get_lesson_plan(payload["lesson_plan_id"])
         if generation_batch is None:
@@ -140,10 +151,20 @@ def run_generate_homework_task(payload: dict) -> dict[str, int | str]:
             knowledge_points=lesson_knowledge_points,
             strategy=strategy,
         )
-        generation_result = llm_service.generate_structured_output(
-            messages=llm_messages,
-            response_model=AssessmentGenerationResult,
-        )
+        heartbeat.touch()
+        with TaskProgressPulse.from_session(
+            session,
+            task_id=task.id,
+            attempt_id=attempt_id,
+            current_stage="invoke_llm_homework",
+            start_progress=40,
+            max_progress=74,
+        ):
+            generation_result = llm_service.generate_structured_output(
+                messages=llm_messages,
+                response_model=AssessmentGenerationResult,
+            )
+        heartbeat.touch()
         truncate_questions_to_strategy(generation_result, expected_question_count=int(strategy["question_count"]))
         validate_assessment_result(
             generation_result,
@@ -288,6 +309,9 @@ def run_generate_homework_task(payload: dict) -> dict[str, int | str]:
             "homework_result_id": homework_result.id,
             "question_count": len(generation_result.questions),
         }
+    except StaleAttemptError:
+        session.rollback()
+        return {"stale_attempt": True}
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         _mark_task_failure(task_repository, payload, exc)
@@ -426,7 +450,7 @@ def _mark_task(
 ) -> None:
     task.task_status = task_status
     task.current_stage = current_stage
-    task.progress_percent = progress_percent
+    assign_monotonic_progress(task, progress_percent)
     if started_at is not None:
         task.started_at = task.started_at or started_at
     if finished_at is not None:
@@ -445,7 +469,7 @@ def _mark_step(
     finished_at=None,
 ) -> None:
     step.step_status = step_status
-    step.progress_percent = progress_percent
+    assign_monotonic_progress(step, progress_percent)
     if detail_json is not None:
         step.detail_json = detail_json
     if started_at is not None:

@@ -30,9 +30,11 @@ from app.modules.p0_models import LessonPlan
 from app.modules.task_center.heartbeat import (
     StaleAttemptError,
     TaskHeartbeat,
+    TaskProgressPulse,
     dispatch_with_attempt,
     ensure_attempt,
 )
+from app.modules.task_center.progress import assign_monotonic_progress
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, LlmUsage, OpenAICompatibleLlmService, load_evidence_image_data_urls
@@ -136,18 +138,20 @@ def _update_lesson_plan_llm_progress(
     """主线程刷新教案 LLM 阶段进度。"""
     progress_percent = int(100 * completed_sessions / max(total_sessions, 1))
     if completed_sessions > 0:
-        task_progress = 30 + int(45 * completed_sessions / max(total_sessions, 1))
+        task_progress = 40 + int(40 * completed_sessions / max(total_sessions, 1))
         heartbeat.tick(progress_percent=task_progress, current_stage="invoke_llm_lesson_plan")
+    detail_json = {
+        "processed_sessions": completed_sessions,
+        "total_sessions": total_sessions,
+        "parallel_limit": parallel_limit,
+        "cache_warmup_completed": cache_warmup_completed,
+    }
+    if completed_sessions > 0:
+        detail_json["last_completed_class_session_no"] = class_session_no
     heartbeat.update_step_detail(
         step_id=step_id,
         progress_percent=progress_percent,
-        detail_json={
-            "processed_sessions": completed_sessions,
-            "total_sessions": total_sessions,
-            "class_session_no": class_session_no,
-            "parallel_limit": parallel_limit,
-            "cache_warmup_completed": cache_warmup_completed,
-        },
+        detail_json=detail_json,
     )
 
 
@@ -290,7 +294,7 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
             },
             finished_at=DateTimeUtil.now_utc(),
         )
-        _mark_step(step_map["invoke_llm_lesson_plan"], TASK_STATUS_PROCESSING, 30, started_at=DateTimeUtil.now_utc())
+        _mark_step(step_map["invoke_llm_lesson_plan"], TASK_STATUS_PROCESSING, 0, started_at=DateTimeUtil.now_utc())
         _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="invoke_llm_lesson_plan", progress_percent=40)
         task_repository.save(task)
         for step in step_map.values():
@@ -333,15 +337,23 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
             parallel_limit=parallel_limit,
             cache_warmup_completed=False,
         )
-        first_result = _generate_single_lesson_plan(
-            llm_service=llm_service,
-            stable_messages=stable_messages,
-            lesson_session=first_lesson_session,
-            index=1,
-            cache_biz_key=cache_biz_key,
-            cache_user_id=cache_user_id,
-            knowledge_point_ids=knowledge_point_ids,
-        )
+        with TaskProgressPulse.from_session(
+            session,
+            task_id=task.id,
+            attempt_id=attempt_id,
+            current_stage="invoke_llm_lesson_plan",
+            start_progress=40,
+            max_progress=44,
+        ):
+            first_result = _generate_single_lesson_plan(
+                llm_service=llm_service,
+                stable_messages=stable_messages,
+                lesson_session=first_lesson_session,
+                index=1,
+                cache_biz_key=cache_biz_key,
+                cache_user_id=cache_user_id,
+                knowledge_point_ids=knowledge_point_ids,
+            )
         lesson_generation_results.append(first_result)
         usage_records.extend(first_result["usage_records"])
         _update_lesson_plan_llm_progress(
@@ -355,19 +367,27 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
         )
 
         if total_sessions > 1:
-            remaining_results, remaining_usage_records = _generate_remaining_lesson_plans_in_parallel(
-                llm_service=llm_service,
-                stable_messages=stable_messages,
-                lesson_sessions=lesson_sessions,
-                cache_biz_key=cache_biz_key,
-                cache_user_id=cache_user_id,
-                knowledge_point_ids=knowledge_point_ids,
-                heartbeat=heartbeat,
-                step_id=step_map["invoke_llm_lesson_plan"].id,
-                parallel_limit=parallel_limit,
-                total_sessions=total_sessions,
-                completed_sessions=1,
-            )
+            with TaskProgressPulse.from_session(
+                session,
+                task_id=task.id,
+                attempt_id=attempt_id,
+                current_stage="invoke_llm_lesson_plan",
+                start_progress=45,
+                max_progress=79,
+            ):
+                remaining_results, remaining_usage_records = _generate_remaining_lesson_plans_in_parallel(
+                    llm_service=llm_service,
+                    stable_messages=stable_messages,
+                    lesson_sessions=lesson_sessions,
+                    cache_biz_key=cache_biz_key,
+                    cache_user_id=cache_user_id,
+                    knowledge_point_ids=knowledge_point_ids,
+                    heartbeat=heartbeat,
+                    step_id=step_map["invoke_llm_lesson_plan"].id,
+                    parallel_limit=parallel_limit,
+                    total_sessions=total_sessions,
+                    completed_sessions=1,
+                )
             lesson_generation_results.extend(remaining_results)
             usage_records.extend(remaining_usage_records)
 
@@ -408,14 +428,14 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
                 "llm_usage": _summarize_llm_usage(usage_records),
                 "processed_sessions": total_sessions,
                 "total_sessions": total_sessions,
-                "class_session_no": int(lesson_sessions[-1]["session_no"]),
+                "last_completed_class_session_no": int(lesson_sessions[-1]["session_no"]),
                 "parallel_limit": parallel_limit,
                 "cache_warmup_completed": True,
             },
             finished_at=DateTimeUtil.now_utc(),
         )
         _mark_step(step_map["persist_lesson_plan"], TASK_STATUS_PROCESSING, 45, started_at=DateTimeUtil.now_utc())
-        _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="persist_lesson_plan", progress_percent=75)
+        _mark_task(task, task_status=TASK_STATUS_PROCESSING, current_stage="persist_lesson_plan", progress_percent=80)
         repository.save(generation_batch)
         task_repository.save(task)
         for step in step_map.values():
@@ -745,7 +765,7 @@ def _build_lesson_plan_content_json(
 def _mark_task(task, *, task_status: str, current_stage: str, progress_percent: int, started_at=None, finished_at=None, result_json: dict | None = None) -> None:
     task.task_status = task_status
     task.current_stage = current_stage
-    task.progress_percent = progress_percent
+    assign_monotonic_progress(task, progress_percent)
     if started_at is not None:
         task.started_at = task.started_at or started_at
     if finished_at is not None:
@@ -756,7 +776,7 @@ def _mark_task(task, *, task_status: str, current_stage: str, progress_percent: 
 
 def _mark_step(step, step_status: str, progress_percent: int, *, detail_json: dict | None = None, started_at=None, finished_at=None) -> None:
     step.step_status = step_status
-    step.progress_percent = progress_percent
+    assign_monotonic_progress(step, progress_percent)
     if detail_json is not None:
         step.detail_json = detail_json
     if started_at is not None:

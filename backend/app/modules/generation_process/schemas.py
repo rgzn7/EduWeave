@@ -50,7 +50,7 @@ class GenerationProcessStepResponse(BaseSchema):
     )
     progress_detail: dict[str, Any] | None = Field(
         default=None,
-        description="公开进度指标，例如 processed/total/parallel_limit 等，不包含内部任务字段",
+        description="公开进度指标，例如 processed/total/parallel_limit/last_completed 等，不包含内部任务字段",
         examples=[{"processed_sessions": 3, "total_sessions": 10, "parallel_limit": 4}],
     )
     result_detail: dict[str, Any] | None = Field(

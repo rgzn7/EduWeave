@@ -4,16 +4,19 @@
 @Discription: 任务心跳与执行实例（attempt）机制单测
 """
 
+import time
+
 from sqlalchemy import select, text
 
 import pytest
 
 from app.core.constants import CURRICULUM_GENERATE_TASK_TYPE, CURRICULUM_MODULE_CODE, GENERATION_QUEUE_NAME, TASK_STATUS_PROCESSING
 from app.modules.auth.models import SysUser
-from app.modules.p0_models import Project, TaskRecord
+from app.modules.p0_models import Project, TaskRecord, TaskStepRecord
 from app.modules.task_center.heartbeat import (
     StaleAttemptError,
     TaskHeartbeat,
+    TaskProgressPulse,
     ensure_attempt,
     start_attempt,
 )
@@ -73,6 +76,85 @@ def test_heartbeat_tick_updates_progress_and_heartbeat(seeded_session_factory) -
         assert task.progress_percent == 45
         assert task.current_stage == "invoke_llm_curriculum"
         assert task.last_heartbeat_at is not None
+    finally:
+        session.close()
+
+
+def test_heartbeat_tick_should_not_move_progress_backward(seeded_session_factory) -> None:
+    """tick 写入较小任务进度时应保持原值，只允许继续前进。"""
+    session = seeded_session_factory()
+    try:
+        task = _create_task(session)
+        repository = TaskCenterRepository(session)
+        attempt_id = start_attempt(repository, task.id)
+        session.commit()
+
+        hb = TaskHeartbeat(session, task.id, attempt_id)
+        hb.tick(progress_percent=20, current_stage="invoke_llm_curriculum")
+        session.refresh(task)
+        assert task.progress_percent == 30
+
+        hb.tick(progress_percent=46, current_stage="invoke_llm_curriculum")
+        session.refresh(task)
+        assert task.progress_percent == 46
+    finally:
+        session.close()
+
+
+def test_heartbeat_step_detail_should_not_move_progress_backward(seeded_session_factory) -> None:
+    """update_step_detail 写入较小步骤进度时应保持原值。"""
+    session = seeded_session_factory()
+    try:
+        task = _create_task(session)
+        step = TaskStepRecord(
+            task_record_id=task.id,
+            step_code="invoke_llm_curriculum",
+            step_name="调用 LLM 生成课程大纲",
+            step_order=1,
+            step_status=TASK_STATUS_PROCESSING,
+            progress_percent=50,
+        )
+        session.add(step)
+        session.commit()
+        repository = TaskCenterRepository(session)
+        attempt_id = start_attempt(repository, task.id)
+        session.commit()
+
+        hb = TaskHeartbeat(session, task.id, attempt_id)
+        hb.update_step_detail(step_id=step.id, progress_percent=20, detail_json={"processed": 1})
+        session.refresh(step)
+        assert step.progress_percent == 50
+        assert step.detail_json == {"processed": 1}
+
+        hb.update_step_detail(step_id=step.id, progress_percent=80)
+        session.refresh(step)
+        assert step.progress_percent == 80
+    finally:
+        session.close()
+
+
+def test_progress_pulse_should_advance_with_independent_session(seeded_session_factory) -> None:
+    """TaskProgressPulse 应使用独立 Session 在阻塞期间推进进度。"""
+    session = seeded_session_factory()
+    try:
+        task = _create_task(session)
+        repository = TaskCenterRepository(session)
+        attempt_id = start_attempt(repository, task.id)
+        session.commit()
+
+        with TaskProgressPulse.from_session(
+            session,
+            task_id=task.id,
+            attempt_id=attempt_id,
+            current_stage="invoke_llm_curriculum",
+            start_progress=30,
+            max_progress=33,
+            interval_seconds=0.05,
+        ):
+            time.sleep(0.12)
+
+        session.refresh(task)
+        assert 31 <= task.progress_percent <= 33
     finally:
         session.close()
 

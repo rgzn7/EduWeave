@@ -27,6 +27,7 @@ from app.modules.task_center.heartbeat import (
     TaskHeartbeat,
     ensure_attempt,
 )
+from app.modules.task_center.progress import assign_monotonic_progress
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.document import LocalDocxParseService
@@ -395,7 +396,7 @@ def _upload_asset_files(
 def _mark_task(task, *, task_status: str, current_stage: str, progress_percent: int, started_at=None, finished_at=None, result_json: dict | None = None) -> None:
     task.task_status = task_status
     task.current_stage = current_stage
-    task.progress_percent = progress_percent
+    assign_monotonic_progress(task, progress_percent)
     if started_at is not None:
         task.started_at = task.started_at or started_at
     if finished_at is not None:
@@ -406,7 +407,7 @@ def _mark_task(task, *, task_status: str, current_stage: str, progress_percent: 
 
 def _mark_step(step, step_status: str, progress_percent: int, *, detail_json: dict | None = None, started_at=None, finished_at=None) -> None:
     step.step_status = step_status
-    step.progress_percent = progress_percent
+    assign_monotonic_progress(step, progress_percent)
     if detail_json is not None:
         step.detail_json = detail_json
     if started_at is not None:

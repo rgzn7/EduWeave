@@ -63,7 +63,9 @@ STAGE_STALE_OVERRIDES: dict[tuple[str, str], int] = {
     (LESSON_PLAN_GENERATE_TASK_TYPE, "invoke_llm_lesson_plan"): 3600,
     (COVERAGE_ANALYZE_TASK_TYPE, "invoke_llm_coverage"): 1800,
     (TEXTBOOK_PARSE_TASK_TYPE, "poll_mineru"): 1800,
+    (TEXTBOOK_PARSE_TASK_TYPE, "poll_mineru_result"): 1800,
     (TEXTBOOK_REPARSE_TASK_TYPE, "poll_mineru"): 1800,
+    (TEXTBOOK_REPARSE_TASK_TYPE, "poll_mineru_result"): 1800,
 }
 
 

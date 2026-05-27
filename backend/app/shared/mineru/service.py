@@ -6,6 +6,7 @@
 
 import io
 import json
+from collections.abc import Callable
 from pathlib import PurePosixPath
 from typing import Any
 from zipfile import ZipFile
@@ -19,7 +20,7 @@ from app.core.constants import (
 )
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.shared.mineru.client import MineruClient
-from app.shared.mineru.schemas import NormalizedBlock, NormalizedDocument, NormalizedPage
+from app.shared.mineru.schemas import MineruBatchFileResult, NormalizedBlock, NormalizedDocument, NormalizedPage
 
 
 class MineruDocumentService:
@@ -37,6 +38,7 @@ class MineruDocumentService:
         strategy_code: str,
         data_id: str,
         language: str | None = None,
+        on_progress: Callable[[MineruBatchFileResult], None] | None = None,
     ) -> NormalizedDocument:
         """执行文档解析并返回归一化结果。"""
         strategy = self.resolve_strategy(strategy_code)
@@ -54,7 +56,12 @@ class MineruDocumentService:
             enable_table=strategy["enable_table"],
         )
         self.client.upload_file(upload_batch.file_urls[0], content)
-        batch_result = self.client.poll_batch_result(batch_id=upload_batch.batch_id, data_id=data_id, file_name=file_name)
+        batch_result = self.client.poll_batch_result(
+            batch_id=upload_batch.batch_id,
+            data_id=data_id,
+            file_name=file_name,
+            on_progress=on_progress,
+        )
         full_zip_bytes = self.client.download_full_zip(batch_result.full_zip_url or "")
         return self.normalize_zip_payload(
             batch_id=upload_batch.batch_id,

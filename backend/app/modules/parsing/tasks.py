@@ -6,6 +6,7 @@
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 from sqlalchemy import create_engine
@@ -38,9 +39,10 @@ from app.modules.task_center.heartbeat import (
     TaskHeartbeat,
     ensure_attempt,
 )
+from app.modules.task_center.progress import assign_monotonic_progress
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
-from app.shared.mineru import MineruDocumentService
+from app.shared.mineru import MineruBatchFileResult, MineruDocumentService
 from app.shared.storage import ObsStorageClient
 from app.shared.utils import DateTimeUtil
 from app.shared.utils.page_range_util import parse_page_range_text
@@ -99,6 +101,13 @@ def run_parse_task(payload: dict) -> dict[str, int | str]:
             content=source_content,
             strategy_code=payload["strategy_code"],
             data_id=f"textbook_{textbook_version.id}_task_{task.id}",
+            on_progress=_build_mineru_progress_callback(
+                heartbeat=heartbeat,
+                step_id=step_map["poll_mineru_result"].id,
+                current_stage="poll_mineru_result",
+                task_progress_start=20,
+                task_progress_end=54,
+            ),
         )
         heartbeat.touch()
         _mark_step(
@@ -323,6 +332,13 @@ def run_reparse_task(payload: dict) -> dict[str, int | str]:
             content=subset_pdf_bytes,
             strategy_code=payload["strategy_code"],
             data_id=f"reparse_{parent_parse_version.id}_task_{task.id}",
+            on_progress=_build_mineru_progress_callback(
+                heartbeat=heartbeat,
+                step_id=step_map["poll_mineru_result"].id,
+                current_stage="poll_mineru_result",
+                task_progress_start=25,
+                task_progress_end=59,
+            ),
         )
         heartbeat.touch()
         _mark_step(
@@ -595,6 +611,55 @@ def _determine_new_version_status(
     return VERSION_STATUS_READY if active_parse_version is None else VERSION_STATUS_ARCHIVED
 
 
+def _build_mineru_progress_callback(
+    *,
+    heartbeat: TaskHeartbeat,
+    step_id: int,
+    current_stage: str,
+    task_progress_start: int,
+    task_progress_end: int,
+) -> Callable[[MineruBatchFileResult], None]:
+    """构造 MinerU 轮询进度回调，把外部等待阶段映射到任务进度区间。"""
+    poll_state = {"count": 0}
+
+    def _on_progress(result: MineruBatchFileResult) -> None:
+        poll_state["count"] += 1
+        external_percent = _extract_mineru_progress_percent(result.extract_progress)
+        if external_percent is None:
+            progress_ratio = min(0.95, poll_state["count"] / 20)
+        else:
+            progress_ratio = min(0.95, max(0.0, external_percent / 100))
+        task_progress = task_progress_start + int((task_progress_end - task_progress_start) * progress_ratio)
+        step_progress = 20 + int(75 * progress_ratio)
+        heartbeat.tick(progress_percent=task_progress, current_stage=current_stage)
+        heartbeat.update_step_detail(
+            step_id=step_id,
+            progress_percent=step_progress,
+            detail_json={
+                "mineru_state": result.state,
+                "poll_count": poll_state["count"],
+                "mineru_progress_percent": external_percent,
+            },
+        )
+
+    return _on_progress
+
+
+def _extract_mineru_progress_percent(extract_progress: dict | None) -> float | None:
+    """兼容解析 MinerU 可能返回的进度结构。"""
+    if not isinstance(extract_progress, dict):
+        return None
+    for key in ("progress_percent", "percent", "progress", "extract_percent"):
+        raw_value = extract_progress.get(key)
+        if isinstance(raw_value, (int, float)):
+            return raw_value * 100 if 0 <= raw_value <= 1 else float(raw_value)
+    done = extract_progress.get("done") or extract_progress.get("processed") or extract_progress.get("current")
+    total = extract_progress.get("total")
+    if isinstance(done, (int, float)) and isinstance(total, (int, float)) and total > 0:
+        return float(done) * 100 / float(total)
+    return None
+
+
 def _mark_task(
     task,
     *,
@@ -607,7 +672,7 @@ def _mark_task(
 ) -> None:
     task.task_status = task_status
     task.current_stage = current_stage
-    task.progress_percent = progress_percent
+    assign_monotonic_progress(task, progress_percent)
     if started_at is not None:
         task.started_at = task.started_at or started_at
     if finished_at is not None:
@@ -618,7 +683,7 @@ def _mark_task(
 
 def _mark_step(step, step_status: str, progress_percent: int, *, detail_json: dict | None = None, started_at=None, finished_at=None) -> None:
     step.step_status = step_status
-    step.progress_percent = progress_percent
+    assign_monotonic_progress(step, progress_percent)
     if detail_json is not None:
         step.detail_json = detail_json
     if started_at is not None:

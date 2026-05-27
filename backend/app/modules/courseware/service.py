@@ -32,6 +32,7 @@ from app.modules.courseware.schemas import (
     SlideDeckGenerationResult,
 )
 from app.modules.p0_models import CoursewareResult, FileObject
+from app.modules.task_center.progress import assign_monotonic_progress
 from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.schemas import TaskListItemResponse
 from app.modules.task_center.service import TaskCenterService
@@ -334,7 +335,7 @@ class CoursewareService:
             if task is not None:
                 task.task_status = TASK_STATUS_SUCCESS
                 task.current_stage = "finalize_courseware_result"
-                task.progress_percent = 100
+                assign_monotonic_progress(task, 100)
                 task.result_json = {
                     "generation_batch_id": courseware_result.generation_batch_id,
                     "courseware_result_id": courseware_result.id,
@@ -355,7 +356,7 @@ class CoursewareService:
             if task is not None:
                 task.task_status = TASK_STATUS_FAILURE
                 task.current_stage = "raccoon_task_failed"
-                task.progress_percent = 100
+                assign_monotonic_progress(task, 100)
                 task.last_error_code = BusinessErrorCode.RACCOON_RESULT_INVALID.value
                 task.last_error_message = state.error_message or f"Raccoon PPT 任务状态为 {state.status}"
                 task.finished_at = DateTimeUtil.now_utc()
@@ -366,7 +367,7 @@ class CoursewareService:
             if task is not None:
                 task.task_status = TASK_STATUS_PROCESSING
                 task.current_stage = "waiting_raccoon_result" if normalized_status != "waiting_user_input" else "waiting_user_input"
-                task.progress_percent = 80
+                assign_monotonic_progress(task, 80)
                 task.result_json = {
                     "generation_batch_id": courseware_result.generation_batch_id,
                     "courseware_result_id": courseware_result.id,
@@ -775,7 +776,7 @@ class CoursewareService:
         if step is None:
             return
         step.step_status = step_status
-        step.progress_percent = progress_percent
+        assign_monotonic_progress(step, progress_percent)
         if detail_json is not None:
             step.detail_json = detail_json
         if started_at is not None:

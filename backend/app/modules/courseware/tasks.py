@@ -21,6 +21,7 @@ from app.core.logging import get_logger
 from app.modules.courseware.repository import CoursewareRepository
 from app.modules.courseware.service import CoursewareService
 from app.modules.p0_models import TaskRecord
+from app.modules.task_center.progress import assign_monotonic_progress
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.queue.app import celery_app
@@ -242,7 +243,7 @@ def _mark_task(
 ) -> None:
     task.task_status = task_status
     task.current_stage = current_stage
-    task.progress_percent = progress_percent
+    assign_monotonic_progress(task, progress_percent)
     if started_at is not None:
         task.started_at = task.started_at or started_at
     if finished_at is not None:
@@ -261,7 +262,7 @@ def _mark_step(
     finished_at=None,
 ) -> None:
     step.step_status = step_status
-    step.progress_percent = progress_percent
+    assign_monotonic_progress(step, progress_percent)
     if detail_json is not None:
         step.detail_json = detail_json
     if started_at is not None:
