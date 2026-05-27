@@ -373,6 +373,7 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
             )
 
         if response_model is SlideDeckGenerationResult:
+            assert _extra_kwargs.get("strict_schema") is True
             point_id = int(user_payload["知识点"][0]["id"])
             return SlideDeckGenerationResult(
                 deck_title="三年级数学乘法提升课件",
@@ -397,7 +398,11 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
         return LessonPlanGenerationResult(
             lesson_title=f"{session_title}教案",
             summary_text=f"围绕{session_title}组织导入、讲解、练习与课后巩固。",
-            course_overview={"lesson_type": "提升课", "duration_minutes": 90},
+            course_overview={
+                "audience": "提升课三年级学生",
+                "duration": "90 分钟",
+                "focus": "乘法口诀与应用题",
+            },
             material_list=["教材解析片段", "口算练习纸"],
             core_knowledge=["乘法口诀", "应用题分析"],
             teaching_flow=[
@@ -438,7 +443,11 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
                     "knowledge_point_refs": [point_id],
                 }
             ],
-            after_class_plan={"homework": ["口诀复习"], "review_focus": "应用题审题"},
+            after_class_plan={
+                "review": "复习应用题审题要点",
+                "homework": "口诀复习",
+                "parent_communication": "提醒家长协助完成口算练习",
+            },
             learner_adjustments=["增加口算练习频次"],
             knowledge_point_refs=[point_id],
         )
@@ -513,7 +522,11 @@ def _build_lesson_plan_result_for_test(messages) -> LessonPlanGenerationResult:
     return LessonPlanGenerationResult(
         lesson_title=f"{session_title}教案",
         summary_text=f"围绕{session_title}组织导入、讲解、练习与课后巩固。",
-        course_overview={"lesson_type": "提升课", "duration_minutes": 90},
+        course_overview={
+            "audience": "提升课三年级学生",
+            "duration": "90 分钟",
+            "focus": "乘法口诀与应用题",
+        },
         material_list=["教材解析片段", "口算练习纸"],
         core_knowledge=["乘法口诀", "应用题分析"],
         teaching_flow=[
@@ -546,7 +559,11 @@ def _build_lesson_plan_result_for_test(messages) -> LessonPlanGenerationResult:
                 "knowledge_point_refs": [point_id],
             }
         ],
-        after_class_plan={"homework": ["口诀复习"], "review_focus": "应用题审题"},
+        after_class_plan={
+            "review": "复习应用题审题要点",
+            "homework": "口诀复习",
+            "parent_communication": "提醒家长协助完成口算练习",
+        },
         learner_adjustments=["增加口算练习频次"],
         knowledge_point_refs=[point_id],
     )
@@ -1221,7 +1238,11 @@ def test_lesson_plan_generation_result_should_reject_empty_skeleton() -> None:
     valid_payload = {
         "lesson_title": "第1讲 教案",
         "summary_text": "围绕核心知识开展教学。",
-        "course_overview": {"lesson_type": "提升课"},
+        "course_overview": {
+            "audience": "提升课五年级学生",
+            "duration": "40 分钟",
+            "focus": "掌握核心知识",
+        },
         "material_list": ["教材片段"],
         "core_knowledge": ["核心知识"],
         "teaching_flow": [
@@ -1254,7 +1275,11 @@ def test_lesson_plan_generation_result_should_reject_empty_skeleton() -> None:
                 "knowledge_point_refs": [1],
             }
         ],
-        "after_class_plan": {"homework": ["完成练习"]},
+        "after_class_plan": {
+            "review": "复习核心知识",
+            "homework": "完成练习",
+            "parent_communication": "请家长协助检查练习",
+        },
         "learner_adjustments": ["增加示例"],
         "knowledge_point_refs": [1],
     }
@@ -1419,10 +1444,17 @@ def test_courseware_task_should_fail_on_slide_deck_stage_when_llm_invalid(
 
     original_generate = OpenAICompatibleLlmService.generate_structured_output
 
-    def fail_slide_deck_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
+    def fail_slide_deck_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
         if response_model is SlideDeckGenerationResult:
+            assert _extra_kwargs.get("strict_schema") is True
             raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 返回课件结构非法")
-        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature)
+        return original_generate(
+            self,
+            messages=messages,
+            response_model=response_model,
+            temperature=temperature,
+            **_extra_kwargs,
+        )
 
     monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", fail_slide_deck_generate)
 
@@ -1937,7 +1969,11 @@ def test_generation_batch_should_mark_failure_when_lesson_plan_has_invalid_knowl
             return LessonPlanGenerationResult(
                 lesson_title="非法知识点教案",
                 summary_text="包含不存在的知识点引用。",
-                course_overview={"lesson_type": "提升课"},
+                course_overview={
+                    "audience": "提升课五年级学生",
+                    "duration": "40 分钟",
+                    "focus": "乘法口诀巩固",
+                },
                 material_list=["教材解析片段"],
                 core_knowledge=["乘法口诀"],
                 teaching_flow=[
@@ -1970,7 +2006,11 @@ def test_generation_batch_should_mark_failure_when_lesson_plan_has_invalid_knowl
                         "knowledge_point_refs": [outside_point_id],
                     }
                 ],
-                after_class_plan={"homework": ["完成练习"]},
+                after_class_plan={
+                    "review": "复习乘法口诀",
+                    "homework": "完成练习",
+                    "parent_communication": "请家长协助检查",
+                },
                 learner_adjustments=["增加讲解"],
                 knowledge_point_refs=[outside_point_id],
             )

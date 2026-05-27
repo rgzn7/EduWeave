@@ -77,17 +77,33 @@ class LessonPlanSessionDraft(BaseSchema):
         return _validate_non_blank_string_list(value)
 
 
+class LessonPlanCourseOverview(BaseSchema):
+    """LLM 教案课程概述。"""
+
+    audience: str = Field(description="授课对象描述", min_length=1, max_length=255)
+    duration: str = Field(description="课时总安排描述", min_length=1, max_length=255)
+    focus: str = Field(description="教学重点描述", min_length=1, max_length=255)
+
+
+class LessonPlanAfterClassPlan(BaseSchema):
+    """LLM 教案课后安排。"""
+
+    review: str = Field(description="复习巩固安排", min_length=1, max_length=1024)
+    homework: str = Field(description="课后作业安排", min_length=1, max_length=1024)
+    parent_communication: str = Field(description="家校沟通安排", min_length=1, max_length=1024)
+
+
 class LessonPlanGenerationResult(BaseSchema):
     """LLM 教案生成结果。"""
 
     lesson_title: str = Field(description="教案标题", min_length=1, max_length=255)
     summary_text: str | None = Field(default=None, description="教案摘要")
-    course_overview: dict[str, Any] = Field(description="课程概述", min_length=1)
+    course_overview: LessonPlanCourseOverview = Field(description="课程概述")
     material_list: list[str] = Field(description="物料清单", min_length=1)
     core_knowledge: list[str] = Field(description="核心知识", min_length=1)
     teaching_flow: list[LessonPlanTeachingStepDraft] = Field(description="标准行课流程", min_length=1)
     session_plans: list[LessonPlanSessionDraft] = Field(description="课次讲解安排", min_length=1)
-    after_class_plan: dict[str, Any] = Field(description="课后安排", min_length=1)
+    after_class_plan: LessonPlanAfterClassPlan = Field(description="课后安排")
     learner_adjustments: list[str] = Field(description="学情适配策略", min_length=1)
     knowledge_point_refs: list[int] = Field(description="教案整体关联知识点主键列表", min_length=1)
 

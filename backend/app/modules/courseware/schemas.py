@@ -5,14 +5,11 @@
 """
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, field_validator, model_validator
 
 from app.schemas.base import BaseSchema
-
-SLIDE_TYPES = ("cover", "toc", "knowledge", "example", "interaction", "summary", "homework")
-
 
 class CoursewareResultListItemResponse(BaseSchema):
     """课件结果列表项响应。"""
@@ -54,7 +51,15 @@ class SlideDraft(BaseSchema):
     """单页幻灯片结构。"""
 
     slide_no: int = Field(description="页序号", ge=1, examples=[1])
-    slide_type: str = Field(
+    slide_type: Literal[
+        "cover",
+        "toc",
+        "knowledge",
+        "example",
+        "interaction",
+        "summary",
+        "homework",
+    ] = Field(
         description="页型：cover/toc/knowledge/example/interaction/summary/homework",
         examples=["knowledge"],
     )
@@ -63,14 +68,6 @@ class SlideDraft(BaseSchema):
     speaker_notes: str | None = Field(default=None, description="讲解备注")
     knowledge_point_refs: list[int] = Field(default_factory=list, description="关联知识点主键列表")
     example_block: SlideExampleBlock | None = Field(default=None, description="例题块（例题页使用）")
-
-    @field_validator("slide_type")
-    @classmethod
-    def validate_slide_type(cls, value: str) -> str:
-        """校验页型取值合法。"""
-        if value not in SLIDE_TYPES:
-            raise ValueError(f"页型必须为 {SLIDE_TYPES} 之一")
-        return value
 
     @field_validator("bullet_points")
     @classmethod
