@@ -310,6 +310,28 @@ export type GenerationBatch = {
   updated_at: string;
 };
 
+export type GenerationProcessStatus = "pending" | "running" | "succeeded" | "failed" | "waiting";
+
+export type GenerationProcessStep = {
+  code: string;
+  display_name: string;
+  description: string;
+  status: GenerationProcessStatus;
+  progress_percent: number;
+  summary?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error_message?: string | null;
+};
+
+export type GenerationProcess = {
+  project_id: number;
+  batch_id?: number | null;
+  status: GenerationProcessStatus;
+  current_step_code?: string | null;
+  steps: GenerationProcessStep[];
+};
+
 export type FileDownloadUrl = {
   file_object_id: number;
   bucket_name: string;
@@ -374,11 +396,32 @@ export type AssessmentBlueprint = {
   updated_at: string;
 };
 
+export type QuestionBasisSource = JsonRecord & {
+  blueprint_type?: string | null;
+  blueprint_id?: number | null;
+  weight_percent?: number | string | null;
+  suggested_question_count?: number | string | null;
+};
+
+export type QuestionBasis = JsonRecord & {
+  knowledge_point_id?: number | null;
+  knowledge_point_name?: string | null;
+  knowledge_point_summary?: string | null;
+  chapter_title?: string | null;
+  lesson_no?: number | null;
+  lesson_title?: string | null;
+  teaching_goal?: string | null;
+  assessment_position?: string | null;
+  basis_summary?: string | null;
+  source?: QuestionBasisSource | null;
+};
+
 export type QuestionItem = {
   id: number;
   generation_batch_id: number;
   paper_result_id: number;
   knowledge_point_id?: number | null;
+  knowledge_point_name?: string | null;
   question_no: number;
   question_type: string;
   difficulty_level?: number | null;
@@ -388,6 +431,7 @@ export type QuestionItem = {
   answer_text?: string | null;
   analysis_text?: string | null;
   source_trace_json?: JsonRecord | null;
+  question_basis_json?: QuestionBasis | null;
   created_at: string;
   updated_at: string;
 };
@@ -420,6 +464,7 @@ export type HomeworkQuestion = {
   homework_result_id: number;
   lesson_plan_id: number;
   knowledge_point_id?: number | null;
+  knowledge_point_name?: string | null;
   question_no: number;
   question_type: string;
   difficulty_level?: number | null;
@@ -429,6 +474,7 @@ export type HomeworkQuestion = {
   answer_text?: string | null;
   analysis_text?: string | null;
   source_trace_json?: JsonRecord | null;
+  question_basis_json?: QuestionBasis | null;
   created_at: string;
   updated_at: string;
 };

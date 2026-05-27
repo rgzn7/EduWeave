@@ -10,6 +10,7 @@ import type {
   CurriculumPlan,
   FileDownloadUrl,
   GenerationBatch,
+  GenerationProcess,
   HomeworkQuestionListItem,
   HomeworkResult,
   HomeworkResultDetail,
@@ -256,6 +257,9 @@ export const api = {
   },
   getGenerationBatch(generationBatchId: number) {
     return request<GenerationBatch>(`/api/v1/generation-batches/${generationBatchId}`);
+  },
+  getGenerationProcess(projectId: number) {
+    return request<GenerationProcess>(`/api/v1/projects/${projectId}/generation-process`);
   },
   listCurriculumPlans(query: { project_id: number; knowledge_version_id?: number; page?: number; page_size?: number }) {
     return request<PageResult<CurriculumPlan>>("/api/v1/curriculum-plans", {}, { page: 1, page_size: 20, ...query });

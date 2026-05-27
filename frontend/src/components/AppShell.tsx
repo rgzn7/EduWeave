@@ -20,7 +20,7 @@ export function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
   const clearSession = useAuthStore((state) => state.clearSession);
-  const isDashboard = location.pathname === "/";
+  const isMenuPage = location.pathname === "/" || location.pathname === "/history";
   const isProcessPage = /^\/projects\/[^/]+$/.test(location.pathname);
   const resourceMatch = location.pathname.match(/^\/projects\/([^/]+)\/batches\/([^/]+)(?:\/(assessments|homework|coverage)\/([^/]+))?\/?$/);
   const resourceProjectId = Number(resourceMatch?.[1] ?? 0);
@@ -28,7 +28,7 @@ export function AppShell() {
   const resourceKind = resourceMatch?.[3];
   const resourceDetailId = Number(resourceMatch?.[4] ?? 0);
   const hasContextHeader = isProcessPage || Boolean(resourceMatch);
-  const useQuietHeader = isDashboard;
+  const useQuietHeader = isMenuPage;
 
   const resourceProjectQuery = useQuery({
     queryKey: ["project", resourceProjectId],

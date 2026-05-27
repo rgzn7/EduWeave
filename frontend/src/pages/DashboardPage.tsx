@@ -1,6 +1,6 @@
 import { FormEvent, useState } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRight, CheckCircle2, FileText, Loader2, Minus, Plus, UploadCloud } from "lucide-react";
+import { ArrowRight, CheckCircle2, Clock3, FileText, Loader2, Minus, Plus, UploadCloud } from "lucide-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorNotice } from "../components/ErrorNotice";
@@ -24,6 +24,7 @@ type ProjectCase = {
   state: ProjectCaseState;
   statusLabel: string;
   actionLabel: string;
+  detailLabel?: string;
   href: string;
 };
 
@@ -110,6 +111,59 @@ function getCaseState(project: Project, batch?: GenerationBatch, hasBatchError?:
   return "incomplete";
 }
 
+function extractPublisher(name: string) {
+  return name.match(/([\u4e00-\u9fa5A-Za-z0-9·（）()]+出版社)/u)?.[1] ?? null;
+}
+
+function extractVolumeLabel(name: string) {
+  if (name.includes("上册")) {
+    return "上册";
+  }
+  if (name.includes("下册")) {
+    return "下册";
+  }
+  if (name.includes("全一册")) {
+    return "全一册";
+  }
+  return "";
+}
+
+function getProjectDisplayTitle(project: Project) {
+  const name = stripExtension(project.name);
+  const subject = subjectLabels[project.subject_code];
+  const grade = gradeLabels[project.grade_code];
+  const looksLikeTextbookName = name.includes("教材") || name.includes("出版社");
+  if (looksLikeTextbookName && subject && grade) {
+    return `${subject}${grade}${extractVolumeLabel(name)}`;
+  }
+  return name;
+}
+
+function getProjectDisplaySubtitle(project: Project) {
+  const name = stripExtension(project.name);
+  const subject = subjectLabels[project.subject_code] ?? project.subject_code;
+  const grade = gradeLabels[project.grade_code] ?? project.grade_code;
+  const publisher = extractPublisher(name);
+  return publisher ? `${publisher} · ${subject} / ${grade}` : `${subject} / ${grade}`;
+}
+
+function hasLessonPlan(batch?: GenerationBatch) {
+  return Boolean(batch?.lesson_plan_id || (Array.isArray(batch?.lesson_plan_ids) && batch.lesson_plan_ids.length > 0));
+}
+
+function getFailedCaseDetailLabel(batch?: GenerationBatch) {
+  if (!batch) {
+    return "教案资源待继续生成";
+  }
+  if (!batch.curriculum_plan_id) {
+    return "课程总纲待继续生成";
+  }
+  if (!hasLessonPlan(batch)) {
+    return "教案资源待继续生成";
+  }
+  return "覆盖报告待继续生成";
+}
+
 function getCaseStatusLabel(project: Project, state: ProjectCaseState) {
   if (state === "completed") {
     return "已完成";
@@ -118,7 +172,7 @@ function getCaseStatusLabel(project: Project, state: ProjectCaseState) {
     return "生成中";
   }
   if (state === "failed") {
-    return "需要处理";
+    return "待继续";
   }
   if (state === "ready_to_generate") {
     return "待生成";
@@ -133,16 +187,19 @@ function getCaseActionLabel(project: Project, state: ProjectCaseState) {
   if (state === "completed") {
     return "查看资源";
   }
-  if (state === "processing" || state === "ready_to_generate") {
+  if (state === "processing") {
+    return "查看进度";
+  }
+  if (state === "ready_to_generate") {
     return "继续生成";
   }
   if (state === "failed") {
-    return "需要处理";
+    return "继续生成";
   }
   if (project.current_textbook_version_id || project.current_learner_profile_version_id) {
     return "继续补充";
   }
-  return "等待处理";
+  return "开始补充";
 }
 
 function getCaseLink(project: Project, state: ProjectCaseState) {
@@ -159,6 +216,7 @@ function buildProjectCase(project: Project, batch?: GenerationBatch, hasBatchErr
     state,
     statusLabel: getCaseStatusLabel(project, state),
     actionLabel: getCaseActionLabel(project, state),
+    detailLabel: state === "failed" ? getFailedCaseDetailLabel(batch) : undefined,
     href: getCaseLink(project, state),
   };
 }
@@ -386,40 +444,57 @@ function LessonPrepComposer({
   );
 }
 
-function CaseStatusPill({ label }: { label: string }) {
-  const isDone = label === "已完成";
+function CaseStatusPill({ label, state }: { label: string; state: ProjectCaseState }) {
   return (
-    <span className={isDone ? "rounded-full bg-ink px-2.5 py-1 text-xs font-semibold text-white" : "rounded-full bg-[#f2f2f2] px-2.5 py-1 text-xs font-semibold text-ink/58"}>
+    <span
+      className={cn(
+        "shrink-0 whitespace-nowrap rounded-full px-3 py-1 text-xs font-semibold",
+        state === "completed" && "bg-ink text-white",
+        state === "failed" && "bg-[#fff7ed] text-[#b45309]",
+        state !== "completed" && state !== "failed" && "bg-[#f2f2f2] text-ink/58",
+      )}
+    >
       {label}
     </span>
   );
 }
 
 function CaseCard({ item }: { item: ProjectCase }) {
+  const title = getProjectDisplayTitle(item.project);
+  const subtitle = getProjectDisplaySubtitle(item.project);
+  const date = formatDate(item.project.last_activity_at ?? item.project.updated_at);
+
   return (
-    <Link className="group block rounded-[20px] border border-line bg-white/88 p-4 shadow-panel transition hover:-translate-y-0.5 hover:border-ink/20 hover:bg-white" to={item.href}>
-      <div className="flex items-start gap-3">
-        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#f2f2f2] text-ink/72">
-          <FileText size={18} />
+    <Link className="group block rounded-[18px] border border-line bg-white/90 p-5 shadow-panel transition hover:-translate-y-0.5 hover:border-ink/20 hover:bg-white md:p-6" to={item.href}>
+      <div className="flex items-start gap-4">
+        <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[14px] bg-[#f2f2f2] text-ink/72">
+          <FileText size={24} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-3">
-            <h3 className="line-clamp-2 text-sm font-semibold leading-5 text-ink">{item.project.name}</h3>
-            <CaseStatusPill label={item.statusLabel} />
-          </div>
-          <div className="mt-3 flex flex-wrap gap-1.5 text-xs font-medium text-ink/45">
-            <span>{subjectLabels[item.project.subject_code] ?? item.project.subject_code}</span>
-            <span>/</span>
-            <span>{gradeLabels[item.project.grade_code] ?? item.project.grade_code}</span>
-          </div>
-          <div className="mt-5 flex items-center justify-between border-t border-line/70 pt-3 text-xs">
-            <span className="text-ink/38">{formatDate(item.project.last_activity_at ?? item.project.updated_at)}</span>
-            <span className="inline-flex items-center gap-1 font-semibold text-ink/72">
-              {item.actionLabel}
-              <ArrowRight className="transition group-hover:translate-x-0.5" size={14} />
-            </span>
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h3 className="line-clamp-2 text-xl font-semibold leading-snug text-ink">{title}</h3>
+              <p className="mt-2 truncate text-sm font-medium text-ink/50">{subtitle}</p>
+            </div>
+            <CaseStatusPill label={item.statusLabel} state={item.state} />
           </div>
         </div>
+      </div>
+      <div className="mt-6 flex items-center justify-between gap-4 border-t border-line/70 pt-4 text-sm">
+        <div className="flex min-w-0 items-center gap-2 text-ink/54">
+          <Clock3 className="shrink-0" size={16} />
+          <span className="shrink-0 tabular-nums">{date}</span>
+          {item.detailLabel ? (
+            <>
+              <span className="text-ink/24">·</span>
+              <span className="truncate">{item.detailLabel}</span>
+            </>
+          ) : null}
+        </div>
+        <span className="inline-flex shrink-0 items-center gap-1 font-semibold text-ink transition group-hover:text-ink/72">
+          {item.actionLabel}
+          <ArrowRight className="transition group-hover:translate-x-0.5" size={14} />
+        </span>
       </div>
     </Link>
   );
@@ -486,7 +561,7 @@ export function DashboardPage() {
     return buildProjectCase(project, batchQuery?.data as GenerationBatch | undefined, batchQuery?.isError);
   });
   const sortedCases = sortRecentCases(projectCases);
-  const visibleCases = isHistoryPage ? sortedCases : sortedCases.slice(0, 3);
+  const visibleCases = isHistoryPage ? sortedCases : sortedCases.slice(0, 4);
 
   function handleTextbookChange(file: File | null) {
     setTextbookFile(file);
@@ -504,14 +579,20 @@ export function DashboardPage() {
 
   if (isHistoryPage) {
     return (
-      <div className="mx-auto min-h-screen w-full max-w-5xl pb-16 pt-20 md:pt-28">
+      <div className="mx-auto min-h-screen w-full max-w-[1160px] pb-16 pt-10 md:pt-14">
         <section className="space-y-5">
-          <div>
-            <h1 className="text-3xl font-semibold tracking-[-0.03em] text-ink md:text-4xl">备课记录</h1>
-            <p className="mt-3 text-sm text-ink/45">查看所有备课，包括正在生成、待处理和已完成的记录。</p>
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h1 className="text-3xl font-semibold tracking-[-0.03em] text-ink md:text-4xl">备课记录</h1>
+              <p className="mt-3 text-sm text-ink/45">查看所有备课，包括正在生成、待继续和已完成的记录。</p>
+            </div>
+            <Link className="btn btn-primary h-10 shrink-0 rounded-md px-4" to="/">
+              <Plus size={16} />
+              新建备课
+            </Link>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-4 md:grid-cols-2">
             {projectsQuery.isLoading ? (
               <div className="panel col-span-full flex h-28 items-center justify-center text-sm text-ink/50">
                 <Loader2 className="mr-2 animate-spin" size={17} />
@@ -532,7 +613,7 @@ export function DashboardPage() {
 
   return (
     <div className="mx-auto flex min-h-screen w-full max-w-7xl flex-col pb-16 pt-24 md:pt-32">
-      <section className="mx-auto w-full max-w-[900px]">
+      <section className="mx-auto w-full max-w-5xl">
         <div className="text-center">
           <h1 className="font-serif text-[42px] font-medium leading-tight tracking-normal text-ink md:text-[56px]">上传材料，生成备课资源</h1>
         </div>
@@ -564,7 +645,7 @@ export function DashboardPage() {
           </Link>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2">
           {projectsQuery.isLoading ? (
             <div className="panel col-span-full flex h-28 items-center justify-center text-sm text-ink/50">
               <Loader2 className="mr-2 animate-spin" size={17} />

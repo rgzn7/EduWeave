@@ -5,6 +5,7 @@ import {
   BookOpen,
   ClipboardCheck,
   Download,
+  ExternalLink,
   FileText,
   Loader2,
   Presentation,
@@ -13,7 +14,7 @@ import {
 import { Link, useParams } from "react-router-dom";
 import { isTaskActiveStatus } from "../hooks/useTaskPolling";
 import { api } from "../lib/api";
-import type { CoursewareResult, GenerationBatch, HomeworkResult, JsonRecord, LessonPlan, PaperResult, Task } from "../types";
+import type { CoursewareResult, GenerationBatch, HomeworkResult, JsonRecord, LearnerProfileFile, LessonPlan, PaperResult, Task, TextbookVersion } from "../types";
 import { cn, toNumberId } from "../utils";
 import { asRecord, asRecordList, latestByUpdated, sortLessons } from "./batch-detail/helpers";
 
@@ -50,6 +51,61 @@ function cleanText(value: unknown) {
   return text;
 }
 
+function numberValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+function fileObjectIdFrom(source: unknown, fallback?: number | null) {
+  const record = asRecord(source);
+  return numberValue(record?.id) ?? numberValue(record?.file_object_id) ?? numberValue(fallback);
+}
+
+function fileNameFrom(source: unknown, fallback?: string | null) {
+  const record = asRecord(source);
+  const candidates = [record?.original_filename, record?.filename, record?.file_name, record?.name, fallback];
+  return candidates.map(cleanText).find(Boolean) ?? "已上传文件";
+}
+
+const subjectLabels: Record<string, string> = {
+  math: "数学",
+  chinese: "语文",
+  english: "英语",
+  science: "科学",
+};
+
+const gradeLabels: Record<string, string> = {
+  grade_1: "一年级",
+  grade_2: "二年级",
+  grade_3: "三年级",
+  grade_4: "四年级",
+  grade_5: "五年级",
+  grade_6: "六年级",
+  grade_7: "七年级",
+  grade_8: "八年级",
+  grade_9: "九年级",
+};
+
+function extractPublisherLabel(value?: string | null) {
+  return cleanText(value).match(/([\u4e00-\u9fa5A-Za-z0-9·（）()]+出版社)/u)?.[1] ?? "";
+}
+
+function textbookInfo(textbook?: TextbookVersion) {
+  if (!textbook) {
+    return "教材信息同步中";
+  }
+  const subject = subjectLabels[textbook.subject_code] ?? textbook.subject_code;
+  const grade = gradeLabels[textbook.grade_code] ?? textbook.grade_code;
+  const publisher = cleanText(asRecord(textbook)?.publisher) || extractPublisherLabel(textbook.textbook_name);
+  return [publisher, `${subject} / ${grade}`].filter(Boolean).join(" · ");
+}
+
 function collectText(value: unknown, limit = 8): string[] {
   const items: string[] = [];
 
@@ -75,6 +131,21 @@ function collectText(value: unknown, limit = 8): string[] {
 
   visit(value);
   return items;
+}
+
+const teachingDetailTerminalPunctuation = /[。！？!?；;]$/u;
+
+function joinTeachingDetails(details: string[]) {
+  const items = details.map(cleanText).filter(Boolean);
+
+  return items
+    .map((item, index) => {
+      if (teachingDetailTerminalPunctuation.test(item)) {
+        return item;
+      }
+      return `${item}${index === items.length - 1 ? "。" : "；"}`;
+    })
+    .join("");
 }
 
 function pickText(content: JsonRecord | null, keys: string[], limit = 6) {
@@ -363,7 +434,7 @@ function LessonPreview({ lesson, loading }: { lesson?: LessonPlan; loading: bool
                 <div>
                   <div className="font-semibold text-ink">{step.title}</div>
                   {step.details.length ? (
-                    <p className="mt-2 text-sm leading-6 text-ink/58">{step.details.join("；")}</p>
+                    <p className="mt-2 text-sm leading-6 text-ink/58">{joinTeachingDetails(step.details)}</p>
                   ) : null}
                 </div>
               </div>
@@ -398,6 +469,41 @@ export function BatchDetailPage() {
 
   const batch = batchQuery.data;
   const tasks = useMemo(() => batch?.tasks ?? [], [batch?.tasks]);
+
+  const projectQuery = useQuery({
+    queryKey: ["project", projectId],
+    queryFn: () => api.getProject(projectId),
+    enabled: projectId > 0,
+  });
+
+  const textbooksQuery = useQuery({
+    queryKey: ["textbooks", projectId, "batch-detail"],
+    queryFn: () => api.listTextbooks(projectId),
+    enabled: projectId > 0,
+  });
+
+  const learnerProfilesQuery = useQuery({
+    queryKey: ["learner-profiles", projectId, "batch-detail"],
+    queryFn: () => api.listLearnerProfiles(projectId),
+    enabled: projectId > 0,
+  });
+
+  const textbookMaterial = useMemo(() => {
+    const items = textbooksQuery.data?.items ?? [];
+    return (
+      items.find((item) => item.id === projectQuery.data?.current_textbook_version_id) ??
+      items.find((item) => item.is_current) ??
+      latestByUpdated(items)
+    );
+  }, [projectQuery.data?.current_textbook_version_id, textbooksQuery.data?.items]);
+
+  const learnerProfileMaterial = useMemo(() => {
+    const items = learnerProfilesQuery.data?.items ?? [];
+    return (
+      items.find((item) => item.latest_version?.id === projectQuery.data?.current_learner_profile_version_id) ??
+      latestByUpdated(items)
+    );
+  }, [learnerProfilesQuery.data?.items, projectQuery.data?.current_learner_profile_version_id]);
 
   const curriculumQuery = useQuery({
     queryKey: ["curriculum-plan", batch?.curriculum_plan_id],
@@ -657,6 +763,17 @@ export function BatchDetailPage() {
     onSettled: () => setPaperDownloadId(null),
   });
 
+  const openMaterialFile = useMutation({
+    mutationFn: async ({ fileObjectId }: { fileObjectId: number; kind: "textbook" | "profile" }) => {
+      const result = await api.getFileDownloadUrl(fileObjectId);
+      if (!result.signed_url) {
+        throw new Error("材料打开地址暂未准备好");
+      }
+      return result.signed_url;
+    },
+    onSuccess: (url) => window.open(url, "_blank", "noopener,noreferrer"),
+  });
+
   if (projectId <= 0 || batchId <= 0) {
     return <FriendlyNotice title="备课资源地址无效" description="请从备课记录重新打开。" />;
   }
@@ -691,6 +808,12 @@ export function BatchDetailPage() {
   ]
     .filter(Boolean)
     .join("，");
+  const textbookFileObjectId = fileObjectIdFrom(textbookMaterial?.source_file);
+  const learnerProfileFileObjectId = fileObjectIdFrom(learnerProfileMaterial?.source_file, learnerProfileMaterial?.source_file_id);
+  const textbookMaterialInfo = textbookInfo(textbookMaterial);
+  const learnerProfileMaterialInfo = learnerProfileMaterial
+    ? cleanText(learnerProfileMaterial.title) || fileNameFrom(learnerProfileMaterial.source_file, "学生学情记录")
+    : "学情材料同步中";
   const coursewareGenerating = coursewareActive || createCourseware.isPending;
   const homeworkGenerating = homeworkActive || createHomework.isPending;
   const coursewareStatusLabel = canDownloadPpt ? "PPT 已生成" : coursewareGenerating ? "PPT 生成中" : coursewareFailed ? "PPT 需重试" : "PPT 待生成";
@@ -938,9 +1061,8 @@ export function BatchDetailPage() {
               </div>
             </div>
             <p className="text-sm leading-6 text-ink/58">知识点、题目和课件覆盖检查。</p>
-            <div className="flex min-w-max items-baseline gap-3">
-              <span className="text-xl font-semibold text-ink">{coverageReport?.coverage_rate != null ? `${coverageReport.coverage_rate}%` : "-"}</span>
-              <span className="text-xl font-semibold text-ink/62">知识点覆盖</span>
+            <div className="text-sm font-medium text-ink/58">
+              {coverageReport?.coverage_rate != null ? `${coverageReport.coverage_rate}% 知识点覆盖` : "知识点覆盖同步中"}
             </div>
             <div className="flex xl:justify-center">
               {hasCoverageReport && coverageReport ? (
@@ -955,11 +1077,59 @@ export function BatchDetailPage() {
               )}
             </div>
           </div>
+
+          <div className="grid gap-4 py-5 xl:grid-cols-[minmax(220px,1.05fr)_minmax(250px,1.25fr)_minmax(240px,1fr)_minmax(180px,auto)] xl:items-center xl:gap-6">
+            <div className="flex min-w-0 items-center gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#f3f3f3] text-ink">
+                <FileText size={21} />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-lg font-semibold text-ink">教材 PDF</h3>
+              </div>
+            </div>
+            <p className="text-sm leading-6 text-ink/58">本次备课使用的教材。</p>
+            <div className="min-w-0 truncate text-sm font-medium text-ink/58">{textbookMaterialInfo}</div>
+            <div className="flex xl:justify-center">
+              <button
+                className="btn btn-secondary min-w-[152px] rounded-full px-5"
+                disabled={!textbookFileObjectId || (openMaterialFile.isPending && openMaterialFile.variables?.kind === "textbook")}
+                onClick={() => textbookFileObjectId && openMaterialFile.mutate({ fileObjectId: textbookFileObjectId, kind: "textbook" })}
+                type="button"
+              >
+                {openMaterialFile.isPending && openMaterialFile.variables?.kind === "textbook" ? <Loader2 className="animate-spin" size={16} /> : <ExternalLink size={16} />}
+                查看教材
+              </button>
+            </div>
+          </div>
+
+          <div className="grid gap-4 py-5 xl:grid-cols-[minmax(220px,1.05fr)_minmax(250px,1.25fr)_minmax(240px,1fr)_minmax(180px,auto)] xl:items-center xl:gap-6">
+            <div className="flex min-w-0 items-center gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#f3f3f3] text-ink">
+                <ClipboardCheck size={21} />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-lg font-semibold text-ink">学情 DOCX</h3>
+              </div>
+            </div>
+            <p className="text-sm leading-6 text-ink/58">本次备课使用的学情分析。</p>
+            <div className="min-w-0 truncate text-sm font-medium text-ink/58">{learnerProfileMaterialInfo}</div>
+            <div className="flex xl:justify-center">
+              <button
+                className="btn btn-secondary min-w-[152px] rounded-full px-5"
+                disabled={!learnerProfileFileObjectId || (openMaterialFile.isPending && openMaterialFile.variables?.kind === "profile")}
+                onClick={() => learnerProfileFileObjectId && openMaterialFile.mutate({ fileObjectId: learnerProfileFileObjectId, kind: "profile" })}
+                type="button"
+              >
+                {openMaterialFile.isPending && openMaterialFile.variables?.kind === "profile" ? <Loader2 className="animate-spin" size={16} /> : <ExternalLink size={16} />}
+                查看学情
+              </button>
+            </div>
+          </div>
         </div>
 
-        {(createAssessment.error || downloadPaper.error) ? (
+        {(createAssessment.error || downloadPaper.error || openMaterialFile.error) ? (
           <div className="mt-4">
-            <FriendlyNotice title="测练操作暂时没有完成" description="请稍后再试，页面会继续同步测练状态。" />
+            <FriendlyNotice title="操作暂时没有完成" description="请稍后再试，页面会继续同步资源状态。" />
           </div>
         ) : null}
       </ResourcePanel>

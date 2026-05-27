@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FileText, Loader2 } from "lucide-react";
 import { useParams } from "react-router-dom";
 import { api } from "../lib/api";
+import { getQuestionBasis, getQuestionBasisText, QuestionBasisBlock } from "../components/QuestionBasisBlock";
 import type { HomeworkQuestion, HomeworkResultDetail, JsonRecord, PaperResult, QuestionItem } from "../types";
 import { cn, formatDate, toNumberId } from "../utils";
 import { asRecord, displayValue } from "./batch-detail/helpers";
@@ -75,7 +76,8 @@ function StatCard({ label, value }: { label: string; value: string | number }) {
 
 function QuestionCard({ question, index }: { question: QuestionRecord; index: number }) {
   const options = getOptions(question);
-  const knowledgePointName = typeof question.knowledge_point_name === "string" ? question.knowledge_point_name : "";
+  const questionBasis = getQuestionBasis(question.question_basis_json);
+  const knowledgePointName = getQuestionBasisText(question.knowledge_point_name) || getQuestionBasisText(questionBasis?.knowledge_point_name);
 
   return (
     <article className="rounded-[22px] border border-line bg-white p-6 shadow-panel">
@@ -86,11 +88,6 @@ function QuestionCard({ question, index }: { question: QuestionRecord; index: nu
         <span className="inline-flex h-8 items-center rounded-full bg-[#f2f2f2] px-3 text-xs font-semibold text-ink/62">
           {getQuestionTypeLabel(question.question_type)}
         </span>
-        {question.difficulty_level ? (
-          <span className="inline-flex h-8 items-center rounded-full bg-[#f2f2f2] px-3 text-xs font-semibold text-ink/62">
-            难度 {displayValue(question.difficulty_level)}
-          </span>
-        ) : null}
         {knowledgePointName ? (
           <span className="inline-flex h-8 items-center rounded-full bg-[#f2f2f2] px-3 text-xs font-semibold text-ink/62">
             {knowledgePointName}
@@ -131,6 +128,8 @@ function QuestionCard({ question, index }: { question: QuestionRecord; index: nu
           </p>
         </section>
       </div>
+
+      <QuestionBasisBlock basis={questionBasis} className="mt-5" />
     </article>
   );
 }

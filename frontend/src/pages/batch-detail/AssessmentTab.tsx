@@ -4,6 +4,7 @@ import { Download, FileQuestion, Plus, ShieldCheck } from "lucide-react";
 import { EmptyState } from "../../components/EmptyState";
 import { ErrorNotice } from "../../components/ErrorNotice";
 import { JsonViewer } from "../../components/JsonViewer";
+import { getQuestionBasis, getQuestionBasisText, QuestionBasisBlock } from "../../components/QuestionBasisBlock";
 import { StatusBadge } from "../../components/StatusBadge";
 import { isTaskActiveStatus } from "../../hooks/useTaskPolling";
 import { api } from "../../lib/api";
@@ -72,14 +73,18 @@ function getPaperQuestionRecords(paper?: PaperResult) {
 
 function QuestionCard({ question }: { question: JsonObject }) {
   const sourceTrace = asRecord(question.source_trace_json);
+  const questionBasis = getQuestionBasis(question.question_basis_json);
+  const knowledgePointName = getQuestionBasisText(question.knowledge_point_name) || getQuestionBasisText(questionBasis?.knowledge_point_name);
   return (
     <article className="rounded-md border border-line bg-white p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <span className="rounded-md bg-ink px-2 py-1 text-xs font-bold text-white">第 {displayValue(question.question_no)} 题</span>
           <span className="rounded-md bg-accent/10 px-2 py-1 text-xs font-semibold text-accent">{labelQuestionType(question.question_type)}</span>
-          <span className="rounded-md bg-paper px-2 py-1 text-xs font-semibold text-ink/55">难度 {displayValue(question.difficulty_level)}</span>
           <span className="rounded-md bg-paper px-2 py-1 text-xs font-semibold text-ink/55">分值 {displayValue(question.score_value)}</span>
+          {knowledgePointName ? (
+            <span className="rounded-md bg-paper px-2 py-1 text-xs font-semibold text-ink/55">{knowledgePointName}</span>
+          ) : null}
         </div>
         {question.knowledge_point_id ? <KnowledgeRefs ids={[Number(question.knowledge_point_id)]} /> : null}
       </div>
@@ -98,6 +103,7 @@ function QuestionCard({ question }: { question: JsonObject }) {
           <p className="whitespace-pre-wrap break-words text-sm leading-6 text-ink/70">{displayValue(question.analysis_text)}</p>
         </SectionBlock>
       </div>
+      <QuestionBasisBlock basis={questionBasis} className="mt-4 rounded-md" />
       <div className="mt-4">
         <SectionBlock title="来源摘要">
           <KeyValueGrid record={sourceTrace} />
@@ -227,13 +233,13 @@ function PaperDetail({ paper }: { paper?: PaperResult }) {
 }
 
 function QuestionBankCard({ question }: { question: QuestionBankItem | JsonObject }) {
+  const knowledgePointName = getQuestionBasisText("knowledge_point_name" in question ? question.knowledge_point_name : undefined);
   return (
     <article className="rounded-md border border-line bg-white px-3 py-3">
       <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
         <span className="rounded-md bg-ink px-2 py-1 text-white">第 {displayValue(question.question_no)} 题</span>
         <span className="rounded-md bg-accent/10 px-2 py-1 text-accent">{labelQuestionType(question.question_type)}</span>
-        <span className="rounded-md bg-paper px-2 py-1 text-ink/55">难度 {displayValue(question.difficulty_level)}</span>
-        <span className="rounded-md bg-paper px-2 py-1 text-ink/55">知识点 {displayValue(question.knowledge_point_id)}</span>
+        <span className="rounded-md bg-paper px-2 py-1 text-ink/55">知识点 {displayValue(knowledgePointName || question.knowledge_point_id)}</span>
         {"scene_type" in question && question.scene_type ? (
           <span className="rounded-md bg-paper px-2 py-1 text-ink/55">{labelScene(question.scene_type)}</span>
         ) : null}
