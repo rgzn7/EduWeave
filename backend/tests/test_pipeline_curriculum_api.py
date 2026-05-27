@@ -21,6 +21,7 @@ from app.modules.auth.models import SysUser
 from app.modules.courseware.schemas import SlideDeckGenerationResult, SlideDraft
 from app.modules.courseware.service import CoursewareService
 from app.modules.curriculum.schemas import CurriculumGenerationResult
+from app.modules.curriculum.tasks import _validate_curriculum_result
 from app.modules.knowledge.schemas import (
     KnowledgeChapterBoundaryItem,
     KnowledgeChapterBoundaryResult,
@@ -298,12 +299,20 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
 
         user_payload = _merge_user_payload_dicts(messages)
         if response_model is CurriculumGenerationResult:
+            assert _extra_kwargs.get("strict_schema") is True
             course_count = int(user_payload["generation_batch"]["course_count"])
-            point_id = int(user_payload["knowledge_version"]["knowledge_points"][0]["id"])
+            point_ids = [
+                int(item["id"])
+                for item in user_payload["knowledge_version"]["knowledge_points"]
+            ]
             return CurriculumGenerationResult(
                 plan_title="三年级数学乘法提升课程",
                 summary_text="围绕乘法口诀和应用题进行阶段提升。",
-                course_overview={"target": "提升乘法理解与应用能力"},
+                course_overview={
+                    "audience": "提升课三年级学生",
+                    "objective": "提升乘法理解与应用能力",
+                    "duration": f"{course_count} 次课，每次 90 分钟",
+                },
                 stage_goals=["熟练背诵口诀", "能够解决基础应用题"],
                 lesson_sessions=[
                     {
@@ -314,14 +323,14 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
                         "key_points": ["乘法口诀"],
                         "activities": ["口算热身", "例题讲解"],
                         "homework": ["完成口诀练习"],
-                        "knowledge_point_refs": [point_id],
+                        "knowledge_point_refs": point_ids,
                     }
                     for session_no in range(1, course_count + 1)
                 ],
                 key_points=["乘法口诀"],
                 difficult_points=["应用题分析"],
                 learner_adjustments=["增加口算练习频次"],
-                coverage_knowledge_points=[point_id],
+                coverage_knowledge_points=point_ids,
             )
 
         if response_model is AssessmentGenerationResult:
@@ -485,11 +494,18 @@ def _build_curriculum_result_for_test(messages) -> CurriculumGenerationResult:
     """根据生成批次请求构造测试课程大纲。"""
     user_payload = _merge_user_payload_dicts(messages)
     course_count = int(user_payload["generation_batch"]["course_count"])
-    point_id = int(user_payload["knowledge_version"]["knowledge_points"][0]["id"])
+    point_ids = [
+        int(item["id"])
+        for item in user_payload["knowledge_version"]["knowledge_points"]
+    ]
     return CurriculumGenerationResult(
         plan_title="三年级数学乘法提升课程",
         summary_text="围绕乘法口诀和应用题进行阶段提升。",
-        course_overview={"target": "提升乘法理解与应用能力"},
+        course_overview={
+            "audience": "提升课三年级学生",
+            "objective": "提升乘法理解与应用能力",
+            "duration": f"{course_count} 次课，每次 90 分钟",
+        },
         stage_goals=["熟练背诵口诀", "能够解决基础应用题"],
         lesson_sessions=[
             {
@@ -500,14 +516,14 @@ def _build_curriculum_result_for_test(messages) -> CurriculumGenerationResult:
                 "key_points": ["乘法口诀"],
                 "activities": ["口算热身", "例题讲解"],
                 "homework": ["完成口诀练习"],
-                "knowledge_point_refs": [point_id],
+                "knowledge_point_refs": point_ids,
             }
             for session_no in range(1, course_count + 1)
         ],
         key_points=["乘法口诀"],
         difficult_points=["应用题分析"],
         learner_adjustments=["增加口算练习频次"],
-        coverage_knowledge_points=[point_id],
+        coverage_knowledge_points=point_ids,
     )
 
 
@@ -880,6 +896,7 @@ def test_lesson_plan_generation_should_warm_cache_before_parallel_sessions(
 
     def controlled_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
         if response_model is CurriculumGenerationResult:
+            assert _extra_kwargs.get("strict_schema") is True
             return _build_curriculum_result_for_test(messages)
         if response_model is LessonPlanGenerationResult:
             user_payload = _merge_user_payload_dicts(messages)
@@ -975,6 +992,7 @@ def test_lesson_plan_parallel_failure_should_not_persist_partial_plans(
 
     def failing_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
         if response_model is CurriculumGenerationResult:
+            assert _extra_kwargs.get("strict_schema") is True
             return _build_curriculum_result_for_test(messages)
         if response_model is LessonPlanGenerationResult:
             user_payload = _merge_user_payload_dicts(messages)
@@ -1172,6 +1190,7 @@ def test_curriculum_prompt_should_use_chapter_range_scope(
 
     def capture_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
         if response_model is CurriculumGenerationResult:
+            assert _extra_kwargs.get("strict_schema") is True
             captured_curriculum_payloads.append(json.loads(messages[1].content))
         if response_model is LessonPlanGenerationResult:
             # 教案改为 4 条消息布局（2 system + 2 user），按 user 消息合并 JSON 取得完整上下文。
@@ -1231,6 +1250,87 @@ def test_curriculum_prompt_should_use_chapter_range_scope(
     )
     assert assessment_task_response.status_code == 201
     assert [item["id"] for item in captured_assessment_payloads[0]["knowledge_points"]] == [scoped_point_id]
+
+
+def test_curriculum_generation_result_should_validate_coverage_union() -> None:
+    """课程大纲生成 Schema 应要求 coverage 等于课次知识点引用并集。"""
+    valid_payload = {
+        "plan_title": "三年级数学乘法提升课程",
+        "summary_text": "围绕乘法口诀和应用题进行阶段提升。",
+        "course_overview": {
+            "audience": "提升课三年级学生",
+            "objective": "提升乘法理解与应用能力",
+            "duration": "2 次课，每次 90 分钟",
+        },
+        "stage_goals": ["熟练背诵口诀"],
+        "lesson_sessions": [
+            {
+                "session_no": 1,
+                "title": "第1讲 乘法口诀训练",
+                "duration_minutes": 90,
+                "objectives": ["掌握乘法口诀"],
+                "key_points": ["乘法口诀"],
+                "activities": ["口算热身"],
+                "homework": ["完成口诀练习"],
+                "knowledge_point_refs": [1],
+            },
+            {
+                "session_no": 2,
+                "title": "第2讲 应用题训练",
+                "duration_minutes": 90,
+                "objectives": ["解决基础应用题"],
+                "key_points": ["应用题分析"],
+                "activities": ["例题讲解"],
+                "homework": ["完成应用题练习"],
+                "knowledge_point_refs": [2],
+            },
+        ],
+        "key_points": ["乘法口诀"],
+        "difficult_points": ["应用题分析"],
+        "learner_adjustments": ["增加口算练习频次"],
+        "coverage_knowledge_points": [1, 2],
+    }
+    CurriculumGenerationResult(**valid_payload)
+
+    invalid_payload = {**valid_payload, "coverage_knowledge_points": [1]}
+    with pytest.raises(ValidationError):
+        CurriculumGenerationResult(**invalid_payload)
+
+
+def test_validate_curriculum_result_should_require_all_input_knowledge_points() -> None:
+    """课程大纲业务校验应要求覆盖输入知识点全集。"""
+    result = CurriculumGenerationResult(
+        plan_title="三年级数学乘法提升课程",
+        summary_text="围绕乘法口诀进行阶段提升。",
+        course_overview={
+            "audience": "提升课三年级学生",
+            "objective": "提升乘法理解与应用能力",
+            "duration": "1 次课，每次 90 分钟",
+        },
+        stage_goals=["熟练背诵口诀"],
+        lesson_sessions=[
+            {
+                "session_no": 1,
+                "title": "第1讲 乘法口诀训练",
+                "duration_minutes": 90,
+                "objectives": ["掌握乘法口诀"],
+                "key_points": ["乘法口诀"],
+                "activities": ["口算热身"],
+                "homework": ["完成口诀练习"],
+                "knowledge_point_refs": [1],
+            }
+        ],
+        key_points=["乘法口诀"],
+        difficult_points=["应用题分析"],
+        learner_adjustments=["增加口算练习频次"],
+        coverage_knowledge_points=[1],
+    )
+
+    with pytest.raises(AppException) as exc_info:
+        _validate_curriculum_result(result, course_count=1, knowledge_point_ids={1, 2})
+
+    assert exc_info.value.code == BusinessErrorCode.LLM_RESULT_INVALID
+    assert exc_info.value.details["missing_knowledge_point_ids"] == [2]
 
 
 def test_lesson_plan_generation_result_should_reject_empty_skeleton() -> None:
@@ -1906,6 +2006,7 @@ def test_generation_batch_should_mark_failure_when_llm_invalid(
 
     def mixed_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
         if response_model is CurriculumGenerationResult:
+            assert _extra_kwargs.get("strict_schema") is True
             raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 返回课程大纲非法")
         return original_generate(self, messages=messages, response_model=response_model, temperature=temperature, **_extra_kwargs)
 
@@ -2014,7 +2115,13 @@ def test_generation_batch_should_mark_failure_when_lesson_plan_has_invalid_knowl
                 learner_adjustments=["增加讲解"],
                 knowledge_point_refs=[outside_point_id],
             )
-        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature)
+        return original_generate(
+            self,
+            messages=messages,
+            response_model=response_model,
+            temperature=temperature,
+            **_extra_kwargs,
+        )
 
     monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", mixed_generate)
     response = client.post(

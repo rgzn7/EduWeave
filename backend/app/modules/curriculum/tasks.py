@@ -159,6 +159,7 @@ def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
             generation_result = llm_service.generate_structured_output(
                 messages=llm_messages,
                 response_model=CurriculumGenerationResult,
+                strict_schema=True,
             )
         heartbeat.touch()
         _validate_curriculum_result(
@@ -394,7 +395,8 @@ def _build_curriculum_messages(
         "必须严格输出 JSON 对象，字段如下，类型必须严格匹配，不允许嵌套替换："
         "plan_title（字符串，不超过 255 字）；"
         "summary_text（字符串）；"
-        "course_overview（对象，可包含 audience、duration、focus 等键，禁止使用字符串或数组）；"
+        "course_overview（对象，必须且只能包含 audience、objective、duration 三个字符串字段，"
+        "例如 {\"audience\": \"三年级学生\", \"objective\": \"提升乘法理解与应用能力\", \"duration\": \"12 次课，每次 90 分钟\"}）；"
         "stage_goals（字符串数组，每项是一句简短目标，例如 \"激活已有词汇\"，禁止使用对象）；"
         "lesson_sessions（对象数组，每项必须包含 session_no（整数，从 1 连续递增）、title（字符串）、"
         "duration_minutes（整数）、objectives（字符串数组）、key_points（字符串数组）、"
@@ -404,6 +406,8 @@ def _build_curriculum_messages(
         "coverage_knowledge_points（输入知识点 id 的整数数组）。"
         "lesson_sessions 数量必须等于 course_count，session_no 必须从 1 连续递增。"
         "coverage_knowledge_points 和每个 lesson_sessions.knowledge_point_refs 必须只引用输入中的知识点 id。"
+        "coverage_knowledge_points 必须等于所有 lesson_sessions.knowledge_point_refs 的并集，"
+        "且必须覆盖输入 knowledge_points 中全部 id，不允许遗漏任何一个。"
         "不要输出 Markdown、解释文字或代码块。"
     )
     return [
@@ -427,12 +431,17 @@ def _validate_curriculum_result(
             "LLM 返回课次数量或序号不符合课程配置",
             {"expected_session_nos": expected_session_nos, "actual_session_nos": session_nos},
         )
-    invalid_coverage_ids = [point_id for point_id in result.coverage_knowledge_points if point_id not in knowledge_point_ids]
-    if invalid_coverage_ids:
+    coverage_ids = set(result.coverage_knowledge_points)
+    if coverage_ids != knowledge_point_ids:
         raise AppException(
             BusinessErrorCode.LLM_RESULT_INVALID,
-            "LLM 返回了不存在的覆盖知识点",
-            {"knowledge_point_ids": invalid_coverage_ids},
+            "LLM 返回课程大纲未完整覆盖输入知识点",
+            {
+                "missing_knowledge_point_ids": sorted(knowledge_point_ids - coverage_ids),
+                "extra_knowledge_point_ids": sorted(coverage_ids - knowledge_point_ids),
+                "expected_knowledge_point_ids": sorted(knowledge_point_ids),
+                "actual_coverage_knowledge_points": sorted(coverage_ids),
+            },
         )
     for session in result.lesson_sessions:
         invalid_ref_ids = [point_id for point_id in session.knowledge_point_refs if point_id not in knowledge_point_ids]
@@ -447,7 +456,7 @@ def _validate_curriculum_result(
 def _build_curriculum_content_json(result: CurriculumGenerationResult) -> dict[str, Any]:
     """构造课程大纲内容 JSON。"""
     return {
-        "course_overview": result.course_overview,
+        "course_overview": result.course_overview.model_dump(mode="json"),
         "stage_goals": result.stage_goals,
         "lesson_sessions": [session.model_dump(mode="json") for session in result.lesson_sessions],
         "key_points": result.key_points,
