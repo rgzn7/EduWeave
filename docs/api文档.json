@@ -4532,7 +4532,7 @@
           "覆盖率"
         ],
         "summary": "获取覆盖率报告列表",
-        "description": "分页获取指定生成批次下的覆盖率分析报告，报告会展示课程大纲、教案、试卷题目与课件页面的知识点覆盖矩阵。",
+        "description": "分页获取指定生成批次下的覆盖率分析报告，报告会展示课程大纲、教案、课件页面、试卷题目与作业题目的知识点覆盖矩阵，并返回质量评审字段。",
         "operationId": "coverage_report_list",
         "security": [
           {
@@ -4665,7 +4665,7 @@
           "覆盖率"
         ],
         "summary": "重新分析覆盖率报告",
-        "description": "重新汇总指定生成批次下课程大纲、教案、试卷题目与课件页面的知识点引用，并刷新覆盖率报告和质量告警。",
+        "description": "重新汇总指定生成批次下课程大纲、教案、课件页面、试卷题目与作业题目的知识点引用，并刷新覆盖率报告、质量评审字段和可读告警。",
         "operationId": "coverage_report_refresh",
         "security": [
           {
@@ -8384,7 +8384,7 @@
           },
           "report_json": {
             "title": "Report Json",
-            "description": "覆盖率报告内容"
+            "description": "覆盖率报告内容，包含覆盖矩阵、质量评审、学情适配和补救建议"
           },
           "export_file_id": {
             "title": "Export File Id",
@@ -8455,7 +8455,7 @@
           },
           "report_json": {
             "title": "Report Json",
-            "description": "覆盖率报告内容"
+            "description": "覆盖率报告内容，包含覆盖矩阵、质量评审、学情适配和补救建议"
           },
           "export_file_id": {
             "title": "Export File Id",
