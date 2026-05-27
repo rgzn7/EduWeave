@@ -158,8 +158,8 @@ class OpenAICompatibleLlmClient:
                 if resolved_event_type == "response.output_text.delta" and isinstance(data.get("delta"), str):
                     text_parts.append(data["delta"])
                 elif resolved_event_type == "response.output_text.done" and isinstance(data.get("text"), str):
+                    # completed 事件里通常携带 usage / cached_tokens，记录文本后继续读完整个响应。
                     done_text = data["text"]
-                    break
                 elif resolved_event_type == "response.output_item.done" and isinstance(data.get("item"), dict):
                     stream_output_items.append(data["item"])
                 elif resolved_event_type == "response.completed" and isinstance(data.get("response"), dict):

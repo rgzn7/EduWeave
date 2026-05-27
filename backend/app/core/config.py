@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     llm_prompt_cache_key_prefix: str = "eduweave"
     # 知识抽取阶段按语义块并行调用 LLM 的最大并发数，1 等价于串行。
     knowledge_extract_max_concurrency: int = 10
+    # 教案生成阶段第 1 课暖缓存后，其余课次并行调用 LLM 的最大并发数，1 等价于串行。
+    lesson_plan_max_concurrency: int = 10
 
     embedding_api_base_url: str = "https://api.openai.com/v1"
     embedding_api_key: str | None = None
@@ -291,6 +293,14 @@ class Settings(BaseSettings):
         """校验知识抽取语义块并发数。"""
         if value < 1 or value > 10:
             raise ValueError("知识抽取语义块并发数必须在 1 到 10 之间")
+        return value
+
+    @field_validator("lesson_plan_max_concurrency")
+    @classmethod
+    def validate_lesson_plan_max_concurrency(cls, value: int) -> int:
+        """校验教案生成并发数。"""
+        if value < 1 or value > 10:
+            raise ValueError("教案生成并发数必须在 1 到 10 之间")
         return value
 
     @field_validator(

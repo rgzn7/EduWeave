@@ -145,3 +145,36 @@ def test_invalid_knowledge_extract_max_concurrency_should_fail(monkeypatch: pyte
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+def test_lesson_plan_max_concurrency_should_default_to_ten(monkeypatch: pytest.MonkeyPatch) -> None:
+    """教案生成并发数默认应为 10。"""
+    apply_required_env(monkeypatch)
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    monkeypatch.delenv("LESSON_PLAN_MAX_CONCURRENCY", raising=False)
+
+    settings = Settings()
+
+    assert settings.lesson_plan_max_concurrency == 10
+
+
+def test_lesson_plan_max_concurrency_should_allow_ten(monkeypatch: pytest.MonkeyPatch) -> None:
+    """教案生成并发数应允许设置为 10。"""
+    apply_required_env(monkeypatch)
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    monkeypatch.setenv("LESSON_PLAN_MAX_CONCURRENCY", "10")
+
+    settings = Settings()
+
+    assert settings.lesson_plan_max_concurrency == 10
+
+
+@pytest.mark.parametrize("value", ["0", "11"])
+def test_invalid_lesson_plan_max_concurrency_should_fail(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    """教案生成并发数超出 1 到 10 时应启动失败。"""
+    apply_required_env(monkeypatch)
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    monkeypatch.setenv("LESSON_PLAN_MAX_CONCURRENCY", value)
+
+    with pytest.raises(ValidationError):
+        Settings()
