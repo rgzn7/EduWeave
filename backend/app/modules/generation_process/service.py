@@ -421,15 +421,17 @@ class GenerationProcessService:
             return "succeeded", None, None, None
 
         if any(step.status == "succeeded" for step in steps):
-            # 部分完成但没有 running step → 等待后端调度下一步
+            # 部分完成但没有 running step → 一定是「等待后端调度下一步」的语义，
+            # 不管 active_run 是否存在：
+            # - 走新 orchestrator 流程时，active_run.run_status='running' → status_detail=waiting_dispatch
+            # - 没有 active_run（旧手动流程），后端确实不会自动调度下一步 → 同样标 waiting_dispatch，
+            #   前端可据此提示用户启动 orchestrator 而不是误认为还在跑
             next_pending = next((step for step in steps if step.status == "pending"), None)
             if run_detail is not None:
                 return "running", run_detail, run_blocked_reason, (next_pending.code if next_pending else None)
             if retrying_step is not None:
                 return "running", "retrying", None, retrying_step.code
-            if active_run is not None and active_run.run_status == "running":
-                return "running", "waiting_dispatch", None, (next_pending.code if next_pending else None)
-            return "running", None, None, (next_pending.code if next_pending else None)
+            return "running", "waiting_dispatch", None, (next_pending.code if next_pending else None)
 
         # 全 pending：若 active_run 在跑，说明等后端调度起步
         if active_run is not None and active_run.run_status in {"running", "pending", "waiting_user_confirm"}:
