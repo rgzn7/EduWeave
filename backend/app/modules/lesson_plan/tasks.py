@@ -26,10 +26,15 @@ from app.modules.coverage.service import CoverageService
 from app.modules.lesson_plan.repository import LessonPlanRepository
 from app.modules.lesson_plan.schemas import LessonPlanGenerationResult
 from app.modules.p0_models import LessonPlan
+from app.modules.task_center.heartbeat import (
+    StaleAttemptError,
+    TaskHeartbeat,
+    dispatch_with_attempt,
+    ensure_attempt,
+)
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, LlmUsage, OpenAICompatibleLlmService, load_evidence_image_data_urls
-from app.shared.queue import dispatch_task
 from app.shared.utils import DateTimeUtil
 from app.shared.utils.chapter_range_util import build_chapter_range_selection, filter_knowledge_points_by_chapter_selection
 
@@ -88,10 +93,14 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
     step_map = _get_step_map(task_repository, payload["task_record_id"])
     now = DateTimeUtil.now_utc()
     lesson_task_completed = False
+    attempt_id = ensure_attempt(task_repository, payload["task_record_id"], payload.get("execution_attempt_id"))
+    heartbeat = TaskHeartbeat(session, payload["task_record_id"], attempt_id)
 
     try:
         if task is None:
             raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "教案生成任务不存在")
+        if task.execution_attempt_id and task.execution_attempt_id != attempt_id:
+            raise StaleAttemptError(task.id, attempt_id)
         generation_batch = repository.get_generation_batch(payload["generation_batch_id"])
         curriculum_plan = repository.get_curriculum_plan(payload["curriculum_plan_id"])
         if generation_batch is None:
@@ -184,8 +193,11 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
 
         lesson_plan_ids: list[int] = []
         next_version_no = repository.get_next_lesson_plan_version_no(curriculum_plan.id)
+        total_sessions = len(lesson_sessions)
         for index, lesson_session in enumerate(lesson_sessions, start=1):
             class_session_no = int(lesson_session["session_no"])
+            # 每节课调用 LLM 前先 touch，长生成不被 reaper 误判
+            heartbeat.touch()
             llm_messages = _build_lesson_plan_messages(
                 stable_messages=stable_messages,
                 target_lesson_session=lesson_session,
@@ -202,6 +214,18 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
                 generation_result,
                 expected_session_no=class_session_no,
                 knowledge_point_ids={point.id for point in knowledge_points},
+            )
+            # 当节 LLM 完成 → 推进任务 progress，并刷新 step 计数
+            chunk_progress = 30 + int(45 * index / max(total_sessions, 1))
+            heartbeat.tick(progress_percent=chunk_progress, current_stage="invoke_llm_lesson_plan")
+            heartbeat.update_step_detail(
+                step_id=step_map["invoke_llm_lesson_plan"].id,
+                progress_percent=int(100 * index / max(total_sessions, 1)),
+                detail_json={
+                    "processed_sessions": index,
+                    "total_sessions": total_sessions,
+                    "class_session_no": class_session_no,
+                },
             )
             lesson_plan = repository.create_lesson_plan(
                 LessonPlan(
@@ -300,20 +324,32 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
         lesson_task_completed = True
 
         if coverage_task is not None:
-            dispatch_result = dispatch_task(
-                "app.modules.coverage.tasks.run_analyze_coverage_task",
-                {
-                    "task_record_id": coverage_task.id,
-                    "generation_batch_id": generation_batch.id,
-                    "operator_user_id": payload.get("operator_user_id"),
-                },
+            coverage_dispatch_payload: dict[str, object] = {
+                "task_record_id": coverage_task.id,
+                "generation_batch_id": generation_batch.id,
+                "operator_user_id": payload.get("operator_user_id"),
+            }
+            if payload.get("generation_run_id") is not None:
+                coverage_dispatch_payload["generation_run_id"] = payload.get("generation_run_id")
+                # 同时把 generation_run_id 落到 coverage_task.payload_json，
+                # 避免后续从 task 直接取时缺失
+                merged_payload = dict(coverage_task.payload_json or {})
+                merged_payload["generation_run_id"] = payload.get("generation_run_id")
+                coverage_task.payload_json = merged_payload
+                task_repository.save(coverage_task)
+                session.commit()
+            dispatch_result = dispatch_with_attempt(
+                task_repository,
+                task=coverage_task,
+                callable_path="app.modules.coverage.tasks.run_analyze_coverage_task",
+                payload=coverage_dispatch_payload,
                 queue=GENERATION_QUEUE_NAME,
-                session=session,
             )
             if dispatch_result.worker_task_id:
                 coverage_task.worker_task_id = dispatch_result.worker_task_id
                 task_repository.save(coverage_task)
                 session.commit()
+        _notify_orchestrator_lesson_plan_success(session=session, task=task)
         return {
             "generation_batch_id": generation_batch.id,
             "curriculum_plan_id": curriculum_plan.id,
@@ -322,6 +358,9 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
             "lesson_plan_count": len(lesson_plan_ids),
             "coverage_task_id": coverage_task_id,
         }
+    except StaleAttemptError:
+        session.rollback()
+        return {"stale_attempt": True}
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         if not lesson_task_completed:
@@ -601,6 +640,34 @@ def _mark_task_failure(task_repository: TaskCenterRepository, repository: Lesson
             generation_batch.finished_at = DateTimeUtil.now_utc()
             repository.save(generation_batch)
             repository.session.commit()
+        _notify_orchestrator_failure(session=repository.session, task=task, exc=exc)
+
+
+def _notify_orchestrator_lesson_plan_success(*, session, task) -> None:
+    """教案生成成功后通知 orchestrator 更新 run。最终 run 状态由 coverage 推进。"""
+    try:
+        from app.modules.orchestrator.service import OrchestratorService
+
+        OrchestratorService(session).advance_after_lesson_plan_success(task=task)
+    except Exception:  # noqa: BLE001
+        import structlog as _structlog
+
+        _structlog.get_logger(__name__).warning("orchestrator lesson_plan hook 调用失败", task_id=task.id, exc_info=True)
+
+
+def _notify_orchestrator_failure(*, session, task, exc) -> None:
+    """终态失败时通知 orchestrator 把 run 标为 failed。"""
+    try:
+        from app.core.exceptions import AppException as _AppException
+        from app.modules.orchestrator.service import OrchestratorService
+
+        error_code = exc.code.value if isinstance(exc, _AppException) else type(exc).__name__
+        error_message = exc.message if isinstance(exc, _AppException) else str(exc)
+        OrchestratorService(session).mark_run_failed(task=task, error_code=error_code, error_message=error_message)
+    except Exception:  # noqa: BLE001
+        import structlog as _structlog
+
+        _structlog.get_logger(__name__).warning("orchestrator failure hook 调用失败", task_id=task.id, exc_info=True)
 
 
 def _create_session(payload: dict) -> Session:

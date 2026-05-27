@@ -40,11 +40,11 @@ from app.modules.knowledge.schemas import (
     KnowledgeVersionDetailResponse,
     KnowledgeVersionListItemResponse,
 )
+from app.modules.task_center.heartbeat import dispatch_with_attempt
 from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.schemas import TaskListItemResponse
 from app.modules.task_center.service import TaskCenterService
 from app.shared.llm import OpenAICompatibleEmbeddingService
-from app.shared.queue import dispatch_task
 from app.shared.vector import MilvusVectorService
 
 
@@ -94,16 +94,17 @@ class KnowledgeService:
             parse_version_id=parse_version.id,
             force_regenerate=request.force_regenerate,
         )
-        dispatch_result = dispatch_task(
-            "app.modules.knowledge.tasks.run_extract_task",
-            {
+        dispatch_result = dispatch_with_attempt(
+            self.task_repository,
+            task=task,
+            callable_path="app.modules.knowledge.tasks.run_extract_task",
+            payload={
                 "task_record_id": task.id,
                 "parse_version_id": parse_version.id,
                 "operator_user_id": owner_user_id,
                 "force_regenerate": request.force_regenerate,
             },
             queue=KNOWLEDGE_QUEUE_NAME,
-            session=self.session,
         )
         if dispatch_result.worker_task_id:
             task.worker_task_id = dispatch_result.worker_task_id

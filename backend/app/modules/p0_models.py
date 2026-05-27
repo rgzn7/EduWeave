@@ -101,6 +101,12 @@ class Project(TimestampMixin, Base):
         nullable=True,
         comment="最近生成批次",
     )
+    active_generation_run_id: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("generation_run.id"),
+        nullable=True,
+        comment="当前活跃一键生成运行",
+    )
     last_activity_at: Mapped[datetime | None] = mapped_column(MYSQL_DATETIME_MS, nullable=True, comment="最近活动时间")
 
 
@@ -1045,6 +1051,65 @@ class GenerationBatch(TimestampMixin, Base):
     )
 
 
+class GenerationRun(TimestampMixin, Base):
+    """一键生成运行表。"""
+
+    __tablename__ = "generation_run"
+    __table_args__ = (
+        Index("idx_generation_run_project_status", "project_id", "run_status", "created_at"),
+        {"comment": "一键生成运行表"},
+    )
+
+    id: Mapped[int] = mapped_column(MYSQL_BIGINT_UNSIGNED, primary_key=True, autoincrement=True, comment="主键")
+    project_id: Mapped[int] = mapped_column(MYSQL_BIGINT_UNSIGNED, ForeignKey("project.id"), nullable=False, comment="所属项目")
+    run_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="pending",
+        server_default=text("'pending'"),
+        comment="运行状态：pending/running/waiting_user_confirm/succeeded/failed/cancelled",
+    )
+    course_count: Mapped[int] = mapped_column(Integer, nullable=False, comment="课次数")
+    session_duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, comment="单次时长")
+    chapter_range_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="章节范围")
+    auto_confirm_parse: Mapped[int] = mapped_column(
+        MYSQL_TINYINT,
+        nullable=False,
+        default=1,
+        server_default=text("1"),
+        comment="解析自动确认开关",
+    )
+    parse_version_id: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("parse_version.id"),
+        nullable=True,
+        comment="本次运行使用的解析版本",
+    )
+    knowledge_version_id: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("knowledge_version.id"),
+        nullable=True,
+        comment="本次运行使用的知识版本",
+    )
+    generation_batch_id: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("generation_batch.id"),
+        nullable=True,
+        comment="本次运行创建的生成批次",
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="错误码")
+    last_error_message: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="错误信息")
+    blocked_reason: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="阻塞原因编码")
+    started_at: Mapped[datetime | None] = mapped_column(MYSQL_DATETIME_MS, nullable=True, comment="开始时间")
+    finished_at: Mapped[datetime | None] = mapped_column(MYSQL_DATETIME_MS, nullable=True, comment="结束时间")
+    created_by: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("sys_user.id"),
+        nullable=True,
+        comment="创建人",
+    )
+
+
 class CoursewareResult(TimestampMixin, Base):
     """课件结果表。"""
 
@@ -1410,6 +1475,10 @@ class TaskRecord(TimestampMixin, Base):
     last_error_message: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="错误信息")
     started_at: Mapped[datetime | None] = mapped_column(MYSQL_DATETIME_MS, nullable=True, comment="开始时间")
     finished_at: Mapped[datetime | None] = mapped_column(MYSQL_DATETIME_MS, nullable=True, comment="结束时间")
+    # 长任务自报心跳：与 updated_at 二选一参与 reaper 判定，使长 LLM 阶段不被误判
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(MYSQL_DATETIME_MS, nullable=True, comment="最近心跳时间")
+    # 执行实例 ID：每次 dispatch / reaper 重排都会轮换，配合 CAS UPDATE 防止两个 worker 并发写库
+    execution_attempt_id: Mapped[str | None] = mapped_column(String(36), nullable=True, comment="本次执行实例ID")
 
 
 class TaskStepRecord(TimestampMixin, Base):

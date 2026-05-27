@@ -25,10 +25,15 @@ from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.curriculum.repository import CurriculumRepository
 from app.modules.curriculum.schemas import CurriculumGenerationResult
 from app.modules.p0_models import CurriculumPlan
+from app.modules.task_center.heartbeat import (
+    StaleAttemptError,
+    TaskHeartbeat,
+    dispatch_with_attempt,
+    ensure_attempt,
+)
 from app.modules.task_center.recovery import requeue_or_fail_task
 from app.modules.task_center.repository import TaskCenterRepository
 from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
-from app.shared.queue import dispatch_task
 from app.shared.utils import DateTimeUtil
 from app.shared.utils.chapter_range_util import build_chapter_range_selection, filter_knowledge_points_by_chapter_selection
 
@@ -43,10 +48,15 @@ def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
     step_map = _get_step_map(task_repository, payload["task_record_id"])
     now = DateTimeUtil.now_utc()
     curriculum_task_completed = False
+    attempt_id = ensure_attempt(task_repository, payload["task_record_id"], payload.get("execution_attempt_id"))
+    heartbeat = TaskHeartbeat(session, payload["task_record_id"], attempt_id)
 
     try:
         if task is None:
             raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "课程大纲生成任务不存在")
+        # 入口快速失败：若 attempt 已被 reaper 抢占，立即退出，避免与新 worker 并发
+        if task.execution_attempt_id and task.execution_attempt_id != attempt_id:
+            raise StaleAttemptError(task.id, attempt_id)
         generation_batch = repository.get_generation_batch(payload["generation_batch_id"])
         if generation_batch is None:
             raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "生成批次不存在")
@@ -134,10 +144,13 @@ def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
                 "effective_chapter_ids": chapter_selection.effective_chapter_ids,
             },
         )
+        # LLM 调用前先 touch 心跳：长生成不会被 reaper 误判，attempt 抢占也会立即中断
+        heartbeat.touch()
         generation_result = llm_service.generate_structured_output(
             messages=llm_messages,
             response_model=CurriculumGenerationResult,
         )
+        heartbeat.touch()
         _validate_curriculum_result(
             generation_result,
             course_count=int(generation_batch.course_count or 0),
@@ -207,6 +220,7 @@ def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
             curriculum_plan=curriculum_plan,
             owner_user_id=payload.get("operator_user_id"),
             request_id=task.request_id,
+            generation_run_id=payload.get("generation_run_id"),
         )
         finished_at = DateTimeUtil.now_utc()
         generation_batch.batch_status = TASK_STATUS_PROCESSING
@@ -240,26 +254,35 @@ def run_generate_curriculum_task(payload: dict) -> dict[str, int | str]:
         session.commit()
         curriculum_task_completed = True
 
-        dispatch_result = dispatch_task(
-            "app.modules.lesson_plan.tasks.run_generate_lesson_plan_task",
-            {
-                "task_record_id": lesson_task.id,
-                "generation_batch_id": generation_batch.id,
-                "curriculum_plan_id": curriculum_plan.id,
-                "operator_user_id": payload.get("operator_user_id"),
-            },
+        lesson_dispatch_payload: dict[str, object] = {
+            "task_record_id": lesson_task.id,
+            "generation_batch_id": generation_batch.id,
+            "curriculum_plan_id": curriculum_plan.id,
+            "operator_user_id": payload.get("operator_user_id"),
+        }
+        if payload.get("generation_run_id") is not None:
+            lesson_dispatch_payload["generation_run_id"] = payload.get("generation_run_id")
+        dispatch_result = dispatch_with_attempt(
+            task_repository,
+            task=lesson_task,
+            callable_path="app.modules.lesson_plan.tasks.run_generate_lesson_plan_task",
+            payload=lesson_dispatch_payload,
             queue=GENERATION_QUEUE_NAME,
-            session=session,
         )
         if dispatch_result.worker_task_id:
             lesson_task.worker_task_id = dispatch_result.worker_task_id
             task_repository.save(lesson_task)
             session.commit()
+        _notify_orchestrator_curriculum_success(session=session, task=task)
         return {
             "generation_batch_id": generation_batch.id,
             "curriculum_plan_id": curriculum_plan.id,
             "lesson_plan_task_id": lesson_task.id,
         }
+    except StaleAttemptError:
+        # 被新 attempt 抢占，安静退出；新 worker 已接管
+        session.rollback()
+        return {"stale_attempt": True}
     except Exception as exc:  # noqa: BLE001
         session.rollback()
         if not curriculum_task_completed:
@@ -439,8 +462,15 @@ def _create_lesson_plan_task(
     curriculum_plan,
     owner_user_id: int | None,
     request_id: str | None,
+    generation_run_id: int | None = None,
 ):
     """创建教案生成任务。"""
+    payload_json: dict[str, object] = {
+        "generation_batch_id": generation_batch.id,
+        "curriculum_plan_id": curriculum_plan.id,
+    }
+    if generation_run_id is not None:
+        payload_json["generation_run_id"] = generation_run_id
     task = task_repository.create_task(
         project_id=generation_batch.project_id,
         generation_batch_id=generation_batch.id,
@@ -450,10 +480,7 @@ def _create_lesson_plan_task(
         queue_name=GENERATION_QUEUE_NAME,
         biz_key=f"generation_batch:{generation_batch.id}:lesson_plan",
         operator_user_id=owner_user_id,
-        payload_json={
-            "generation_batch_id": generation_batch.id,
-            "curriculum_plan_id": curriculum_plan.id,
-        },
+        payload_json=payload_json,
         request_id=request_id,
     )
     step_names = [
@@ -526,6 +553,34 @@ def _mark_task_failure(task_repository: TaskCenterRepository, repository: Curric
             generation_batch.finished_at = DateTimeUtil.now_utc()
             repository.save(generation_batch)
             repository.session.commit()
+        _notify_orchestrator_failure(session=repository.session, task=task, exc=exc)
+
+
+def _notify_orchestrator_curriculum_success(*, session, task) -> None:
+    """课程大纲成功后通知 orchestrator 更新 run 状态。"""
+    try:
+        from app.modules.orchestrator.service import OrchestratorService
+
+        OrchestratorService(session).advance_after_curriculum_success(task=task)
+    except Exception:  # noqa: BLE001
+        from app.core.logging import get_logger as _get_logger
+
+        _get_logger(__name__).warning("orchestrator curriculum hook 调用失败", task_id=task.id, exc_info=True)
+
+
+def _notify_orchestrator_failure(*, session, task, exc) -> None:
+    """终态失败时通知 orchestrator 把 run 标为 failed。"""
+    try:
+        from app.core.exceptions import AppException as _AppException
+        from app.modules.orchestrator.service import OrchestratorService
+
+        error_code = exc.code.value if isinstance(exc, _AppException) else type(exc).__name__
+        error_message = exc.message if isinstance(exc, _AppException) else str(exc)
+        OrchestratorService(session).mark_run_failed(task=task, error_code=error_code, error_message=error_message)
+    except Exception:  # noqa: BLE001
+        from app.core.logging import get_logger as _get_logger
+
+        _get_logger(__name__).warning("orchestrator failure hook 调用失败", task_id=task.id, exc_info=True)
 
 
 def _create_session(payload: dict) -> Session:

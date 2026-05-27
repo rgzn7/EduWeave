@@ -29,11 +29,11 @@ from app.modules.learner_profile.schemas import (
     LearnerProfileVersionResponse,
 )
 from app.modules.p0_models import FileObject, LearnerProfileFile, LearnerProfileRecord, LearnerProfileVersion
+from app.modules.task_center.heartbeat import dispatch_with_attempt
 from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.schemas import TaskListItemResponse
 from app.modules.task_center.service import TaskCenterService
 from app.modules.textbook.schemas import FileObjectSummaryResponse
-from app.shared.queue import dispatch_task
 from app.shared.storage import ObsStorageClient
 from app.shared.utils import DateTimeUtil
 
@@ -159,9 +159,11 @@ class LearnerProfileService:
             raise
 
         if auto_extract and task is not None:
-            dispatch_result = dispatch_task(
-                "app.modules.learner_profile.tasks.run_extract_task",
-                {
+            dispatch_result = dispatch_with_attempt(
+                self.task_repository,
+                task=task,
+                callable_path="app.modules.learner_profile.tasks.run_extract_task",
+                payload={
                     "task_record_id": task.id,
                     "project_id": project.id,
                     "profile_file_id": profile_file.id,
@@ -173,7 +175,6 @@ class LearnerProfileService:
                     "set_as_current": set_as_current,
                 },
                 queue=PROFILE_QUEUE_NAME,
-                session=self.session,
             )
             if dispatch_result.worker_task_id:
                 task.worker_task_id = dispatch_result.worker_task_id

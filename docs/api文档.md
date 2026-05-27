@@ -14,6 +14,7 @@
 - [解析](#解析)
 - [知识结构化](#知识结构化)
 - [生成编排](#生成编排)
+- [一键生成](#一键生成)
 - [课程大纲](#课程大纲)
 - [教案](#教案)
 - [测评](#测评)
@@ -519,7 +520,10 @@
   data?: {
     project_id: integer  # 项目主键
     batch_id?: integer  # 最近一次生成批次主键
+    generation_run_id?: integer  # 当前活跃一键生成 run 主键；无 run 则为 null
     status: string  # 整体展示状态
+    status_detail?: string  # 整体细化状态：waiting_dispatch=等待后端调度下一步；waiting_user_confirm=等待用户确认教材解析；retrying=任务被 reaper 重排重试中；blocked=前置缺失，无法继续
+    blocked_reason?: string  # status_detail=blocked 时的原因编码，例如 LEARNER_PROFILE_NOT_READY
     current_step_code?: string  # 当前正在进行的展示步骤编码
     steps: object  # 展示步骤列表，固定 6 步
   }
@@ -2275,6 +2279,107 @@
     lesson_plan_ids?: object  # 批次下全部教案主键列表
     tasks?: object  # 批次关联任务列表
   }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+## 一键生成
+
+### POST `/api/v1/projects/{project_id}/generation-runs`
+
+**启动一键生成**
+
+为指定项目启动一次完整的 Phase2 生成运行（教材解析 → 学情分析 → 知识结构 → 课程规划 → 教案 → 覆盖检查）。后端持有完整编排权：前端只需点一次本接口，无需再单独触发 parse、knowledge、generation-batch。同一项目同时只允许一个活跃 run，重复调用本接口将返回当前活跃 run 详情（幂等）。auto_confirm_parse 默认开启；若关闭，解析成功后 run 将停在 waiting_user_confirm，等用户在解析页确认后自动续跑。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `project_id` | integer | 是 | 项目主键 |
+
+**请求体**
+
+```json
+{
+  course_count: integer  # 课次数
+  session_duration_minutes: integer  # 单次时长（分钟）
+  chapter_range_json?: object | null  # 章节范围；省略表示全量
+  auto_confirm_parse?: boolean  # 教材解析成功后是否自动 confirm。默认开启，符合「一键生成」预期；若希望解析后人工校对后再继续下游，可显式传 false，此时 run 将进入 waiting_user_confirm 状态，用户在解析页确认后自动续跑。
+}
+```
+
+**响应**
+
+`201` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    id: integer  # 运行主键
+    project_id: integer  # 项目主键
+    run_status: string  # 运行状态
+    course_count: integer  # 课次数
+    session_duration_minutes: integer  # 单次时长（分钟）
+    chapter_range_json?: object  # 章节范围
+    auto_confirm_parse: boolean  # 解析自动确认开关
+    parse_version_id?: integer  # 使用的解析版本
+    knowledge_version_id?: integer  # 使用的知识版本
+    generation_batch_id?: integer  # 生成批次
+    blocked_reason?: object  # 阻塞原因编码
+    last_error_code?: object  # 错误码
+    last_error_message?: object  # 错误信息
+    started_at?: object  # 开始时间
+    finished_at?: object  # 结束时间
+    created_at: object  # 创建时间
+    updated_at: object  # 更新时间
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+### GET `/api/v1/projects/{project_id}/generation-runs/active`
+
+**获取当前活跃一键生成运行**
+
+返回项目当前活跃（运行中或等待用户确认）的一键生成 run；无活跃 run 时返回 null。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `project_id` | integer | 是 | 项目主键 |
+
+**响应**
+
+`200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: object  # 业务数据
   timestamp: string  # 响应时间，UTC ISO8601 格式
   request_id: string  # 请求追踪 ID
   errors?: array[{
