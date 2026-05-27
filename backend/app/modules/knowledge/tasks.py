@@ -1,14 +1,16 @@
 """
-@Date: 2026-04-30
+@Date: 2026-05-27
 @Author: xisy
 @Discription: 知识结构化模块任务执行能力
 """
 
 import json
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.core.config import get_settings
 from app.core.constants import REVIEW_STATUS_CONFIRMED, TASK_STATUS_PENDING, TASK_STATUS_PROCESSING, TASK_STATUS_SUCCESS
 from app.core.database import SessionLocal
 from app.core.exceptions import AppException, BusinessErrorCode
@@ -134,20 +136,23 @@ def run_extract_task(payload: dict) -> dict[str, int]:
 
         point_drafts = []
         chapter_summaries: list[dict] = []
-        for chunk_index, semantic_chunk_draft in enumerate(semantic_chunk_drafts, start=1):
-            chapter_draft = next(
-                chapter for chapter in chapter_drafts if chapter.draft_id == semantic_chunk_draft.chapter_ref_id
-            )
-            heartbeat.touch()
-            point_result = llm_service.generate_structured_output(
-                messages=_build_chapter_point_extraction_messages(
-                    parse_version=parse_version,
-                    chapter_draft=chapter_draft,
-                    semantic_chunk_draft=semantic_chunk_draft,
-                ),
-                response_model=KnowledgeChapterPointExtractionResult,
-            )
-            _validate_point_extraction_result(point_result, parse_pages=parse_pages, parse_blocks=parse_blocks)
+        parallel_limit = min(get_settings().knowledge_extract_max_concurrency, total_chunks)
+        chunk_extraction_results = _extract_chunk_points_in_parallel(
+            llm_service=llm_service,
+            parse_version_id=parse_version.id,
+            chapter_drafts=chapter_drafts,
+            semantic_chunk_drafts=semantic_chunk_drafts,
+            parse_pages=parse_pages,
+            parse_blocks=parse_blocks,
+            heartbeat=heartbeat,
+            step_id=step_map["invoke_llm_extract"].id,
+            parallel_limit=parallel_limit,
+            total_chunks=total_chunks,
+        )
+        for chunk_extraction_result in chunk_extraction_results:
+            chapter_draft = chunk_extraction_result["chapter_draft"]
+            semantic_chunk_draft = chunk_extraction_result["semantic_chunk_draft"]
+            point_result = chunk_extraction_result["point_result"]
             point_drafts.extend(
                 build_point_drafts_for_chapter(
                     parse_version=parse_version,
@@ -167,19 +172,6 @@ def run_extract_task(payload: dict) -> dict[str, int]:
                     "summary_json": point_result.summary_json,
                 }
             )
-            # 每完成一个 chunk → 推进 task 进度（35→60 线性映射），并把已处理 / 总块数写到 step detail
-            chunk_progress = 35 + int(25 * chunk_index / total_chunks)
-            heartbeat.tick(progress_percent=chunk_progress, current_stage="invoke_llm_extract")
-            heartbeat.update_step_detail(
-                step_id=step_map["invoke_llm_extract"].id,
-                progress_percent=int(100 * chunk_index / total_chunks),
-                detail_json={
-                    "processed_chunks": chunk_index,
-                    "total_chunks": total_chunks,
-                    "chapter_count": len(chapter_drafts),
-                    "current_chapter_path": chapter_draft.node_path,
-                },
-            )
         if not point_drafts:
             raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 未返回可落库的知识点")
 
@@ -191,6 +183,7 @@ def run_extract_task(payload: dict) -> dict[str, int]:
                 "chapter_count": len(chapter_drafts),
                 "point_count": len(point_drafts),
                 "llm_call_count": len(semantic_chunk_drafts) + 1,
+                "parallel_limit": parallel_limit,
                 # 保留循环中累积的处理进度，便于复盘
                 "processed_chunks": len(semantic_chunk_drafts),
                 "total_chunks": len(semantic_chunk_drafts),
@@ -298,6 +291,95 @@ def run_extract_task(payload: dict) -> dict[str, int]:
         session.close()
 
 
+def _extract_chunk_points_in_parallel(
+    *,
+    llm_service: OpenAICompatibleLlmService,
+    parse_version_id: int,
+    chapter_drafts: list,
+    semantic_chunk_drafts: list,
+    parse_pages: list,
+    parse_blocks: list,
+    heartbeat: TaskHeartbeat,
+    step_id: int,
+    parallel_limit: int,
+    total_chunks: int,
+) -> list[dict]:
+    """并行抽取语义块知识点；数据库状态只由主线程更新。"""
+    chapter_by_draft_id = {chapter.draft_id: chapter for chapter in chapter_drafts}
+    results: list[dict] = []
+    futures: list[Future] = []
+    completed_chunks = 0
+    heartbeat.touch()
+    with ThreadPoolExecutor(max_workers=parallel_limit, thread_name_prefix="knowledge-extract") as executor:
+        for chunk_index, semantic_chunk_draft in enumerate(semantic_chunk_drafts, start=1):
+            chapter_draft = chapter_by_draft_id[semantic_chunk_draft.chapter_ref_id]
+            futures.append(
+                executor.submit(
+                    _extract_single_chunk_points,
+                    llm_service=llm_service,
+                    parse_version_id=parse_version_id,
+                    chapter_draft=chapter_draft,
+                    semantic_chunk_draft=semantic_chunk_draft,
+                    parse_pages=parse_pages,
+                    parse_blocks=parse_blocks,
+                    chunk_index=chunk_index,
+                )
+            )
+        try:
+            for future in as_completed(futures):
+                result = future.result()
+                completed_chunks += 1
+                results.append(result)
+                chapter_draft = result["chapter_draft"]
+                chunk_progress = 35 + int(25 * completed_chunks / total_chunks)
+                heartbeat.tick(progress_percent=chunk_progress, current_stage="invoke_llm_extract")
+                heartbeat.update_step_detail(
+                    step_id=step_id,
+                    progress_percent=int(100 * completed_chunks / total_chunks),
+                    detail_json={
+                        "processed_chunks": completed_chunks,
+                        "total_chunks": total_chunks,
+                        "chapter_count": len(chapter_drafts),
+                        "current_chapter_path": chapter_draft.node_path,
+                        "parallel_limit": parallel_limit,
+                    },
+                )
+        except Exception:
+            for pending_future in futures:
+                pending_future.cancel()
+            raise
+    results.sort(key=lambda item: item["chunk_index"])
+    return results
+
+
+def _extract_single_chunk_points(
+    *,
+    llm_service: OpenAICompatibleLlmService,
+    parse_version_id: int,
+    chapter_draft,
+    semantic_chunk_draft,
+    parse_pages: list,
+    parse_blocks: list,
+    chunk_index: int,
+) -> dict:
+    """抽取单个语义块的知识点；仅做 LLM 调用和内存校验。"""
+    point_result = llm_service.generate_structured_output(
+        messages=_build_chapter_point_extraction_messages(
+            parse_version_id=parse_version_id,
+            chapter_draft=chapter_draft,
+            semantic_chunk_draft=semantic_chunk_draft,
+        ),
+        response_model=KnowledgeChapterPointExtractionResult,
+    )
+    _validate_point_extraction_result(point_result, parse_pages=parse_pages, parse_blocks=parse_blocks)
+    return {
+        "chunk_index": chunk_index,
+        "chapter_draft": chapter_draft,
+        "semantic_chunk_draft": semantic_chunk_draft,
+        "point_result": point_result,
+    }
+
+
 def _build_chapter_boundary_messages(*, parse_version, line_index) -> list[ChatMessage]:
     """构造章节边界识别提示词。"""
     system_prompt = (
@@ -320,7 +402,7 @@ def _build_chapter_boundary_messages(*, parse_version, line_index) -> list[ChatM
     ]
 
 
-def _build_chapter_point_extraction_messages(*, parse_version, chapter_draft, semantic_chunk_draft) -> list[ChatMessage]:
+def _build_chapter_point_extraction_messages(*, parse_version_id: int, chapter_draft, semantic_chunk_draft) -> list[ChatMessage]:
     """构造单章节知识点抽取提示词。"""
     system_prompt = (
         "你是教材知识点抽取助手。"
@@ -338,7 +420,7 @@ def _build_chapter_point_extraction_messages(*, parse_version, chapter_draft, se
         "不要输出 chapters，不要输出额外说明，不要编造章节外内容。"
     )
     user_payload = {
-        "parse_version_id": parse_version.id,
+        "parse_version_id": parse_version_id,
         "chapter": {
             "node_path": chapter_draft.node_path,
             "title": chapter_draft.title,

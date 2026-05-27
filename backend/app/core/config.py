@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-04
+@Date: 2026-05-27
 @Author: xisy
 @Discription: 应用配置定义
 """
@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     llm_prompt_cache_user_enabled: bool = False
     # prompt_cache_key 前缀；最终下发为 f"{prefix}-{biz_key}"，按业务键分片以最大化前缀复用。
     llm_prompt_cache_key_prefix: str = "eduweave"
+    # 知识抽取阶段按语义块并行调用 LLM 的最大并发数，1 等价于串行。
+    knowledge_extract_max_concurrency: int = 10
 
     embedding_api_base_url: str = "https://api.openai.com/v1"
     embedding_api_key: str | None = None
@@ -281,6 +283,14 @@ class Settings(BaseSettings):
         """校验 LLM 重试退避基数。"""
         if value <= 0:
             raise ValueError("LLM 重试退避基数必须大于 0")
+        return value
+
+    @field_validator("knowledge_extract_max_concurrency")
+    @classmethod
+    def validate_knowledge_extract_max_concurrency(cls, value: int) -> int:
+        """校验知识抽取语义块并发数。"""
+        if value < 1 or value > 10:
+            raise ValueError("知识抽取语义块并发数必须在 1 到 10 之间")
         return value
 
     @field_validator(

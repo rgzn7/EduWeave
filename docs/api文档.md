@@ -3912,7 +3912,7 @@
 
 **获取覆盖率报告列表**
 
-分页获取指定生成批次下的覆盖率分析报告，报告会展示课程大纲、教案、试卷题目与课件页面的知识点覆盖矩阵。
+分页获取指定生成批次下的覆盖率分析报告，报告会展示课程大纲、教案、课件页面、试卷题目与作业题目的知识点覆盖矩阵，并返回质量评审字段。
 
 **参数**
 
@@ -3939,7 +3939,7 @@
       coverage_rate?: number  # 覆盖率百分比
       warning_count: integer  # 告警数量
       coverage_summary_json?: object  # 覆盖摘要
-      report_json: object  # 覆盖率报告内容
+      report_json: object  # 覆盖率报告内容，包含覆盖矩阵、质量评审、学情适配和补救建议
       export_file_id?: object  # 导出文件主键
       created_at: object  # 创建时间
       updated_at: object  # 更新时间
@@ -3994,7 +3994,7 @@
     coverage_rate?: number  # 覆盖率百分比
     warning_count: integer  # 告警数量
     coverage_summary_json?: object  # 覆盖摘要
-    report_json: object  # 覆盖率报告内容
+    report_json: object  # 覆盖率报告内容，包含覆盖矩阵、质量评审、学情适配和补救建议
     export_file_id?: object  # 导出文件主键
     created_at: object  # 创建时间
     updated_at: object  # 更新时间
@@ -4016,7 +4016,7 @@
 
 **重新分析覆盖率报告**
 
-重新汇总指定生成批次下课程大纲、教案、试卷题目与课件页面的知识点引用，并刷新覆盖率报告和质量告警。
+重新汇总指定生成批次下课程大纲、教案、课件页面、试卷题目与作业题目的知识点引用，并刷新覆盖率报告、质量评审字段和可读告警。
 
 **参数**
 
@@ -4040,7 +4040,7 @@
     coverage_rate?: number  # 覆盖率百分比
     warning_count: integer  # 告警数量
     coverage_summary_json?: object  # 覆盖摘要
-    report_json: object  # 覆盖率报告内容
+    report_json: object  # 覆盖率报告内容，包含覆盖矩阵、质量评审、学情适配和补救建议
     export_file_id?: object  # 导出文件主键
     created_at: object  # 创建时间
     updated_at: object  # 更新时间

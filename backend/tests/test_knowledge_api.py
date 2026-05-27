@@ -1,10 +1,14 @@
 """
-@Date: 2026-04-14
+@Date: 2026-05-27
 @Author: xisy
 @Discription: 知识结构化模块接口测试
 """
 
+import json
+import threading
+import time
 from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 from pypdf import PdfWriter
@@ -12,6 +16,7 @@ from pypdf import PdfWriter
 from app.core.config import get_settings
 from app.core.constants import KNOWLEDGE_EXTRACT_TASK_TYPE, KNOWLEDGE_MODULE_CODE, KNOWLEDGE_QUEUE_NAME, TASK_STATUS_PENDING
 from app.core.exceptions import AppException, BusinessErrorCode
+from app.modules.knowledge.domain import SemanticChunkDraft
 from app.modules.knowledge.schemas import (
     KnowledgeChapterBoundaryItem,
     KnowledgeChapterBoundaryResult,
@@ -263,6 +268,124 @@ def test_knowledge_task_should_create_version_and_query_details(client, seeded_s
     point_record = knowledge_test_stubs["knowledge_point_vector"][0]
     assert point_record.knowledge_version_id == knowledge_version_id
     assert point_record.importance_level == 5
+
+
+def test_knowledge_task_should_extract_chunks_in_parallel(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    """知识抽取应按配置并行处理语义块，并保持落库顺序稳定。"""
+    from app.modules.knowledge import tasks as knowledge_tasks
+
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    parse_version_id = upload_and_parse_textbook(client, headers, project_id)
+    confirm_response = client.post(f"/api/v1/parse-versions/{parse_version_id}/confirm", headers=headers)
+    assert confirm_response.status_code == 200
+
+    concurrency_state = {"active": 0, "max_active": 0}
+    state_lock = threading.Lock()
+
+    def fake_build_semantic_chunks(**_kwargs):  # noqa: ANN001
+        return [
+            SemanticChunkDraft(
+                draft_id=index,
+                chapter_ref_id=1,
+                chunk_no=index,
+                chunk_title=f"第2页标题（片段{index}）",
+                page_start=2,
+                page_end=2,
+                line_start=6,
+                line_end=8,
+                source_text_hash=f"hash-{index}",
+                chunk_text=f"chunk {index}",
+            )
+            for index in range(1, 13)
+        ]
+
+    def fake_generate_structured_output(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
+        _ = (self, temperature, _extra_kwargs)
+        if response_model is KnowledgeChapterBoundaryResult:
+            return KnowledgeChapterBoundaryResult(
+                items=[
+                    KnowledgeChapterBoundaryItem(
+                        title="第2页标题",
+                        start_line=6,
+                        line_text="# 第2页标题",
+                        confidence=0.96,
+                    )
+                ]
+            )
+
+        payload = json.loads(messages[-1].content)
+        chunk_index = int(str(payload["markdown"]).split()[-1])
+        with state_lock:
+            concurrency_state["active"] += 1
+            concurrency_state["max_active"] = max(concurrency_state["max_active"], concurrency_state["active"])
+        try:
+            time.sleep(0.08)
+        finally:
+            with state_lock:
+                concurrency_state["active"] -= 1
+        return KnowledgeChapterPointExtractionResult(
+            summary_json={"overview": f"片段{chunk_index}摘要"},
+            knowledge_points=[
+                KnowledgeExtractionPointDraft(
+                    point_code=f"kp_parallel_{chunk_index}",
+                    point_name=f"并行知识点{chunk_index}",
+                    point_type="knowledge",
+                    importance_level=5,
+                    difficulty_level=3,
+                    mastery_level_hint="理解",
+                    tags_json={"tags": ["并行"]},
+                    summary_text=f"第{chunk_index}个并行知识点。",
+                    sort_order=0,
+                    evidences=[
+                        KnowledgeExtractionEvidenceDraft(
+                            page_no=2,
+                            block_no=2,
+                            evidence_type="parse_block",
+                            excerpt_text="textbook.pdf 第2页解析内容",
+                            score_value=0.95,
+                        )
+                    ],
+                )
+            ],
+        )
+
+    def fake_embed_texts(self, texts: list[str]):  # noqa: ANN001
+        dimension = get_settings().milvus_embedding_dim
+        return [[float(index + 1)] * dimension for index, _ in enumerate(texts)]
+
+    def fake_upsert_vectors(self, collection_name: str, records):  # noqa: ANN001
+        _ = (self, collection_name)
+        return {"upsert_count": len(list(records))}
+
+    monkeypatch.setattr(knowledge_tasks, "get_settings", lambda: SimpleNamespace(knowledge_extract_max_concurrency=10))
+    monkeypatch.setattr(knowledge_tasks, "build_semantic_chunk_drafts_from_markdown_index", fake_build_semantic_chunks)
+    monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", fake_generate_structured_output)
+    monkeypatch.setattr(OpenAICompatibleEmbeddingService, "embed_texts", fake_embed_texts)
+    monkeypatch.setattr(MilvusVectorService, "upsert_vectors", fake_upsert_vectors)
+
+    create_response = client.post(
+        f"/api/v1/parse-versions/{parse_version_id}/knowledge-tasks",
+        headers=headers,
+        json={"force_regenerate": False},
+    )
+
+    assert create_response.status_code == 201
+    task_payload = create_response.json()["data"]
+    assert task_payload["task_status"] == "success"
+    assert concurrency_state["max_active"] > 4
+    assert concurrency_state["max_active"] <= 10
+
+    task_detail_response = client.get(f"/api/v1/tasks/{task_payload['id']}", headers=headers)
+    invoke_step = next(step for step in task_detail_response.json()["data"]["steps"] if step["step_code"] == "invoke_llm_extract")
+    assert invoke_step["detail_json"]["processed_chunks"] == 12
+    assert invoke_step["detail_json"]["total_chunks"] == 12
+    assert invoke_step["detail_json"]["parallel_limit"] == 10
+
+    knowledge_version_id = task_payload["result_json"]["knowledge_version_id"]
+    points_response = client.get(f"/api/v1/knowledge-versions/{knowledge_version_id}/points?page_size=20", headers=headers)
+    points = points_response.json()["data"]["items"]
+    assert [point["point_name"] for point in points] == [f"并行知识点{index}" for index in range(1, 13)]
 
 
 def test_knowledge_task_should_reject_running_duplicate(client, seeded_session_factory, knowledge_test_stubs) -> None:

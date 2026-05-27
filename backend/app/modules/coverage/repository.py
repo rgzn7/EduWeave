@@ -17,7 +17,9 @@ from app.modules.p0_models import (
     GenerationTrace,
     HomeworkQuestion,
     HomeworkResult,
+    KnowledgeEvidence,
     KnowledgePoint,
+    LearnerProfileRecord,
     LessonPlan,
     PaperResult,
     Project,
@@ -46,6 +48,11 @@ class CoverageRepository:
         )
         return self.session.scalar(statement)
 
+    def get_project(self, project_id: int) -> Project | None:
+        """按主键查询项目。"""
+        statement = select(Project).where(Project.id == project_id)
+        return self.session.scalar(statement)
+
     def list_knowledge_points(self, knowledge_version_id: int) -> list[KnowledgePoint]:
         """查询知识版本下的知识点。"""
         statement = (
@@ -61,6 +68,26 @@ class CoverageRepository:
             select(ChapterNode)
             .where(ChapterNode.knowledge_version_id == knowledge_version_id)
             .order_by(ChapterNode.node_path.asc(), ChapterNode.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
+    def list_knowledge_evidence_by_point_ids(self, point_ids: list[int]) -> list[KnowledgeEvidence]:
+        """批量查询知识点教材证据。"""
+        if not point_ids:
+            return []
+        statement = (
+            select(KnowledgeEvidence)
+            .where(KnowledgeEvidence.knowledge_point_id.in_(point_ids))
+            .order_by(KnowledgeEvidence.knowledge_point_id.asc(), KnowledgeEvidence.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
+    def list_learner_profile_records(self, profile_version_id: int) -> list[LearnerProfileRecord]:
+        """查询学情版本下画像记录。"""
+        statement = (
+            select(LearnerProfileRecord)
+            .where(LearnerProfileRecord.profile_version_id == profile_version_id)
+            .order_by(LearnerProfileRecord.sort_order.asc(), LearnerProfileRecord.id.asc())
         )
         return list(self.session.scalars(statement))
 
