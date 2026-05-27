@@ -15,7 +15,7 @@ from app.core.constants import (
 )
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.core.middleware import get_request_id
-from app.modules.assessment.presets import SceneType, resolve_assessment_strategy
+from app.modules.assessment.presets import ASSESSMENT_SCENE_PRESETS, SceneType, resolve_assessment_strategy
 from app.modules.assessment.repository import AssessmentRepository
 from app.modules.assessment.schemas import (
     AssessmentBlueprintDetailResponse,
@@ -32,6 +32,7 @@ from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.schemas import TaskListItemResponse
 from app.modules.task_center.service import TaskCenterService
 from app.shared.document import DocumentExportService
+from app.shared.document.naming import build_docx_filename, strip_lesson_prefix
 from app.shared.queue import dispatch_task
 from app.shared.question_basis import (
     build_question_basis,
@@ -322,14 +323,24 @@ class AssessmentService:
         generation_batch = self.repository.get_generation_batch(paper_result.generation_batch_id)
         if generation_batch is None:
             raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "生成批次不存在")
-        questions = self.repository.list_question_items(paper_result.id)
+        questions = self._build_question_items_with_basis(
+            paper_result,
+            self.repository.list_question_items(paper_result.id),
+        )
         content = self.document_export_service.render_service.render_paper_result(paper_result, questions)
+        scene_preset = ASSESSMENT_SCENE_PRESETS.get(paper_result.scene_type)
+        scene_label = scene_preset["scene_label"] if scene_preset else (paper_result.scene_type or "测评")
+        filename = build_docx_filename(
+            strip_lesson_prefix(paper_result.title),
+            scene_label,
+            fallback=scene_label,
+        )
         return self.document_export_service.archive_docx(
             project_id=generation_batch.project_id,
             owner_user_id=owner_user_id,
             biz_type=PAPER_EXPORT_BIZ_TYPE,
             object_segments=(str(generation_batch.project_id), "exports", "paper-results", str(paper_result.id)),
-            filename="paper.docx",
+            filename=filename,
             content=content,
             metadata_json={
                 "paper_result_id": paper_result.id,

@@ -78,7 +78,13 @@ def get_lesson_plan_detail(
 @router.post(
     "/lesson-plans/{lesson_plan_id}/export-docx",
     summary="导出教案 DOCX",
-    description="将当前教师可见的教案结构化内容同步导出为 DOCX 文件，并返回签名下载地址。",
+    description=(
+        "将当前教师可见的教案结构化内容同步导出为 DOCX 文件，并返回签名下载地址。\n\n"
+        "DOCX 模板 v2（2026-05-27 起生效）共用以下约定：\n"
+        "- 文件名面向教师可读：`{lesson_title}-第{N}讲-教案.docx`，无课次序号时省略 `-第{N}讲`；\n"
+        "- `object_key` 嵌入模板版本号段（如 `.../tv2/…`），模板升级时旧 `export_file_id` 由迁移脚本统一清空；\n"
+        "- 渲染层不再展示英文枚举与数据库内部追溯字段，教学流程「知识点」列改用名称替代 ID。"
+    ),
     operation_id="lesson_plan_export_docx",
     response_model=ApiResponse[FileDownloadUrlResponse],
     status_code=status.HTTP_200_OK,

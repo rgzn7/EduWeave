@@ -223,7 +223,13 @@ def list_question_items(
 @router.post(
     "/paper-results/{paper_result_id}/export-docx",
     summary="导出试卷结果 DOCX",
-    description="将当前教师可见的试卷结构化内容和题目明细同步导出为 DOCX 文件，并返回签名下载地址。",
+    description=(
+        "将当前教师可见的试卷结构化内容和题目明细同步导出为 DOCX 文件，并返回签名下载地址。\n\n"
+        "DOCX 模板 v2（2026-05-27 起生效）共用以下约定：\n"
+        "- 文件名面向教师可读：`{paper_title}-{场景中文名}.docx`（场景如「单元测试 / 期末综合测」）；\n"
+        "- `object_key` 嵌入模板版本号段（如 `.../tv2/…`），模板升级时旧 `export_file_id` 由迁移脚本统一清空；\n"
+        "- 渲染层不再展示英文枚举、内部追溯字段，题型/难度统一中文，选项以 `A. 内容` 形式呈现。"
+    ),
     operation_id="paper_result_export_docx",
     response_model=ApiResponse[FileDownloadUrlResponse],
     status_code=status.HTTP_200_OK,
