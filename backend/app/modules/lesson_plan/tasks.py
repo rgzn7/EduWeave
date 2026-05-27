@@ -110,6 +110,7 @@ def _generate_single_lesson_plan(
         stable_prefix_message_count=len(stable_messages),
         cache_user_id=cache_user_id,
         on_usage=usage_records.append,
+        strict_schema=True,
     )
     _validate_lesson_plan_result(
         generation_result,
@@ -548,20 +549,23 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
 # 拆分为两段独立 system 提示，便于上游 prompt cache 命中前缀；调整任一段不击穿另一段缓存。
 _LESSON_PLAN_ROLE_AND_SCHEMA_PROMPT = (
     "你是教案生成助手。请基于课程大纲中的 target_lesson_session、教材知识点和学生学情生成中文教师教案。"
-    "必须严格输出 JSON 对象，字段如下，类型必须严格匹配，不允许将字符串字段替换为对象或数组："
+    "必须严格输出 JSON 对象，字段如下，类型必须严格匹配："
     "lesson_title（字符串，不超过 255 字）；"
-    "summary_text（字符串）；"
-    "course_overview（对象，可包含 audience、duration、focus 等键，禁止使用字符串或数组）；"
+    "summary_text（字符串或 null）；"
+    "course_overview（对象，必须且只能包含 audience、duration、focus 三个字符串字段，"
+    "例如 {\"audience\": \"五年级学生\", \"duration\": \"40 分钟\", \"focus\": \"乘法分配律\"}）；"
     "material_list（字符串数组，每项是一句简述，例如 \"单词卡片若干\"）；"
-    "core_knowledge（字符串数组，每项是一条核心知识的纯文本描述，禁止使用对象）；"
+    "core_knowledge（字符串数组，每项是一条核心知识的纯文本描述）；"
     "teaching_flow（对象数组，标准行课流程，每项必须包含 step_no（从 1 起的整数）、stage_name（字符串，简短环节名）、"
     "duration_minutes（整数）、teacher_actions（字符串数组，至少 1 条）、student_activities（字符串数组，至少 1 条）、"
-    "knowledge_point_refs（输入知识点 id 的整数数组，至少 1 个），不要使用 stage 字段替代 stage_name）；"
+    "knowledge_point_refs（输入知识点 id 的整数数组，至少 1 个）；"
+    "环节名字段固定使用 stage_name）；"
     "session_plans（对象数组，必须且只能包含 1 个课次安排，对应 target_lesson_session.session_no，"
     "每项必须包含 session_no（整数）、title（字符串）、objectives（字符串数组）、teaching_focus（字符串数组）、"
     "teaching_steps（与 teaching_flow 同结构的对象数组）、homework（字符串数组）、knowledge_point_refs（整数数组））；"
-    "after_class_plan（对象，可包含 review、homework、parent_communication 等键，禁止使用字符串或数组）；"
-    "learner_adjustments（字符串数组，每项是一句策略说明，禁止使用对象）；"
+    "after_class_plan（对象，必须且只能包含 review、homework、parent_communication 三个字符串字段，"
+    "例如 {\"review\": \"完成基础题 1-3 题并复述...\", \"homework\": \"...\", \"parent_communication\": \"...\"}）；"
+    "learner_adjustments（字符串数组，每项是一句策略说明）；"
     "knowledge_point_refs（输入知识点 id 的整数数组）。"
 )
 
@@ -751,12 +755,12 @@ def _build_lesson_plan_content_json(
     """构造教案内容 JSON。"""
     return {
         "target_lesson_session": target_lesson_session,
-        "course_overview": result.course_overview,
+        "course_overview": result.course_overview.model_dump(mode="json"),
         "material_list": result.material_list,
         "core_knowledge": result.core_knowledge,
         "teaching_flow": [step.model_dump(mode="json") for step in result.teaching_flow],
         "session_plans": [session_plan.model_dump(mode="json") for session_plan in result.session_plans],
-        "after_class_plan": result.after_class_plan,
+        "after_class_plan": result.after_class_plan.model_dump(mode="json"),
         "learner_adjustments": result.learner_adjustments,
         "knowledge_point_refs": result.knowledge_point_refs,
     }

@@ -27,6 +27,56 @@ LLM_REPAIR_RAW_OUTPUT_MAX_CHARS = 20000
 
 _LLM_JSON_REPAIR_SYSTEM_PROMPT = "你是严谨的结构化输出修复助手，只输出合法 JSON 对象。Return valid json only."
 
+# OpenAI Structured Outputs strict 模式不支持的 JSON Schema 关键字。
+# 解码侧只看支持的关键字，未支持的会导致 schema 注册失败；启用 strict 前需统一剥除。
+_OPENAI_STRICT_UNSUPPORTED_KEYWORDS = frozenset(
+    {
+        "default",
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        "pattern",
+        "format",
+        "uniqueItems",
+        "patternProperties",
+    }
+)
+
+
+def _to_openai_strict_schema(schema: Any) -> Any:
+    """把 Pydantic 输出的 JSON Schema 转换为 OpenAI Structured Outputs strict 兼容形式。
+
+    OpenAI strict 模式要求：所有 object 显式 additionalProperties=false，且 required
+    必须列出全部 properties；同时拒绝 default / minLength / ge 等约束关键字；含
+    "$ref" 的节点不能携带其它兄弟关键字（包括 description / title）。本函数递归原
+    地清洗，不修改字段名与类型语义，仅剥掉 strict 不接受的元数据。
+    """
+    if isinstance(schema, dict):
+        for key in list(schema.keys()):
+            if key in _OPENAI_STRICT_UNSUPPORTED_KEYWORDS:
+                schema.pop(key)
+        # $ref 节点除自身外其它兄弟关键字都不被 strict 模式接受，统一剥掉避免上游 400。
+        if "$ref" in schema:
+            for key in list(schema.keys()):
+                if key != "$ref":
+                    schema.pop(key)
+            return schema
+        if schema.get("type") == "object" and isinstance(schema.get("properties"), dict):
+            schema["additionalProperties"] = False
+            schema["required"] = list(schema["properties"].keys())
+        for value in schema.values():
+            _to_openai_strict_schema(value)
+    elif isinstance(schema, list):
+        for item in schema:
+            _to_openai_strict_schema(item)
+    return schema
+
 
 class OpenAICompatibleLlmService:
     """OpenAI 兼容结构化输出服务。"""
@@ -49,6 +99,7 @@ class OpenAICompatibleLlmService:
         stable_prefix_message_count: int = 0,
         cache_user_id: int | None = None,
         on_usage: Callable[[LlmUsage], None] | None = None,
+        strict_schema: bool = False,
     ) -> BaseModel:
         """生成结构化 JSON 输出并解析为指定模型。
 
@@ -60,6 +111,7 @@ class OpenAICompatibleLlmService:
         - stable_prefix_message_count：前缀消息数量，Anthropic 端在第 N 条挂 cache_control 标记。
         - cache_user_id：可选用户标识；仅在 settings.llm_prompt_cache_user_enabled 开启时注入 user 字段。
         - on_usage：每次成功调用 LLM 后回调一次（含缺文本重试与修复重试），供调用方聚合 cached_tokens。
+        - strict_schema：仅 Responses API 生效；为 True 时把 schema 转 strict 兼容形态并打开 OpenAI 结构化解码。
         """
         raw_text, raw_payload = self._invoke_raw_text(
             messages=messages,
@@ -68,6 +120,7 @@ class OpenAICompatibleLlmService:
             cache_biz_key=cache_biz_key,
             stable_prefix_message_count=stable_prefix_message_count,
             cache_user_id=cache_user_id,
+            strict_schema=strict_schema,
         )
         if on_usage is not None and raw_payload is not None:
             on_usage(self.build_usage(raw_payload))
@@ -77,6 +130,7 @@ class OpenAICompatibleLlmService:
             temperature=temperature,
             raw_text=raw_text,
             on_usage=on_usage,
+            strict_schema=strict_schema,
         )
 
     def _invoke_raw_text(
@@ -88,6 +142,7 @@ class OpenAICompatibleLlmService:
         cache_biz_key: str | None = None,
         stable_prefix_message_count: int = 0,
         cache_user_id: int | None = None,
+        strict_schema: bool = False,
     ) -> tuple[str, dict[str, Any] | None]:
         """按配置格式调用 LLM 并提取文本；返回成功但无文本时重发原始调用。
 
@@ -116,6 +171,7 @@ class OpenAICompatibleLlmService:
                     cache_biz_key=cache_biz_key,
                     stable_prefix_message_count=stable_prefix_message_count,
                     cache_user_id=cache_user_id,
+                    strict_schema=strict_schema,
                 )
                 streamed_text, final_payload = self.client.create_response_stream(payload)
                 text = streamed_text or self._extract_response_text(final_payload)
@@ -150,11 +206,13 @@ class OpenAICompatibleLlmService:
         temperature: float,
         raw_text: str,
         on_usage: Callable[[LlmUsage], None] | None = None,
+        strict_schema: bool = False,
     ) -> BaseModel:
         """解析结构化输出；失败时回调 LLM 修复 JSON 后重试。
 
         修复路径不传入 cache 参数，避免修复请求与稳定前缀混入同一缓存分片；on_usage
-        仍会对修复请求的使用量回调，便于调用方统计完整 token 成本。
+        仍会对修复请求的使用量回调，便于调用方统计完整 token 成本。strict_schema
+        透传给修复路径，保持与首次调用相同的结构化解码强度。
         """
         current_text = raw_text
         last_error: AppException | None = None
@@ -186,6 +244,7 @@ class OpenAICompatibleLlmService:
                     messages=repair_messages,
                     response_model=response_model,
                     temperature=temperature,
+                    strict_schema=strict_schema,
                 )
                 if on_usage is not None and repair_payload is not None:
                     on_usage(self.build_usage(repair_payload))
@@ -243,8 +302,14 @@ class OpenAICompatibleLlmService:
         cache_biz_key: str | None = None,
         stable_prefix_message_count: int = 0,
         cache_user_id: int | None = None,
+        strict_schema: bool = False,
     ) -> dict[str, Any]:
-        """构造 OpenAI Responses 结构化请求。"""
+        """构造 OpenAI Responses 结构化请求。
+
+        strict_schema=True 时把 Pydantic schema 转 strict 兼容形态（递归剥掉 default
+        与不支持的约束关键字，object 全部加 additionalProperties=false 与全量 required），
+        并打开 OpenAI 结构化解码，从源头消除字段名/类型错误。
+        """
         # reasoning 类模型（如 gpt-5 系列）不接受 temperature，仅接受 reasoning.effort；
         # 若配置中显式给出 reasoning_effort，则忽略 temperature 以避免上游 400。
         translated = [self._translate_message(message, "responses") for message in messages]
@@ -254,6 +319,9 @@ class OpenAICompatibleLlmService:
             api_format="responses",
             stable_prefix_count=stable_prefix_message_count,
         )
+        response_schema = response_model.model_json_schema()
+        if strict_schema:
+            response_schema = _to_openai_strict_schema(response_schema)
         payload: dict[str, Any] = {
             "model": self.settings.llm_model,
             "input": translated,
@@ -261,8 +329,8 @@ class OpenAICompatibleLlmService:
                 "format": {
                     "type": "json_schema",
                     "name": response_model.__name__,
-                    "schema": response_model.model_json_schema(),
-                    "strict": False,
+                    "schema": response_schema,
+                    "strict": bool(strict_schema),
                 }
             },
         }
