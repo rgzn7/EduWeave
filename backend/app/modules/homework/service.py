@@ -31,6 +31,7 @@ from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.schemas import TaskListItemResponse
 from app.modules.task_center.service import TaskCenterService
 from app.shared.document import DocumentExportService
+from app.shared.document.naming import build_docx_filename, strip_lesson_prefix
 from app.shared.queue import dispatch_task
 from app.shared.question_basis import (
     build_question_basis,
@@ -249,24 +250,38 @@ class HomeworkService:
         if generation_batch is None:
             raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "生成批次不存在")
         lesson_plan = self.repository.get_lesson_plan(homework_result.lesson_plan_id)
-        questions = self.repository.list_homework_questions(homework_result.id)
+        questions = self._build_question_items_with_basis(
+            homework_result,
+            lesson_plan,
+            self.repository.list_homework_questions(homework_result.id),
+        )
         content = self.document_export_service.render_service.render_homework_result(
             homework_result,
             questions,
             lesson_plan=lesson_plan,
         )
+        title_segment = strip_lesson_prefix(
+            (lesson_plan.lesson_title if lesson_plan and lesson_plan.lesson_title else homework_result.title)
+        )
+        session_segment = (
+            f"第{lesson_plan.class_session_no}讲"
+            if lesson_plan and lesson_plan.class_session_no is not None
+            else None
+        )
+        filename = build_docx_filename(title_segment, session_segment, "课后作业", fallback="课后作业")
         return self.document_export_service.archive_docx(
             project_id=generation_batch.project_id,
             owner_user_id=owner_user_id,
             biz_type=HOMEWORK_EXPORT_BIZ_TYPE,
             object_segments=(str(generation_batch.project_id), "exports", "homework-results", str(homework_result.id)),
-            filename="homework.docx",
+            filename=filename,
             content=content,
             metadata_json={
                 "homework_result_id": homework_result.id,
                 "homework_blueprint_id": homework_result.homework_blueprint_id,
                 "generation_batch_id": homework_result.generation_batch_id,
                 "lesson_plan_id": homework_result.lesson_plan_id,
+                "class_session_no": lesson_plan.class_session_no if lesson_plan else None,
             },
             target=homework_result,
         )

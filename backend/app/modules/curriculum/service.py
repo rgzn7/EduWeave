@@ -12,6 +12,7 @@ from app.modules.curriculum.repository import CurriculumRepository
 from app.modules.curriculum.schemas import CurriculumPlanDetailResponse, CurriculumPlanListItemResponse
 from app.modules.file_asset.schemas import FileDownloadUrlResponse
 from app.shared.document import DocumentExportService
+from app.shared.document.naming import build_docx_filename
 
 
 class CurriculumService:
@@ -60,12 +61,13 @@ class CurriculumService:
         if plan is None:
             raise AppException(BusinessErrorCode.CURRICULUM_PLAN_NOT_FOUND, "课程大纲不存在")
         content = self.document_export_service.render_service.render_curriculum_plan(plan)
+        filename = build_docx_filename(plan.plan_title, "课程大纲", fallback="课程大纲")
         return self.document_export_service.archive_docx(
             project_id=plan.project_id,
             owner_user_id=owner_user_id,
             biz_type=CURRICULUM_EXPORT_BIZ_TYPE,
             object_segments=(str(plan.project_id), "exports", "curriculum-plans", str(plan.id)),
-            filename=f"v{plan.version_no}.docx",
+            filename=filename,
             content=content,
             metadata_json={"curriculum_plan_id": plan.id, "version_no": plan.version_no},
             target=plan,

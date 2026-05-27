@@ -2703,7 +2703,7 @@
           "课程大纲"
         ],
         "summary": "导出课程大纲 DOCX",
-        "description": "将当前教师可见的课程大纲结构化内容同步导出为 DOCX 文件，并返回签名下载地址。",
+        "description": "将当前教师可见的课程大纲结构化内容同步导出为 DOCX 文件，并返回签名下载地址。\n\nDOCX 模板 v2（2026-05-27 起生效）共用以下约定：\n- 文件名面向教师可读：`{plan_title}-课程大纲.docx`；\n- `object_key` 嵌入模板版本号段（如 `.../tv2/…`），模板升级时旧 `export_file_id` 由迁移脚本统一清空；\n- 渲染层不再展示英文枚举与数据库内部追溯字段（`single_choice / fill_blank / focus / audience / source_trace` 等）。",
         "operationId": "curriculum_plan_export_docx",
         "security": [
           {
@@ -2889,7 +2889,7 @@
           "教案"
         ],
         "summary": "导出教案 DOCX",
-        "description": "将当前教师可见的教案结构化内容同步导出为 DOCX 文件，并返回签名下载地址。",
+        "description": "将当前教师可见的教案结构化内容同步导出为 DOCX 文件，并返回签名下载地址。\n\nDOCX 模板 v2（2026-05-27 起生效）共用以下约定：\n- 文件名面向教师可读：`{lesson_title}-第{N}讲-教案.docx`，无课次序号时省略 `-第{N}讲`；\n- `object_key` 嵌入模板版本号段（如 `.../tv2/…`），模板升级时旧 `export_file_id` 由迁移脚本统一清空；\n- 渲染层不再展示英文枚举与数据库内部追溯字段，教学流程「知识点」列改用名称替代 ID。",
         "operationId": "lesson_plan_export_docx",
         "security": [
           {
@@ -3510,7 +3510,7 @@
           "测评"
         ],
         "summary": "导出试卷结果 DOCX",
-        "description": "将当前教师可见的试卷结构化内容和题目明细同步导出为 DOCX 文件，并返回签名下载地址。",
+        "description": "将当前教师可见的试卷结构化内容和题目明细同步导出为 DOCX 文件，并返回签名下载地址。\n\nDOCX 模板 v2（2026-05-27 起生效）共用以下约定：\n- 文件名面向教师可读：`{paper_title}-{场景中文名}.docx`（场景如「单元测试 / 期末综合测」）；\n- `object_key` 嵌入模板版本号段（如 `.../tv2/…`），模板升级时旧 `export_file_id` 由迁移脚本统一清空；\n- 渲染层不再展示英文枚举、内部追溯字段，题型/难度统一中文，选项以 `A. 内容` 形式呈现。",
         "operationId": "paper_result_export_docx",
         "security": [
           {
@@ -3832,7 +3832,7 @@
           "课后作业"
         ],
         "summary": "导出课后作业 DOCX",
-        "description": "将当前教师可见的课后作业结构化内容和题目明细同步导出为 DOCX 文件，并返回签名下载地址。",
+        "description": "将当前教师可见的课后作业结构化内容和题目明细同步导出为 DOCX 文件，并返回签名下载地址。\n\nDOCX 模板 v2（2026-05-27 起生效）共用以下约定：\n- 文件名面向教师可读：`{lesson_title}-第{N}讲-课后作业.docx`，无课次序号时省略 `-第{N}讲`；\n- `object_key` 嵌入模板版本号段（如 `.../tv2/…`），模板升级时旧 `export_file_id` 由迁移脚本统一清空；\n- 渲染层不再展示英文枚举、内部追溯字段，题型/难度统一中文，选项以 `A. 内容` 形式呈现。",
         "operationId": "homework_result_export_docx",
         "security": [
           {

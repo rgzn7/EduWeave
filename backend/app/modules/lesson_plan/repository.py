@@ -57,6 +57,13 @@ class LessonPlanRepository:
         )
         return list(self.session.scalars(statement))
 
+    def list_knowledge_points_by_ids(self, ids: list[int]) -> list[KnowledgePoint]:
+        """按主键批量查询知识点。"""
+        if not ids:
+            return []
+        statement = select(KnowledgePoint).where(KnowledgePoint.id.in_(ids))
+        return list(self.session.scalars(statement))
+
     def list_chapter_nodes(self, knowledge_version_id: int) -> list[ChapterNode]:
         """查询知识版本下章节节点。"""
         statement = (

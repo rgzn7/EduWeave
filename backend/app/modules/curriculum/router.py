@@ -83,7 +83,13 @@ def get_curriculum_plan_detail(
 @router.post(
     "/curriculum-plans/{curriculum_plan_id}/export-docx",
     summary="导出课程大纲 DOCX",
-    description="将当前教师可见的课程大纲结构化内容同步导出为 DOCX 文件，并返回签名下载地址。",
+    description=(
+        "将当前教师可见的课程大纲结构化内容同步导出为 DOCX 文件，并返回签名下载地址。\n\n"
+        "DOCX 模板 v2（2026-05-27 起生效）共用以下约定：\n"
+        "- 文件名面向教师可读：`{plan_title}-课程大纲.docx`；\n"
+        "- `object_key` 嵌入模板版本号段（如 `.../tv2/…`），模板升级时旧 `export_file_id` 由迁移脚本统一清空；\n"
+        "- 渲染层不再展示英文枚举与数据库内部追溯字段（`single_choice / fill_blank / focus / audience / source_trace` 等）。"
+    ),
     operation_id="curriculum_plan_export_docx",
     response_model=ApiResponse[FileDownloadUrlResponse],
     status_code=status.HTTP_200_OK,

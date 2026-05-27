@@ -61,6 +61,10 @@ def test_docx_export_should_create_files_and_backfill_export_ids(
     assert curriculum_response.status_code == 200
     curriculum_payload = curriculum_response.json()["data"]
     assert curriculum_payload["signed_url"].startswith("https://obs.test.example.com/")
+    # object_key 应嵌入模板版本号段，便于模板升级时旧文件自然失效
+    assert "/tv" in curriculum_payload["object_key"]
+    # 文件名应面向教师友好，包含课题与资产类型
+    assert curriculum_payload["object_key"].endswith("三年级数学乘法提升课程-课程大纲.docx")
     curriculum_xml = read_docx_document_xml(mock_obs_storage[curriculum_payload["object_key"]])
     assert "三年级数学乘法提升课程" in curriculum_xml
     assert "第1讲 乘法口诀训练" in curriculum_xml
@@ -84,9 +88,15 @@ def test_docx_export_should_create_files_and_backfill_export_ids(
     )
     assert lesson_response.status_code == 200
     lesson_payload = lesson_response.json()["data"]
+    assert "/tv" in lesson_payload["object_key"]
+    assert lesson_payload["object_key"].endswith("乘法口诀训练教案-第1讲-教案.docx")
     lesson_xml = read_docx_document_xml(mock_obs_storage[lesson_payload["object_key"]])
-    assert "第1讲 乘法口诀训练教案" in lesson_xml
+    # 教案标题应去掉「第N讲」前缀，并且不再出现英文字段名
+    assert "乘法口诀训练教案" in lesson_xml
+    assert "第1讲 乘法口诀训练教案" not in lesson_xml
     assert "导入" in lesson_xml
+    assert "single_choice" not in lesson_xml
+    assert "knowledge_point_refs" not in lesson_xml
 
     lesson_detail_response = client.get(f"/api/v1/lesson-plans/{baseline['lesson_plan_id']}", headers=headers)
     assert lesson_detail_response.json()["data"]["export_file_id"] == lesson_payload["file_object_id"]
@@ -97,10 +107,20 @@ def test_docx_export_should_create_files_and_backfill_export_ids(
     )
     assert paper_response.status_code == 200
     paper_payload = paper_response.json()["data"]
+    assert "/tv" in paper_payload["object_key"]
+    assert paper_payload["object_key"].endswith("三年级数学乘法单元测试-单元测试.docx")
     paper_xml = read_docx_document_xml(mock_obs_storage[paper_payload["object_key"]])
     assert "三年级数学乘法单元测试" in paper_xml
     assert "第1题：围绕乘法口诀完成练习。" in paper_xml
     assert "参考答案" in paper_xml
+    # 题型与场景应该走中文标签，且不暴露原始英文枚举
+    assert "单选题" in paper_xml
+    assert "single_choice" not in paper_xml
+    # 选项应渲染为 A. xxx 形式
+    assert "A. 2" in paper_xml
+    # 不再展示数据库内部追溯字段
+    assert "来源摘要" not in paper_xml
+    assert "source_trace" not in paper_xml
 
     paper_detail_response = client.get(f"/api/v1/paper-results/{baseline['paper_result_id']}", headers=headers)
     assert paper_detail_response.json()["data"]["export_file_id"] == paper_payload["file_object_id"]
