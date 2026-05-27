@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-26
+@Date: 2026-05-27
 @Author: xisy
 @Discription: 生成过程展示接口测试
 """
@@ -14,6 +14,7 @@ from app.core.security import hash_password
 from app.modules.auth.models import SysUser
 from app.modules.p0_models import (
     CoverageReport,
+    CurriculumPlan,
     FileObject,
     GenerationBatch,
     KnowledgeVersion,
@@ -22,6 +23,7 @@ from app.modules.p0_models import (
     ParseVersion,
     Project,
     TaskRecord,
+    TaskStepRecord,
     TextbookVersion,
 )
 
@@ -214,6 +216,7 @@ def _seed_task(
     biz_key: str,
     task_status: str,
     generation_batch_id: int | None = None,
+    current_stage: str | None = None,
     progress_percent: int = 100,
     result_json: dict[str, Any] | None = None,
     last_error_code: str | None = None,
@@ -236,6 +239,7 @@ def _seed_task(
         biz_key=biz_key,
         task_status=task_status,
         queue_name="test_queue",
+        current_stage=current_stage,
         progress_percent=progress_percent,
         retry_count=0,
         max_retry_count=3,
@@ -249,6 +253,53 @@ def _seed_task(
     session.add(task)
     session.flush()
     return task
+
+
+def _seed_task_step(
+    session: Session,
+    *,
+    task_record_id: int,
+    step_code: str,
+    step_name: str,
+    step_order: int,
+    step_status: str,
+    progress_percent: int,
+    detail_json: dict[str, Any] | None = None,
+) -> TaskStepRecord:
+    """构造任务步骤记录。"""
+    step = TaskStepRecord(
+        task_record_id=task_record_id,
+        step_code=step_code,
+        step_name=step_name,
+        step_order=step_order,
+        step_status=step_status,
+        progress_percent=progress_percent,
+        detail_json=detail_json,
+        started_at=datetime.now(timezone.utc),
+    )
+    session.add(step)
+    session.flush()
+    return step
+
+
+def _assert_no_internal_metric_keys(detail: dict[str, Any] | None) -> None:
+    """确认公开指标没有透出内部主键、编排字段和调试字段。"""
+    if detail is None:
+        return
+    forbidden_keys = {
+        "batch_status",
+        "detail_json",
+        "generation_batch_id",
+        "llm_usage",
+        "next_task_id",
+        "next_task_type",
+        "queue_name",
+        "worker_task_id",
+    }
+    for key in detail:
+        assert key not in forbidden_keys
+        assert not key.endswith("_id")
+        assert not key.endswith("_ids")
 
 
 @pytest.fixture()
@@ -316,6 +367,9 @@ def test_generation_process_should_return_all_pending_for_empty_project(client) 
     for step in data["steps"]:
         assert step["status"] == "pending"
         assert step["progress_percent"] == 0
+        assert step["current_stage"] is None
+        assert step["progress_detail"] is None
+        assert step["result_detail"] is None
         assert step["summary"] is None
         assert step["started_at"] is None
         assert step["finished_at"] is None
@@ -389,17 +443,141 @@ def test_generation_process_should_aggregate_pre_batch_progress(
     assert data["current_step_code"] == "curriculum_plan"
     by_code = {step["code"]: step for step in data["steps"]}
     assert by_code["mineru_parse"]["status"] == "succeeded"
-    assert by_code["mineru_parse"]["summary"] == "已识别 12 页教材内容。"
+    assert by_code["mineru_parse"]["summary"] == "已识别 12 页教材内容，暂无待核查项。"
     assert by_code["mineru_parse"]["progress_percent"] == 100
+    assert by_code["mineru_parse"]["result_detail"] == {"page_count": 12, "issue_count": 0}
     assert by_code["mineru_parse"]["finished_at"] is not None
     assert by_code["learner_profile"]["status"] == "succeeded"
-    assert by_code["learner_profile"]["summary"] == "已分析 5 份学情记录。"
+    assert by_code["learner_profile"]["summary"] == "已生成 5 条学情画像记录。"
+    assert by_code["learner_profile"]["result_detail"] == {"profile_record_count": 5}
     assert by_code["knowledge_structure"]["status"] == "succeeded"
     assert by_code["knowledge_structure"]["summary"] == "已识别 6 个章节、24 个知识点。"
+    assert by_code["knowledge_structure"]["result_detail"] == {"chapter_count": 6, "point_count": 24}
     for code in ("curriculum_plan", "lesson_plan_generate", "coverage_check"):
         assert by_code[code]["status"] == "pending"
+        assert by_code[code]["progress_detail"] is None
+        assert by_code[code]["result_detail"] is None
         assert by_code[code]["summary"] is None
         assert by_code[code]["error_message"] is None
+
+
+def test_generation_process_should_expose_running_knowledge_progress_detail(
+    client, seeded_session_factory, seeded_full_project
+) -> None:
+    """知识点梳理运行中应透出公开的分块处理进度。"""
+    headers = seeded_full_project["headers"]
+    project_id = seeded_full_project["project_id"]
+    parse_version_id = seeded_full_project["parse_version_id"]
+
+    session = seeded_session_factory()
+    try:
+        task = _seed_task(
+            session,
+            project_id=project_id,
+            module_code="knowledge",
+            task_type="knowledge_extract",
+            biz_key=f"parse_version:{parse_version_id}:knowledge",
+            task_status="processing",
+            current_stage="invoke_llm_extract",
+            progress_percent=52,
+            created_offset_seconds=-120,
+        )
+        _seed_task_step(
+            session,
+            task_record_id=task.id,
+            step_code="invoke_llm_extract",
+            step_name="调用 LLM 抽取知识点",
+            step_order=2,
+            step_status="processing",
+            progress_percent=30,
+            detail_json={
+                "processed_chunks": 3,
+                "total_chunks": 8,
+                "parallel_limit": 4,
+                "knowledge_version_id": 99,
+                "llm_usage": {"prompt_tokens": 100},
+            },
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.get(f"/api/v1/projects/{project_id}/generation-process", headers=headers)
+
+    assert response.status_code == 200
+    by_code = {step["code"]: step for step in response.json()["data"]["steps"]}
+    knowledge_step = by_code["knowledge_structure"]
+    assert knowledge_step["status"] == "running"
+    assert knowledge_step["current_stage"] == "invoke_llm_extract"
+    assert knowledge_step["progress_percent"] == 52
+    assert knowledge_step["progress_detail"] == {
+        "processed_chunks": 3,
+        "total_chunks": 8,
+        "parallel_limit": 4,
+    }
+    assert knowledge_step["result_detail"] is None
+    _assert_no_internal_metric_keys(knowledge_step["progress_detail"])
+
+
+def test_generation_process_should_expose_running_lesson_plan_progress_detail(
+    client, seeded_session_factory, seeded_full_project
+) -> None:
+    """教案生成运行中应透出公开的并发课次处理进度。"""
+    headers = seeded_full_project["headers"]
+    project_id = seeded_full_project["project_id"]
+    batch_id = seeded_full_project["generation_batch_id"]
+
+    session = seeded_session_factory()
+    try:
+        task = _seed_task(
+            session,
+            project_id=project_id,
+            module_code="lesson_plan",
+            task_type="lesson_plan_generate",
+            biz_key=f"generation_batch:{batch_id}:lesson_plan",
+            task_status="processing",
+            generation_batch_id=batch_id,
+            current_stage="invoke_llm_lesson_plan",
+            progress_percent=63,
+            created_offset_seconds=-120,
+        )
+        _seed_task_step(
+            session,
+            task_record_id=task.id,
+            step_code="invoke_llm_lesson_plan",
+            step_name="调用 LLM 生成教案",
+            step_order=2,
+            step_status="processing",
+            progress_percent=60,
+            detail_json={
+                "processed_sessions": 6,
+                "total_sessions": 10,
+                "parallel_limit": 5,
+                "class_session_no": 7,
+                "cache_warmup_completed": True,
+                "lesson_plan_ids": [1, 2],
+            },
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.get(f"/api/v1/projects/{project_id}/generation-process", headers=headers)
+
+    assert response.status_code == 200
+    by_code = {step["code"]: step for step in response.json()["data"]["steps"]}
+    lesson_step = by_code["lesson_plan_generate"]
+    assert lesson_step["status"] == "running"
+    assert lesson_step["current_stage"] == "invoke_llm_lesson_plan"
+    assert lesson_step["progress_detail"] == {
+        "processed_sessions": 6,
+        "total_sessions": 10,
+        "parallel_limit": 5,
+        "class_session_no": 7,
+        "cache_warmup_completed": True,
+    }
+    assert lesson_step["result_detail"] is None
+    _assert_no_internal_metric_keys(lesson_step["progress_detail"])
 
 
 def test_generation_process_should_report_succeeded_when_all_tasks_done(
@@ -411,10 +589,40 @@ def test_generation_process_should_report_succeeded_when_all_tasks_done(
     textbook_version_id = seeded_full_project["textbook_version_id"]
     parse_version_id = seeded_full_project["parse_version_id"]
     profile_file_id = seeded_full_project["profile_file_id"]
+    knowledge_version_id = seeded_full_project["knowledge_version_id"]
+    profile_version_id = seeded_full_project["profile_version_id"]
     batch_id = seeded_full_project["generation_batch_id"]
 
     session = seeded_session_factory()
     try:
+        owner_user_id = get_owner_user_id(session)
+        curriculum_plan = CurriculumPlan(
+            project_id=project_id,
+            knowledge_version_id=knowledge_version_id,
+            learner_profile_version_id=profile_version_id,
+            parent_plan_id=None,
+            version_no=1,
+            plan_title="两位数乘法提升课程",
+            target_subject_code="math",
+            target_grade_code="grade_3",
+            chapter_range_json=None,
+            course_count=2,
+            session_duration_minutes=90,
+            generation_mode="ai",
+            version_status="ready",
+            summary_text="围绕两位数乘法进行巩固提升。",
+            content_json={
+                "lesson_sessions": [
+                    {"session_no": 1, "title": "乘法算理复习"},
+                    {"session_no": 2, "title": "应用题综合训练"},
+                ]
+            },
+            export_file_id=None,
+            created_by=owner_user_id,
+        )
+        session.add(curriculum_plan)
+        session.flush()
+
         _seed_task(
             session,
             project_id=project_id,
@@ -422,7 +630,7 @@ def test_generation_process_should_report_succeeded_when_all_tasks_done(
             task_type="textbook_parse",
             biz_key=f"textbook_version:{textbook_version_id}:full",
             task_status="success",
-            result_json={"page_count": 18},
+            result_json={"page_count": 18, "issue_count": 2},
             created_offset_seconds=-600,
         )
         _seed_task(
@@ -453,7 +661,7 @@ def test_generation_process_should_report_succeeded_when_all_tasks_done(
             biz_key=f"generation_batch:{batch_id}:curriculum",
             task_status="success",
             generation_batch_id=batch_id,
-            result_json={"curriculum_plan_id": 1},
+            result_json={"curriculum_plan_id": curriculum_plan.id},
             created_offset_seconds=-360,
         )
         _seed_task(
@@ -484,7 +692,16 @@ def test_generation_process_should_report_succeeded_when_all_tasks_done(
                 report_status="success",
                 coverage_rate=98.18,
                 warning_count=1,
-                coverage_summary_json={},
+                coverage_summary_json={
+                    "total_count": 12,
+                    "covered_count": 11,
+                    "uncovered_count": 1,
+                    "coverage_rate": 98.18,
+                    "warning_count": 1,
+                    "important_total_count": 4,
+                    "important_covered_count": 4,
+                    "important_coverage_rate": 100.0,
+                },
                 report_json={},
             )
         )
@@ -500,9 +717,31 @@ def test_generation_process_should_report_succeeded_when_all_tasks_done(
     assert data["current_step_code"] is None
     by_code = {step["code"]: step for step in data["steps"]}
     assert all(by_code[code]["status"] == "succeeded" for code in by_code)
+    assert by_code["mineru_parse"]["summary"] == "已识别 18 页教材内容，待核查项 2 个。"
+    assert by_code["learner_profile"]["summary"] == "已生成 3 条学情画像记录。"
     assert by_code["lesson_plan_generate"]["summary"] == "已生成 2 课时教案。"
-    assert by_code["coverage_check"]["summary"] == "知识点覆盖 98.18%。"
-    assert by_code["curriculum_plan"]["summary"] == "课程总纲已生成。"
+    assert by_code["lesson_plan_generate"]["result_detail"] == {"lesson_plan_count": 2}
+    assert by_code["coverage_check"]["summary"] == "知识点覆盖 98.18%，已覆盖 11/12，告警 1 个。"
+    assert by_code["coverage_check"]["result_detail"] == {
+        "coverage_rate": 98.18,
+        "warning_count": 1,
+        "total_count": 12,
+        "covered_count": 11,
+        "uncovered_count": 1,
+        "important_total_count": 4,
+        "important_covered_count": 4,
+        "important_coverage_rate": 100.0,
+    }
+    assert by_code["curriculum_plan"]["summary"] == "课程总纲《两位数乘法提升课程》已生成，共 2 课次。"
+    assert by_code["curriculum_plan"]["result_detail"] == {
+        "plan_title": "两位数乘法提升课程",
+        "course_count": 2,
+        "session_duration_minutes": 90,
+        "lesson_session_count": 2,
+    }
+    for step in by_code.values():
+        _assert_no_internal_metric_keys(step["progress_detail"])
+        _assert_no_internal_metric_keys(step["result_detail"])
 
 
 def test_generation_process_should_map_internal_error_code_to_user_message(

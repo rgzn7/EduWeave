@@ -1,10 +1,11 @@
 """
-@Date: 2026-05-26
+@Date: 2026-05-27
 @Author: xisy
 @Discription: 生成过程展示模块业务服务，把内部任务聚合成 6 步产品化展示
 """
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
@@ -37,9 +38,11 @@ from app.modules.generation_process.schemas import (
 )
 from app.modules.p0_models import (
     CoverageReport,
+    CurriculumPlan,
     LearnerProfileVersion,
     Project,
     TaskRecord,
+    TaskStepRecord,
 )
 from app.modules.orchestrator.repository import OrchestratorRepository
 from app.modules.parsing.repository import ParsingRepository
@@ -133,6 +136,50 @@ DEFAULT_ERROR_MESSAGE_BY_STEP: dict[str, str] = {
     STEP_CURRICULUM_PLAN: "课程规划失败，请稍后重试。",
     STEP_LESSON_PLAN_GENERATE: "教案生成失败，请稍后重试。",
     STEP_COVERAGE_CHECK: "覆盖检查失败，请稍后重试。",
+}
+
+# 允许透给项目页的步骤进度指标。内部主键、任务编排字段、LLM usage 等均不在白名单内。
+PUBLIC_PROGRESS_DETAIL_KEYS: set[str] = {
+    "page_count",
+    "issue_count",
+    "edited_page_count",
+    "page_range_text",
+    "block_count",
+    "record_count",
+    "profile_record_count",
+    "chapter_count",
+    "point_count",
+    "knowledge_point_count",
+    "processed_chunks",
+    "total_chunks",
+    "processed_sessions",
+    "total_sessions",
+    "session_count",
+    "lesson_plan_count",
+    "class_session_no",
+    "parallel_limit",
+    "cache_warmup_completed",
+    "coverage_rate",
+    "warning_count",
+    "total_count",
+    "covered_count",
+    "uncovered_count",
+    "important_total_count",
+    "important_covered_count",
+    "important_coverage_rate",
+    "trace_count",
+    "semantic_chunk_vector_count",
+    "knowledge_point_vector_count",
+}
+
+# 成功态优先读取的内部步骤。运行态会优先读取 task.current_stage 对应步骤。
+STEP_PROGRESS_DETAIL_CODES: dict[str, tuple[str, ...]] = {
+    STEP_MINERU_PARSE: ("persist_parse_result", "submit_mineru", "poll_mineru_result", "prepare_source"),
+    STEP_LEARNER_PROFILE: ("build_profile_version", "extract_local", "prepare_source"),
+    STEP_KNOWLEDGE_STRUCTURE: ("invoke_llm_extract", "persist_knowledge_result", "upsert_vectors", "prepare_parse_source"),
+    STEP_CURRICULUM_PLAN: ("invoke_llm_curriculum", "prepare_generation_baseline", "persist_curriculum_plan"),
+    STEP_LESSON_PLAN_GENERATE: ("invoke_llm_lesson_plan", "persist_lesson_plan", "prepare_lesson_baseline"),
+    STEP_COVERAGE_CHECK: ("persist_coverage_report", "collect_artifact_refs", "write_generation_trace"),
 }
 
 
@@ -263,6 +310,9 @@ class GenerationProcessService:
                 status="pending",
                 status_detail=None,
                 progress_percent=0,
+                current_stage=None,
+                progress_detail=None,
+                result_detail=None,
                 summary=None,
                 started_at=None,
                 finished_at=None,
@@ -270,7 +320,10 @@ class GenerationProcessService:
             )
 
         display_status = INTERNAL_TO_DISPLAY_STATUS.get(task.task_status, "pending")
-        summary = self._build_summary(ctx, display_status)
+        progress_step = self._select_progress_step(ctx, display_status)
+        progress_detail = self._build_progress_detail(progress_step)
+        result_detail = self._build_result_detail(ctx, display_status)
+        summary = self._build_summary(ctx, display_status, result_detail)
         error_message = self._build_error_message(ctx.code, task, display_status)
         step_status_detail = self._compute_step_status_detail(task, display_status)
         return GenerationProcessStepResponse(
@@ -280,11 +333,192 @@ class GenerationProcessService:
             status=display_status,
             status_detail=step_status_detail,
             progress_percent=int(task.progress_percent or 0),
+            current_stage=task.current_stage,
+            progress_detail=progress_detail,
+            result_detail=result_detail,
             summary=summary,
             started_at=task.started_at,
             finished_at=task.finished_at,
             error_message=error_message,
         )
+
+    def _select_progress_step(self, ctx: _StepContext, display_status: str) -> TaskStepRecord | None:
+        """选择最适合项目页展示进度明细的内部步骤。"""
+        task = ctx.task
+        if task is None:
+            return None
+
+        steps = self.task_repository.list_task_steps(task.id)
+        if not steps:
+            return None
+        step_by_code = {step.step_code: step for step in steps}
+
+        if display_status == "running" and task.current_stage:
+            current_step = step_by_code.get(task.current_stage)
+            if current_step is not None and self._build_progress_detail(current_step) is not None:
+                return current_step
+
+        for step_code in STEP_PROGRESS_DETAIL_CODES.get(ctx.code, ()):
+            step = step_by_code.get(step_code)
+            if step is not None and self._build_progress_detail(step) is not None:
+                return step
+
+        processing_step = next(
+            (
+                step
+                for step in steps
+                if step.step_status == TASK_STATUS_PROCESSING and self._build_progress_detail(step) is not None
+            ),
+            None,
+        )
+        if processing_step is not None:
+            return processing_step
+
+        if display_status == "running" and task.current_stage:
+            return step_by_code.get(task.current_stage)
+        return None
+
+    def _build_progress_detail(self, step: TaskStepRecord | None) -> dict[str, Any] | None:
+        """从内部 step.detail_json 提取公开进度指标。"""
+        if step is None:
+            return None
+        return self._filter_public_detail(step.detail_json, PUBLIC_PROGRESS_DETAIL_KEYS)
+
+    def _build_result_detail(self, ctx: _StepContext, display_status: str) -> dict[str, Any] | None:
+        """构造面向项目页的结果指标，不直接透传任务原始 result_json。"""
+        task = ctx.task
+        if task is None or display_status != "succeeded":
+            return None
+        result = task.result_json or {}
+
+        if ctx.code == STEP_MINERU_PARSE:
+            return self._build_textbook_result_detail(result)
+        if ctx.code == STEP_LEARNER_PROFILE:
+            return self._build_learner_profile_result_detail(result)
+        if ctx.code == STEP_KNOWLEDGE_STRUCTURE:
+            return self._build_knowledge_result_detail(result)
+        if ctx.code == STEP_CURRICULUM_PLAN:
+            return self._build_curriculum_result_detail(result)
+        if ctx.code == STEP_LESSON_PLAN_GENERATE:
+            return self._build_lesson_plan_result_detail(result)
+        if ctx.code == STEP_COVERAGE_CHECK:
+            return self._build_coverage_result_detail(ctx, result)
+        return None
+
+    def _build_textbook_result_detail(self, result: dict[str, Any]) -> dict[str, Any] | None:
+        detail: dict[str, Any] = {}
+        self._put_metric(detail, "page_count", result.get("page_count"))
+        self._put_metric(detail, "issue_count", result.get("issue_count"))
+        return detail or None
+
+    def _build_learner_profile_result_detail(self, result: dict[str, Any]) -> dict[str, Any] | None:
+        detail: dict[str, Any] = {}
+        self._put_metric(detail, "profile_record_count", result.get("record_count"))
+        return detail or None
+
+    def _build_knowledge_result_detail(self, result: dict[str, Any]) -> dict[str, Any] | None:
+        detail: dict[str, Any] = {}
+        for key in (
+            "chapter_count",
+            "point_count",
+            "semantic_chunk_vector_count",
+            "knowledge_point_vector_count",
+        ):
+            self._put_metric(detail, key, result.get(key))
+        return detail or None
+
+    def _build_curriculum_result_detail(self, result: dict[str, Any]) -> dict[str, Any] | None:
+        detail: dict[str, Any] = {}
+        curriculum_plan = self._get_curriculum_plan_from_result(result)
+        if curriculum_plan is not None:
+            self._put_metric(detail, "plan_title", curriculum_plan.plan_title)
+            self._put_metric(detail, "course_count", curriculum_plan.course_count)
+            self._put_metric(detail, "session_duration_minutes", curriculum_plan.session_duration_minutes)
+            lesson_sessions = (curriculum_plan.content_json or {}).get("lesson_sessions")
+            if isinstance(lesson_sessions, list):
+                self._put_metric(detail, "lesson_session_count", len(lesson_sessions))
+
+        for key in ("plan_title", "course_count", "session_duration_minutes", "lesson_session_count"):
+            if key not in detail:
+                self._put_metric(detail, key, result.get(key))
+        return detail or None
+
+    def _build_lesson_plan_result_detail(self, result: dict[str, Any]) -> dict[str, Any] | None:
+        detail: dict[str, Any] = {}
+        self._put_metric(detail, "lesson_plan_count", result.get("lesson_plan_count"))
+        return detail or None
+
+    def _build_coverage_result_detail(self, ctx: _StepContext, result: dict[str, Any]) -> dict[str, Any] | None:
+        detail: dict[str, Any] = {}
+        coverage_report = ctx.summary_extra.get("coverage_report")
+        summary_json = None
+        if coverage_report is not None:
+            summary_json = coverage_report.coverage_summary_json or {}
+
+        coverage_rate = result.get("coverage_rate")
+        if coverage_rate is None and coverage_report is not None:
+            coverage_rate = coverage_report.coverage_rate
+        self._put_metric(detail, "coverage_rate", coverage_rate)
+
+        warning_count = result.get("warning_count")
+        if warning_count is None and coverage_report is not None:
+            warning_count = coverage_report.warning_count
+        if warning_count is None and isinstance(summary_json, dict):
+            warning_count = summary_json.get("warning_count")
+        self._put_metric(detail, "warning_count", warning_count)
+
+        if isinstance(summary_json, dict):
+            for key in (
+                "total_count",
+                "covered_count",
+                "uncovered_count",
+                "important_total_count",
+                "important_covered_count",
+                "important_coverage_rate",
+            ):
+                self._put_metric(detail, key, summary_json.get(key))
+        return detail or None
+
+    def _get_curriculum_plan_from_result(self, result: dict[str, Any]) -> CurriculumPlan | None:
+        """按任务结果中的课程大纲主键读取课程大纲，用于补齐标题和课次数。"""
+        curriculum_plan_id = result.get("curriculum_plan_id")
+        if curriculum_plan_id is None:
+            return None
+        try:
+            return self.session.get(CurriculumPlan, int(curriculum_plan_id))
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _filter_public_detail(
+        cls,
+        source: dict[str, Any] | None,
+        allowed_keys: set[str],
+    ) -> dict[str, Any] | None:
+        """按白名单过滤公开指标，避免原样透出内部 detail_json/result_json。"""
+        if not isinstance(source, dict):
+            return None
+        detail: dict[str, Any] = {}
+        for key in allowed_keys:
+            cls._put_metric(detail, key, source.get(key))
+        return detail or None
+
+    @classmethod
+    def _put_metric(cls, target: dict[str, Any], key: str, value: Any) -> None:
+        normalized = cls._normalize_metric_value(value)
+        if normalized is not None:
+            target[key] = normalized
+
+    @staticmethod
+    def _normalize_metric_value(value: Any) -> Any:
+        """把数据库类型归一成可 JSON 化的公开指标值。"""
+        if value is None:
+            return None
+        if isinstance(value, Decimal):
+            return float(value)
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        return None
 
     @staticmethod
     def _compute_step_status_detail(task: TaskRecord, display_status: str) -> str | None:
@@ -295,7 +529,12 @@ class GenerationProcessService:
             return "retrying"
         return None
 
-    def _build_summary(self, ctx: _StepContext, display_status: str) -> str | None:
+    def _build_summary(
+        self,
+        ctx: _StepContext,
+        display_status: str,
+        result_detail: dict[str, Any] | None,
+    ) -> str | None:
         """根据展示状态拼接面向用户的摘要文案。"""
         if display_status == "running":
             return RUNNING_SUMMARY_BY_STEP.get(ctx.code)
@@ -305,40 +544,58 @@ class GenerationProcessService:
         task = ctx.task
         if task is None:
             return None
-        result = task.result_json or {}
+        result_detail = result_detail or {}
 
         if ctx.code == STEP_MINERU_PARSE:
-            page_count = result.get("page_count")
-            if page_count:
+            page_count = result_detail.get("page_count")
+            issue_count = result_detail.get("issue_count")
+            if page_count is not None and issue_count is not None:
+                if int(issue_count) == 0:
+                    return f"已识别 {page_count} 页教材内容，暂无待核查项。"
+                return f"已识别 {page_count} 页教材内容，待核查项 {issue_count} 个。"
+            if page_count is not None:
                 return f"已识别 {page_count} 页教材内容。"
             return "教材解析已完成。"
         if ctx.code == STEP_LEARNER_PROFILE:
-            record_count = result.get("record_count")
-            if record_count:
-                return f"已分析 {record_count} 份学情记录。"
+            record_count = result_detail.get("profile_record_count")
+            if record_count is not None:
+                return f"已生成 {record_count} 条学情画像记录。"
             return "学情分析已完成。"
         if ctx.code == STEP_KNOWLEDGE_STRUCTURE:
-            chapter_count = result.get("chapter_count")
-            point_count = result.get("point_count")
+            chapter_count = result_detail.get("chapter_count")
+            point_count = result_detail.get("point_count")
             if chapter_count and point_count:
                 return f"已识别 {chapter_count} 个章节、{point_count} 个知识点。"
             if point_count:
                 return f"已识别 {point_count} 个知识点。"
             return "知识点结构已生成。"
         if ctx.code == STEP_CURRICULUM_PLAN:
+            plan_title = result_detail.get("plan_title")
+            course_count = result_detail.get("course_count")
+            lesson_session_count = result_detail.get("lesson_session_count")
+            if plan_title and course_count:
+                return f"课程总纲《{plan_title}》已生成，共 {course_count} 课次。"
+            if course_count:
+                return f"课程总纲已生成，共 {course_count} 课次。"
+            if lesson_session_count:
+                return f"课程总纲已生成，包含 {lesson_session_count} 个课次安排。"
             return "课程总纲已生成。"
         if ctx.code == STEP_LESSON_PLAN_GENERATE:
-            lesson_plan_count = result.get("lesson_plan_count")
+            lesson_plan_count = result_detail.get("lesson_plan_count")
             if lesson_plan_count:
                 return f"已生成 {lesson_plan_count} 课时教案。"
             return "教案已生成。"
         if ctx.code == STEP_COVERAGE_CHECK:
-            coverage_rate = result.get("coverage_rate")
-            if coverage_rate is None:
-                coverage_report = ctx.summary_extra.get("coverage_report")
-                if coverage_report is not None:
-                    coverage_rate = coverage_report.coverage_rate
+            coverage_rate = result_detail.get("coverage_rate")
             if coverage_rate is not None:
+                covered_count = result_detail.get("covered_count")
+                total_count = result_detail.get("total_count")
+                warning_count = result_detail.get("warning_count")
+                if covered_count is not None and total_count is not None and warning_count is not None:
+                    return (
+                        f"知识点覆盖 {float(coverage_rate):.2f}%，"
+                        f"已覆盖 {covered_count}/{total_count}，告警 {warning_count} 个。"
+                    )
                 return f"知识点覆盖 {float(coverage_rate):.2f}%。"
             return "知识点覆盖检查已完成。"
         return None
