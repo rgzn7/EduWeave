@@ -400,6 +400,47 @@ def test_response_stream_accumulates_delta() -> None:
     assert result.ok is True
 
 
+def test_response_stream_should_read_completed_after_output_text_done() -> None:
+    """Responses 流式在 output_text.done 后仍应读取 completed 里的 usage。"""
+    usage_payload = {
+        "input_tokens": 100,
+        "output_tokens": 8,
+        "total_tokens": 108,
+        "input_tokens_details": {"cached_tokens": 80},
+    }
+    sse = (
+        _sse_event("response.output_text.done", {"text": "{\"ok\": true}"})
+        + _sse_event(
+            "response.completed",
+            {
+                "response": {
+                    "output": [{"type": "message", "content": [{"type": "output_text", "text": "{\"ok\": true}"}]}],
+                    "usage": usage_payload,
+                }
+            },
+        )
+        + b"data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+
+    settings = build_settings(None)
+    service = OpenAICompatibleLlmService(client=_build_real_client(handler, settings), settings=settings)
+    usage_records = []
+
+    result = service.generate_structured_output(
+        messages=[ChatMessage(role="user", content="返回 ok")],
+        response_model=DemoStructuredResponse,
+        on_usage=usage_records.append,
+    )
+
+    assert result.ok is True
+    assert len(usage_records) == 1
+    assert usage_records[0].prompt_tokens == 100
+    assert usage_records[0].cached_tokens == 80
+
+
 def test_response_stream_raises_on_error_event() -> None:
     """Responses 流式错误事件应转换为业务异常。"""
     sse = _sse_event("response.failed", {"error": {"message": "boom"}})

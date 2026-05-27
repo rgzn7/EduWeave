@@ -5,6 +5,8 @@
 """
 
 import json
+import threading
+import time
 from io import BytesIO
 
 import pytest
@@ -470,6 +472,86 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
     yield vector_store
 
 
+def _build_curriculum_result_for_test(messages) -> CurriculumGenerationResult:
+    """根据生成批次请求构造测试课程大纲。"""
+    user_payload = _merge_user_payload_dicts(messages)
+    course_count = int(user_payload["generation_batch"]["course_count"])
+    point_id = int(user_payload["knowledge_version"]["knowledge_points"][0]["id"])
+    return CurriculumGenerationResult(
+        plan_title="三年级数学乘法提升课程",
+        summary_text="围绕乘法口诀和应用题进行阶段提升。",
+        course_overview={"target": "提升乘法理解与应用能力"},
+        stage_goals=["熟练背诵口诀", "能够解决基础应用题"],
+        lesson_sessions=[
+            {
+                "session_no": session_no,
+                "title": f"第{session_no}讲 乘法口诀训练",
+                "duration_minutes": 90,
+                "objectives": ["掌握乘法口诀"],
+                "key_points": ["乘法口诀"],
+                "activities": ["口算热身", "例题讲解"],
+                "homework": ["完成口诀练习"],
+                "knowledge_point_refs": [point_id],
+            }
+            for session_no in range(1, course_count + 1)
+        ],
+        key_points=["乘法口诀"],
+        difficult_points=["应用题分析"],
+        learner_adjustments=["增加口算练习频次"],
+        coverage_knowledge_points=[point_id],
+    )
+
+
+def _build_lesson_plan_result_for_test(messages) -> LessonPlanGenerationResult:
+    """根据 target_lesson_session 构造测试教案。"""
+    user_payload = _merge_user_payload_dicts(messages)
+    target_session = user_payload.get("target_lesson_session") or {"session_no": 1, "title": "第1讲 乘法口诀训练"}
+    target_refs = target_session.get("knowledge_point_refs") if isinstance(target_session, dict) else None
+    point_id = int(target_refs[0]) if target_refs else int(user_payload["knowledge_points"][0]["id"])
+    session_no = int(target_session["session_no"])
+    session_title = target_session.get("title") or f"第{session_no}讲 乘法口诀训练"
+    return LessonPlanGenerationResult(
+        lesson_title=f"{session_title}教案",
+        summary_text=f"围绕{session_title}组织导入、讲解、练习与课后巩固。",
+        course_overview={"lesson_type": "提升课", "duration_minutes": 90},
+        material_list=["教材解析片段", "口算练习纸"],
+        core_knowledge=["乘法口诀", "应用题分析"],
+        teaching_flow=[
+            {
+                "step_no": 1,
+                "stage_name": "导入",
+                "duration_minutes": 10,
+                "teacher_actions": ["用口算热身引入乘法口诀"],
+                "student_activities": ["完成快速口算"],
+                "knowledge_point_refs": [point_id],
+            }
+        ],
+        session_plans=[
+            {
+                "session_no": session_no,
+                "title": session_title,
+                "objectives": ["掌握乘法口诀"],
+                "teaching_focus": ["口诀记忆", "基础应用"],
+                "teaching_steps": [
+                    {
+                        "step_no": 1,
+                        "stage_name": "讲解",
+                        "duration_minutes": 30,
+                        "teacher_actions": ["拆解口诀规律"],
+                        "student_activities": ["跟读并完成练习"],
+                        "knowledge_point_refs": [point_id],
+                    }
+                ],
+                "homework": ["完成口诀练习"],
+                "knowledge_point_refs": [point_id],
+            }
+        ],
+        after_class_plan={"homework": ["口诀复习"], "review_focus": "应用题审题"},
+        learner_adjustments=["增加口算练习频次"],
+        knowledge_point_refs=[point_id],
+    )
+
+
 def test_generation_batch_should_create_curriculum_lesson_plans_and_coverage(client, generation_test_stubs) -> None:
     """创建生成批次后应自动生成课程大纲、多课次教案和覆盖率报告。"""
     _ = generation_test_stubs
@@ -755,6 +837,183 @@ def test_generation_batch_should_create_curriculum_lesson_plans_and_coverage(cli
     assert regenerated_payload["export_file_id"] is not None
     assert regenerated_payload["structure_json"]["pptx_stale"] is False
     assert len(regenerated_payload["structure_json"]["deck"]["slides"]) == 2
+
+
+def test_lesson_plan_generation_should_warm_cache_before_parallel_sessions(
+    client,
+    seeded_session_factory,
+    generation_test_stubs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """教案生成应先完成第 1 课暖缓存，再并发生成剩余课次并保持顺序。"""
+    _ = generation_test_stubs
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    knowledge_version_id = create_knowledge_version(client, headers, project_id)
+    learner_profile_version_id = create_learner_profile_version(client, headers, project_id)
+    original_generate = OpenAICompatibleLlmService.generate_structured_output
+    lock = threading.Lock()
+    state = {
+        "active": 0,
+        "max_active": 0,
+        "lesson_starts": [],
+        "remaining_started_before_first_done": [],
+        "first_finished": False,
+    }
+
+    def controlled_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
+        if response_model is CurriculumGenerationResult:
+            return _build_curriculum_result_for_test(messages)
+        if response_model is LessonPlanGenerationResult:
+            user_payload = _merge_user_payload_dicts(messages)
+            session_no = int(user_payload["target_lesson_session"]["session_no"])
+            with lock:
+                state["lesson_starts"].append(session_no)
+                if session_no != 1 and not state["first_finished"]:
+                    state["remaining_started_before_first_done"].append(session_no)
+                state["active"] += 1
+                state["max_active"] = max(state["max_active"], state["active"])
+            try:
+                time.sleep(0.08)
+                return _build_lesson_plan_result_for_test(messages)
+            finally:
+                with lock:
+                    state["active"] -= 1
+                    if session_no == 1:
+                        state["first_finished"] = True
+        return original_generate(
+            self,
+            messages=messages,
+            response_model=response_model,
+            temperature=temperature,
+            **_extra_kwargs,
+        )
+
+    monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", controlled_generate)
+    response = client.post(
+        "/api/v1/generation-batches",
+        headers=headers,
+        json={
+            "project_id": project_id,
+            "knowledge_version_id": knowledge_version_id,
+            "learner_profile_version_id": learner_profile_version_id,
+            "batch_name": "并发教案生成",
+            "chapter_range_json": {"chapter_node_ids": []},
+            "course_count": 12,
+            "session_duration_minutes": 90,
+        },
+    )
+
+    assert response.status_code == 201
+    batch_payload = response.json()["data"]
+    assert state["lesson_starts"][0] == 1
+    assert state["remaining_started_before_first_done"] == []
+    assert state["max_active"] > 1
+    assert state["max_active"] <= 10
+    assert batch_payload["lesson_plan_ids"][0] == batch_payload["lesson_plan_id"]
+    assert len(batch_payload["lesson_plan_ids"]) == 12
+
+    session = seeded_session_factory()
+    try:
+        lesson_plans = (
+            session.query(LessonPlan)
+            .filter(LessonPlan.generation_batch_id == batch_payload["id"])
+            .order_by(LessonPlan.class_session_no.asc())
+            .all()
+        )
+        assert [item.id for item in lesson_plans] == batch_payload["lesson_plan_ids"]
+        assert [item.class_session_no for item in lesson_plans] == list(range(1, 13))
+        assert [item.version_no for item in lesson_plans] == list(range(1, 13))
+    finally:
+        session.close()
+
+    lesson_task = batch_payload["tasks"][1]
+    task_detail_response = client.get(f"/api/v1/tasks/{lesson_task['id']}", headers=headers)
+    assert task_detail_response.status_code == 200
+    invoke_step = next(
+        step
+        for step in task_detail_response.json()["data"]["steps"]
+        if step["step_code"] == "invoke_llm_lesson_plan"
+    )
+    assert invoke_step["detail_json"]["processed_sessions"] == 12
+    assert invoke_step["detail_json"]["total_sessions"] == 12
+    assert invoke_step["detail_json"]["class_session_no"] == 12
+    assert invoke_step["detail_json"]["parallel_limit"] == 10
+    assert invoke_step["detail_json"]["cache_warmup_completed"] is True
+
+
+def test_lesson_plan_parallel_failure_should_not_persist_partial_plans(
+    client,
+    seeded_session_factory,
+    generation_test_stubs,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """并发课次失败时不应落库部分教案。"""
+    _ = generation_test_stubs
+    headers = build_auth_headers(client)
+    project_id = create_project(client, headers)
+    knowledge_version_id = create_knowledge_version(client, headers, project_id)
+    learner_profile_version_id = create_learner_profile_version(client, headers, project_id)
+    original_generate = OpenAICompatibleLlmService.generate_structured_output
+
+    def failing_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
+        if response_model is CurriculumGenerationResult:
+            return _build_curriculum_result_for_test(messages)
+        if response_model is LessonPlanGenerationResult:
+            user_payload = _merge_user_payload_dicts(messages)
+            session_no = int(user_payload["target_lesson_session"]["session_no"])
+            if session_no == 3:
+                raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "第 3 课生成失败")
+            return _build_lesson_plan_result_for_test(messages)
+        return original_generate(
+            self,
+            messages=messages,
+            response_model=response_model,
+            temperature=temperature,
+            **_extra_kwargs,
+        )
+
+    monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", failing_generate)
+    response = client.post(
+        "/api/v1/generation-batches",
+        headers=headers,
+        json={
+            "project_id": project_id,
+            "knowledge_version_id": knowledge_version_id,
+            "learner_profile_version_id": learner_profile_version_id,
+            "batch_name": "失败教案生成",
+            "chapter_range_json": {"chapter_node_ids": []},
+            "course_count": 4,
+            "session_duration_minutes": 90,
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["errors"][0]["code"] == BusinessErrorCode.LLM_RESULT_INVALID.value
+
+    list_response = client.get(f"/api/v1/generation-batches?project_id={project_id}", headers=headers)
+    assert list_response.status_code == 200
+    failed_batch = list_response.json()["data"]["items"][0]
+    assert failed_batch["batch_status"] == "failure"
+    assert failed_batch["lesson_plan_id"] is None
+
+    session = seeded_session_factory()
+    try:
+        persisted_count = (
+            session.query(LessonPlan)
+            .filter(LessonPlan.generation_batch_id == failed_batch["id"])
+            .count()
+        )
+        assert persisted_count == 0
+    finally:
+        session.close()
+
+    detail_response = client.get(f"/api/v1/generation-batches/{failed_batch['id']}", headers=headers)
+    tasks = detail_response.json()["data"]["tasks"]
+    assert [task["task_type"] for task in tasks] == ["curriculum_generate", "lesson_plan_generate"]
+    assert tasks[0]["task_status"] == "success"
+    assert tasks[1]["task_status"] == "failure"
+    assert tasks[1]["last_error_code"] == BusinessErrorCode.LLM_RESULT_INVALID.value
 
 
 def test_coverage_report_should_only_count_success_courseware(

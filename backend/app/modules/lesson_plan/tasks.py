@@ -5,6 +5,7 @@
 """
 
 import json
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import Any
 
 import structlog
@@ -81,6 +82,127 @@ def _summarize_llm_usage(usage_records: list[LlmUsage]) -> dict[str, int]:
         "total_tokens": sum(item.total_tokens for item in usage_records),
         "cached_tokens": sum(item.cached_tokens for item in usage_records),
     }
+
+
+def _generate_single_lesson_plan(
+    *,
+    llm_service: OpenAICompatibleLlmService,
+    stable_messages: list[ChatMessage],
+    lesson_session: dict[str, Any],
+    index: int,
+    cache_biz_key: str,
+    cache_user_id: int | None,
+    knowledge_point_ids: set[int],
+) -> dict[str, Any]:
+    """生成单课次教案；仅做 LLM 调用、结果校验与 usage 内存收集。"""
+    class_session_no = int(lesson_session["session_no"])
+    usage_records: list[LlmUsage] = []
+    llm_messages = _build_lesson_plan_messages(
+        stable_messages=stable_messages,
+        target_lesson_session=lesson_session,
+    )
+    generation_result = llm_service.generate_structured_output(
+        messages=llm_messages,
+        response_model=LessonPlanGenerationResult,
+        cache_biz_key=cache_biz_key,
+        stable_prefix_message_count=len(stable_messages),
+        cache_user_id=cache_user_id,
+        on_usage=usage_records.append,
+    )
+    _validate_lesson_plan_result(
+        generation_result,
+        expected_session_no=class_session_no,
+        knowledge_point_ids=knowledge_point_ids,
+    )
+    return {
+        "index": index,
+        "class_session_no": class_session_no,
+        "lesson_session": lesson_session,
+        "generation_result": generation_result,
+        "usage_records": usage_records,
+    }
+
+
+def _update_lesson_plan_llm_progress(
+    *,
+    heartbeat: TaskHeartbeat,
+    step_id: int,
+    completed_sessions: int,
+    total_sessions: int,
+    class_session_no: int,
+    parallel_limit: int,
+    cache_warmup_completed: bool,
+) -> None:
+    """主线程刷新教案 LLM 阶段进度。"""
+    progress_percent = int(100 * completed_sessions / max(total_sessions, 1))
+    if completed_sessions > 0:
+        task_progress = 30 + int(45 * completed_sessions / max(total_sessions, 1))
+        heartbeat.tick(progress_percent=task_progress, current_stage="invoke_llm_lesson_plan")
+    heartbeat.update_step_detail(
+        step_id=step_id,
+        progress_percent=progress_percent,
+        detail_json={
+            "processed_sessions": completed_sessions,
+            "total_sessions": total_sessions,
+            "class_session_no": class_session_no,
+            "parallel_limit": parallel_limit,
+            "cache_warmup_completed": cache_warmup_completed,
+        },
+    )
+
+
+def _generate_remaining_lesson_plans_in_parallel(
+    *,
+    llm_service: OpenAICompatibleLlmService,
+    stable_messages: list[ChatMessage],
+    lesson_sessions: list[dict[str, Any]],
+    cache_biz_key: str,
+    cache_user_id: int | None,
+    knowledge_point_ids: set[int],
+    heartbeat: TaskHeartbeat,
+    step_id: int,
+    parallel_limit: int,
+    total_sessions: int,
+    completed_sessions: int,
+) -> tuple[list[dict[str, Any]], list[LlmUsage]]:
+    """并发生成第 2 课及之后课次；数据库状态只由主线程更新。"""
+    results: list[dict[str, Any]] = []
+    usage_records: list[LlmUsage] = []
+    futures: list[Future] = []
+    with ThreadPoolExecutor(max_workers=parallel_limit, thread_name_prefix="lesson-plan") as executor:
+        for index, lesson_session in enumerate(lesson_sessions[1:], start=2):
+            futures.append(
+                executor.submit(
+                    _generate_single_lesson_plan,
+                    llm_service=llm_service,
+                    stable_messages=stable_messages,
+                    lesson_session=lesson_session,
+                    index=index,
+                    cache_biz_key=cache_biz_key,
+                    cache_user_id=cache_user_id,
+                    knowledge_point_ids=knowledge_point_ids,
+                )
+            )
+        try:
+            for future in as_completed(futures):
+                result = future.result()
+                completed_sessions += 1
+                results.append(result)
+                usage_records.extend(result["usage_records"])
+                _update_lesson_plan_llm_progress(
+                    heartbeat=heartbeat,
+                    step_id=step_id,
+                    completed_sessions=completed_sessions,
+                    total_sessions=total_sessions,
+                    class_session_no=result["class_session_no"],
+                    parallel_limit=parallel_limit,
+                    cache_warmup_completed=True,
+                )
+        except Exception:
+            for pending_future in futures:
+                pending_future.cancel()
+            raise
+    return results, usage_records
 
 
 def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
@@ -194,39 +316,67 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
         lesson_plan_ids: list[int] = []
         next_version_no = repository.get_next_lesson_plan_version_no(curriculum_plan.id)
         total_sessions = len(lesson_sessions)
-        for index, lesson_session in enumerate(lesson_sessions, start=1):
-            class_session_no = int(lesson_session["session_no"])
-            # 每节课调用 LLM 前先 touch，长生成不被 reaper 误判
-            heartbeat.touch()
-            llm_messages = _build_lesson_plan_messages(
+        parallel_limit = min(get_settings().lesson_plan_max_concurrency, max(total_sessions - 1, 1))
+        knowledge_point_ids = {point.id for point in knowledge_points}
+        lesson_generation_results: list[dict[str, Any]] = []
+
+        first_lesson_session = lesson_sessions[0]
+        first_class_session_no = int(first_lesson_session["session_no"])
+        # 第 1 课先串行生成，让上游先建立同批次稳定前缀缓存。
+        heartbeat.touch()
+        _update_lesson_plan_llm_progress(
+            heartbeat=heartbeat,
+            step_id=step_map["invoke_llm_lesson_plan"].id,
+            completed_sessions=0,
+            total_sessions=total_sessions,
+            class_session_no=first_class_session_no,
+            parallel_limit=parallel_limit,
+            cache_warmup_completed=False,
+        )
+        first_result = _generate_single_lesson_plan(
+            llm_service=llm_service,
+            stable_messages=stable_messages,
+            lesson_session=first_lesson_session,
+            index=1,
+            cache_biz_key=cache_biz_key,
+            cache_user_id=cache_user_id,
+            knowledge_point_ids=knowledge_point_ids,
+        )
+        lesson_generation_results.append(first_result)
+        usage_records.extend(first_result["usage_records"])
+        _update_lesson_plan_llm_progress(
+            heartbeat=heartbeat,
+            step_id=step_map["invoke_llm_lesson_plan"].id,
+            completed_sessions=1,
+            total_sessions=total_sessions,
+            class_session_no=first_result["class_session_no"],
+            parallel_limit=parallel_limit,
+            cache_warmup_completed=True,
+        )
+
+        if total_sessions > 1:
+            remaining_results, remaining_usage_records = _generate_remaining_lesson_plans_in_parallel(
+                llm_service=llm_service,
                 stable_messages=stable_messages,
-                target_lesson_session=lesson_session,
-            )
-            generation_result = llm_service.generate_structured_output(
-                messages=llm_messages,
-                response_model=LessonPlanGenerationResult,
+                lesson_sessions=lesson_sessions,
                 cache_biz_key=cache_biz_key,
-                stable_prefix_message_count=len(stable_messages),
                 cache_user_id=cache_user_id,
-                on_usage=usage_records.append,
-            )
-            _validate_lesson_plan_result(
-                generation_result,
-                expected_session_no=class_session_no,
-                knowledge_point_ids={point.id for point in knowledge_points},
-            )
-            # 当节 LLM 完成 → 推进任务 progress，并刷新 step 计数
-            chunk_progress = 30 + int(45 * index / max(total_sessions, 1))
-            heartbeat.tick(progress_percent=chunk_progress, current_stage="invoke_llm_lesson_plan")
-            heartbeat.update_step_detail(
+                knowledge_point_ids=knowledge_point_ids,
+                heartbeat=heartbeat,
                 step_id=step_map["invoke_llm_lesson_plan"].id,
-                progress_percent=int(100 * index / max(total_sessions, 1)),
-                detail_json={
-                    "processed_sessions": index,
-                    "total_sessions": total_sessions,
-                    "class_session_no": class_session_no,
-                },
+                parallel_limit=parallel_limit,
+                total_sessions=total_sessions,
+                completed_sessions=1,
             )
+            lesson_generation_results.extend(remaining_results)
+            usage_records.extend(remaining_usage_records)
+
+        lesson_generation_results.sort(key=lambda item: item["index"])
+        for item in lesson_generation_results:
+            index = int(item["index"])
+            class_session_no = int(item["class_session_no"])
+            lesson_session = item["lesson_session"]
+            generation_result = item["generation_result"]
             lesson_plan = repository.create_lesson_plan(
                 LessonPlan(
                     curriculum_plan_id=curriculum_plan.id,
@@ -256,6 +406,11 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
                 "lesson_plan_count": len(lesson_plan_ids),
                 "lesson_plan_ids": lesson_plan_ids,
                 "llm_usage": _summarize_llm_usage(usage_records),
+                "processed_sessions": total_sessions,
+                "total_sessions": total_sessions,
+                "class_session_no": int(lesson_sessions[-1]["session_no"]),
+                "parallel_limit": parallel_limit,
+                "cache_warmup_completed": True,
             },
             finished_at=DateTimeUtil.now_utc(),
         )
