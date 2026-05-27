@@ -297,7 +297,7 @@ def test_knowledge_task_should_extract_chunks_in_parallel(client, monkeypatch: p
                 source_text_hash=f"hash-{index}",
                 chunk_text=f"chunk {index}",
             )
-            for index in range(1, 5)
+            for index in range(1, 13)
         ]
 
     def fake_generate_structured_output(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
@@ -320,7 +320,7 @@ def test_knowledge_task_should_extract_chunks_in_parallel(client, monkeypatch: p
             concurrency_state["active"] += 1
             concurrency_state["max_active"] = max(concurrency_state["max_active"], concurrency_state["active"])
         try:
-            time.sleep(0.04 * (5 - chunk_index))
+            time.sleep(0.08)
         finally:
             with state_lock:
                 concurrency_state["active"] -= 1
@@ -358,7 +358,7 @@ def test_knowledge_task_should_extract_chunks_in_parallel(client, monkeypatch: p
         _ = (self, collection_name)
         return {"upsert_count": len(list(records))}
 
-    monkeypatch.setattr(knowledge_tasks, "get_settings", lambda: SimpleNamespace(knowledge_extract_max_concurrency=4))
+    monkeypatch.setattr(knowledge_tasks, "get_settings", lambda: SimpleNamespace(knowledge_extract_max_concurrency=10))
     monkeypatch.setattr(knowledge_tasks, "build_semantic_chunk_drafts_from_markdown_index", fake_build_semantic_chunks)
     monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", fake_generate_structured_output)
     monkeypatch.setattr(OpenAICompatibleEmbeddingService, "embed_texts", fake_embed_texts)
@@ -373,24 +373,19 @@ def test_knowledge_task_should_extract_chunks_in_parallel(client, monkeypatch: p
     assert create_response.status_code == 201
     task_payload = create_response.json()["data"]
     assert task_payload["task_status"] == "success"
-    assert concurrency_state["max_active"] > 1
-    assert concurrency_state["max_active"] <= 4
+    assert concurrency_state["max_active"] > 4
+    assert concurrency_state["max_active"] <= 10
 
     task_detail_response = client.get(f"/api/v1/tasks/{task_payload['id']}", headers=headers)
     invoke_step = next(step for step in task_detail_response.json()["data"]["steps"] if step["step_code"] == "invoke_llm_extract")
-    assert invoke_step["detail_json"]["processed_chunks"] == 4
-    assert invoke_step["detail_json"]["total_chunks"] == 4
-    assert invoke_step["detail_json"]["parallel_limit"] == 4
+    assert invoke_step["detail_json"]["processed_chunks"] == 12
+    assert invoke_step["detail_json"]["total_chunks"] == 12
+    assert invoke_step["detail_json"]["parallel_limit"] == 10
 
     knowledge_version_id = task_payload["result_json"]["knowledge_version_id"]
-    points_response = client.get(f"/api/v1/knowledge-versions/{knowledge_version_id}/points", headers=headers)
+    points_response = client.get(f"/api/v1/knowledge-versions/{knowledge_version_id}/points?page_size=20", headers=headers)
     points = points_response.json()["data"]["items"]
-    assert [point["point_name"] for point in points] == [
-        "并行知识点1",
-        "并行知识点2",
-        "并行知识点3",
-        "并行知识点4",
-    ]
+    assert [point["point_name"] for point in points] == [f"并行知识点{index}" for index in range(1, 13)]
 
 
 def test_knowledge_task_should_reject_running_duplicate(client, seeded_session_factory, knowledge_test_stubs) -> None:

@@ -114,31 +114,31 @@ def test_invalid_llm_api_format_should_fail(monkeypatch: pytest.MonkeyPatch) -> 
         Settings()
 
 
-def test_knowledge_extract_max_concurrency_should_default_to_four(monkeypatch: pytest.MonkeyPatch) -> None:
-    """知识抽取语义块并发数默认应为 4。"""
+def test_knowledge_extract_max_concurrency_should_default_to_ten(monkeypatch: pytest.MonkeyPatch) -> None:
+    """知识抽取语义块并发数默认应为 10。"""
     apply_required_env(monkeypatch)
     monkeypatch.setenv("JWT_SECRET", "test-secret")
     monkeypatch.delenv("KNOWLEDGE_EXTRACT_MAX_CONCURRENCY", raising=False)
 
     settings = Settings()
 
-    assert settings.knowledge_extract_max_concurrency == 4
+    assert settings.knowledge_extract_max_concurrency == 10
 
 
-def test_knowledge_extract_max_concurrency_should_allow_four(monkeypatch: pytest.MonkeyPatch) -> None:
-    """知识抽取语义块并发数应允许设置为 4。"""
+def test_knowledge_extract_max_concurrency_should_allow_ten(monkeypatch: pytest.MonkeyPatch) -> None:
+    """知识抽取语义块并发数应允许设置为 10。"""
     apply_required_env(monkeypatch)
     monkeypatch.setenv("JWT_SECRET", "test-secret")
-    monkeypatch.setenv("KNOWLEDGE_EXTRACT_MAX_CONCURRENCY", "4")
+    monkeypatch.setenv("KNOWLEDGE_EXTRACT_MAX_CONCURRENCY", "10")
 
     settings = Settings()
 
-    assert settings.knowledge_extract_max_concurrency == 4
+    assert settings.knowledge_extract_max_concurrency == 10
 
 
-@pytest.mark.parametrize("value", ["0", "5"])
+@pytest.mark.parametrize("value", ["0", "11"])
 def test_invalid_knowledge_extract_max_concurrency_should_fail(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
-    """知识抽取语义块并发数超出 1 到 4 时应启动失败。"""
+    """知识抽取语义块并发数超出 1 到 10 时应启动失败。"""
     apply_required_env(monkeypatch)
     monkeypatch.setenv("JWT_SECRET", "test-secret")
     monkeypatch.setenv("KNOWLEDGE_EXTRACT_MAX_CONCURRENCY", value)
