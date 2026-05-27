@@ -72,7 +72,14 @@ class GenerationProcessResponse(BaseSchema):
     """生成过程展示响应。"""
 
     project_id: int = Field(description="项目主键", examples=[1])
-    batch_id: int | None = Field(default=None, description="最近一次生成批次主键", examples=[1])
+    batch_id: int | None = Field(
+        default=None,
+        description=(
+            "当前展示批次主键：活跃 run 已创建批次时为 run 批次；"
+            "活跃 run 未创建批次时为 null；无活跃 run 时为项目最近生成批次"
+        ),
+        examples=[1],
+    )
     generation_run_id: int | None = Field(
         default=None,
         description="当前活跃一键生成 run 主键；无 run 则为 null",

@@ -39,6 +39,7 @@ from app.modules.generation_process.schemas import (
 from app.modules.p0_models import (
     CoverageReport,
     CurriculumPlan,
+    GenerationRun,
     LearnerProfileVersion,
     Project,
     TaskRecord,
@@ -211,17 +212,18 @@ class GenerationProcessService:
         if project is None:
             raise AppException(BusinessErrorCode.PROJECT_NOT_FOUND, "项目不存在")
 
-        step_contexts = self._collect_step_contexts(project)
-        steps = [self._build_step_response(ctx) for ctx in step_contexts]
         # 当前活跃的一键生成 run 决定整体细化状态（waiting_dispatch / blocked / waiting_user_confirm）
         active_run = self.orchestrator_repository.get_active_run_for_project(project.id)
+        display_batch_id = self._resolve_display_batch_id(project, active_run)
+        step_contexts = self._collect_step_contexts(project, display_batch_id)
+        steps = [self._build_step_response(ctx) for ctx in step_contexts]
         overall_status, status_detail, blocked_reason, current_step_code = self._compute_overall_status(
             steps, active_run
         )
 
         return GenerationProcessResponse(
             project_id=project.id,
-            batch_id=project.latest_generation_batch_id,
+            batch_id=display_batch_id,
             generation_run_id=active_run.id if active_run is not None else None,
             status=overall_status,
             status_detail=status_detail,
@@ -230,7 +232,14 @@ class GenerationProcessService:
             steps=steps,
         )
 
-    def _collect_step_contexts(self, project: Project) -> list[_StepContext]:
+    @staticmethod
+    def _resolve_display_batch_id(project: Project, active_run: GenerationRun | None) -> int | None:
+        """解析当前展示批次：活跃 run 优先，无活跃 run 时回退项目最近批次。"""
+        if active_run is not None:
+            return active_run.generation_batch_id
+        return project.latest_generation_batch_id
+
+    def _collect_step_contexts(self, project: Project, display_batch_id: int | None) -> list[_StepContext]:
         """按 6 步顺序收集源任务与可补充的摘要数据。"""
         # 1. MinerU 教材解析：按 current_textbook_version_id 精确匹配 full 解析任务。
         mineru_task: TaskRecord | None = None
@@ -251,6 +260,12 @@ class GenerationProcessService:
                     task_type=PROFILE_EXTRACT_TASK_TYPE,
                     biz_key=f"profile_file:{profile_version.profile_file_id}:extract",
                 )
+        else:
+            learner_task = self.task_repository.get_latest_task_by_project_and_type(
+                project_id=project.id,
+                module_code=LEARNER_PROFILE_MODULE_CODE,
+                task_type=PROFILE_EXTRACT_TASK_TYPE,
+            )
 
         # 3. 知识点梳理：通过当前教材的最近一个 ready 解析版本定位知识抽取任务。
         knowledge_task: TaskRecord | None = None
@@ -263,17 +278,17 @@ class GenerationProcessService:
                     biz_key=f"parse_version:{active_parse_version.id}:knowledge",
                 )
 
-        # 4~6. 课程 / 教案 / 覆盖：取最近一次生成批次下的对应任务。
+        # 4~6. 课程 / 教案 / 覆盖：按当前展示批次取任务，避免活跃 run 混入旧批次。
         curriculum_task: TaskRecord | None = None
         lesson_plan_task: TaskRecord | None = None
         coverage_task: TaskRecord | None = None
         coverage_report: CoverageReport | None = None
-        if project.latest_generation_batch_id is not None:
-            batch_tasks = self.task_repository.list_tasks_by_generation_batch(project.latest_generation_batch_id)
+        if display_batch_id is not None:
+            batch_tasks = self.task_repository.list_tasks_by_generation_batch(display_batch_id)
             curriculum_task = self._pick_latest_by_type(batch_tasks, CURRICULUM_MODULE_CODE, CURRICULUM_GENERATE_TASK_TYPE)
             lesson_plan_task = self._pick_latest_by_type(batch_tasks, LESSON_PLAN_MODULE_CODE, LESSON_PLAN_GENERATE_TASK_TYPE)
             coverage_task = self._pick_latest_by_type(batch_tasks, COVERAGE_MODULE_CODE, COVERAGE_ANALYZE_TASK_TYPE)
-            coverage_report = self._get_coverage_report(project.latest_generation_batch_id)
+            coverage_report = self._get_coverage_report(display_batch_id)
 
         contexts: list[_StepContext] = []
         task_map: dict[str, TaskRecord | None] = {

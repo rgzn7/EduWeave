@@ -17,6 +17,7 @@ from app.modules.p0_models import (
     CurriculumPlan,
     FileObject,
     GenerationBatch,
+    GenerationRun,
     KnowledgeVersion,
     LearnerProfileFile,
     LearnerProfileVersion,
@@ -461,6 +462,53 @@ def test_generation_process_should_aggregate_pre_batch_progress(
         assert by_code[code]["error_message"] is None
 
 
+def test_generation_process_should_use_latest_profile_task_when_current_version_missing(
+    client,
+    seeded_session_factory,
+) -> None:
+    """当前学情版本尚未写入时，应用项目下最新学情抽取任务展示运行态。"""
+    headers = build_auth_headers(client)
+    project_id = create_project_via_api(client, headers)
+
+    session = seeded_session_factory()
+    try:
+        task = _seed_task(
+            session,
+            project_id=project_id,
+            module_code="learner_profile",
+            task_type="learner_profile_extract",
+            biz_key="profile_file:100:extract",
+            task_status="processing",
+            current_stage="extract_local",
+            progress_percent=35,
+            created_offset_seconds=-60,
+        )
+        _seed_task_step(
+            session,
+            task_record_id=task.id,
+            step_code="extract_local",
+            step_name="本地解析 docx",
+            step_order=2,
+            step_status="processing",
+            progress_percent=35,
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.get(f"/api/v1/projects/{project_id}/generation-process", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "running"
+    assert data["current_step_code"] == "learner_profile"
+    by_code = {step["code"]: step for step in data["steps"]}
+    learner_step = by_code["learner_profile"]
+    assert learner_step["status"] == "running"
+    assert learner_step["current_stage"] == "extract_local"
+    assert learner_step["progress_percent"] == 35
+
+
 def test_generation_process_should_expose_running_knowledge_progress_detail(
     client, seeded_session_factory, seeded_full_project
 ) -> None:
@@ -582,6 +630,165 @@ def test_generation_process_should_expose_running_lesson_plan_progress_detail(
     }
     assert lesson_step["result_detail"] is None
     _assert_no_internal_metric_keys(lesson_step["progress_detail"])
+
+
+def test_generation_process_should_not_mix_old_batch_when_active_run_has_no_batch(
+    client,
+    seeded_session_factory,
+    seeded_full_project,
+) -> None:
+    """活跃 run 尚未创建批次时，课程/教案/覆盖不应读取项目旧批次状态。"""
+    headers = seeded_full_project["headers"]
+    project_id = seeded_full_project["project_id"]
+    old_batch_id = seeded_full_project["generation_batch_id"]
+
+    session = seeded_session_factory()
+    try:
+        owner_user_id = get_owner_user_id(session)
+        _seed_task(
+            session,
+            project_id=project_id,
+            module_code="curriculum",
+            task_type="curriculum_generate",
+            biz_key=f"generation_batch:{old_batch_id}:curriculum",
+            task_status="success",
+            generation_batch_id=old_batch_id,
+            result_json={"course_count": 8},
+            created_offset_seconds=-300,
+        )
+        _seed_task(
+            session,
+            project_id=project_id,
+            module_code="lesson_plan",
+            task_type="lesson_plan_generate",
+            biz_key=f"generation_batch:{old_batch_id}:lesson_plan",
+            task_status="success",
+            generation_batch_id=old_batch_id,
+            result_json={"lesson_plan_count": 8},
+            created_offset_seconds=-240,
+        )
+        _seed_task(
+            session,
+            project_id=project_id,
+            module_code="coverage",
+            task_type="coverage_analyze",
+            biz_key=f"generation_batch:{old_batch_id}:coverage",
+            task_status="success",
+            generation_batch_id=old_batch_id,
+            result_json={"coverage_rate": 95.0},
+            created_offset_seconds=-180,
+        )
+        run = GenerationRun(
+            project_id=project_id,
+            run_status="running",
+            course_count=6,
+            session_duration_minutes=45,
+            auto_confirm_parse=1,
+            created_by=owner_user_id,
+        )
+        session.add(run)
+        session.flush()
+        project = session.get(Project, project_id)
+        project.active_generation_run_id = run.id
+        session.commit()
+        run_id = run.id
+    finally:
+        session.close()
+
+    response = client.get(f"/api/v1/projects/{project_id}/generation-process", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["batch_id"] is None
+    assert data["generation_run_id"] == run_id
+    by_code = {step["code"]: step for step in data["steps"]}
+    for code in ("curriculum_plan", "lesson_plan_generate", "coverage_check"):
+        assert by_code[code]["status"] == "pending"
+        assert by_code[code]["result_detail"] is None
+
+
+def test_generation_process_should_use_active_run_batch_instead_of_project_latest_batch(
+    client,
+    seeded_session_factory,
+    seeded_full_project,
+) -> None:
+    """活跃 run 已创建新批次时，应使用 run 批次而不是 project.latest_generation_batch_id。"""
+    headers = seeded_full_project["headers"]
+    project_id = seeded_full_project["project_id"]
+    old_batch_id = seeded_full_project["generation_batch_id"]
+    knowledge_version_id = seeded_full_project["knowledge_version_id"]
+    profile_version_id = seeded_full_project["profile_version_id"]
+
+    session = seeded_session_factory()
+    try:
+        owner_user_id = get_owner_user_id(session)
+        _seed_task(
+            session,
+            project_id=project_id,
+            module_code="lesson_plan",
+            task_type="lesson_plan_generate",
+            biz_key=f"generation_batch:{old_batch_id}:lesson_plan",
+            task_status="success",
+            generation_batch_id=old_batch_id,
+            result_json={"lesson_plan_count": 12},
+            created_offset_seconds=-300,
+        )
+        new_batch = GenerationBatch(
+            project_id=project_id,
+            batch_no=2,
+            batch_name="新运行批次",
+            trigger_mode="manual",
+            batch_status="pending",
+            knowledge_version_id=knowledge_version_id,
+            learner_profile_version_id=profile_version_id,
+            course_count=4,
+            session_duration_minutes=45,
+            pipeline_options_json={"enabled_steps": ["curriculum", "lesson_plan", "coverage"]},
+            created_by=owner_user_id,
+        )
+        session.add(new_batch)
+        session.flush()
+        _seed_task(
+            session,
+            project_id=project_id,
+            module_code="curriculum",
+            task_type="curriculum_generate",
+            biz_key=f"generation_batch:{new_batch.id}:curriculum",
+            task_status="processing",
+            generation_batch_id=new_batch.id,
+            current_stage="invoke_llm_curriculum",
+            progress_percent=42,
+            created_offset_seconds=-120,
+        )
+        run = GenerationRun(
+            project_id=project_id,
+            run_status="running",
+            course_count=4,
+            session_duration_minutes=45,
+            auto_confirm_parse=1,
+            generation_batch_id=new_batch.id,
+            created_by=owner_user_id,
+        )
+        session.add(run)
+        session.flush()
+        project = session.get(Project, project_id)
+        project.active_generation_run_id = run.id
+        session.commit()
+        new_batch_id = new_batch.id
+    finally:
+        session.close()
+
+    response = client.get(f"/api/v1/projects/{project_id}/generation-process", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["batch_id"] == new_batch_id
+    by_code = {step["code"]: step for step in data["steps"]}
+    assert by_code["curriculum_plan"]["status"] == "running"
+    assert by_code["curriculum_plan"]["current_stage"] == "invoke_llm_curriculum"
+    assert by_code["curriculum_plan"]["progress_percent"] == 42
+    assert by_code["lesson_plan_generate"]["status"] == "pending"
+    assert by_code["coverage_check"]["status"] == "pending"
 
 
 def test_generation_process_should_report_succeeded_when_all_tasks_done(

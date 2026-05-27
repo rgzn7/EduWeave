@@ -9312,7 +9312,7 @@
           },
           "batch_id": {
             "title": "Batch Id",
-            "description": "最近一次生成批次主键",
+            "description": "当前展示批次主键：活跃 run 已创建批次时为 run 批次；活跃 run 未创建批次时为 null；无活跃 run 时为项目最近生成批次",
             "examples": [
               1
             ]

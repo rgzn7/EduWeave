@@ -159,6 +159,7 @@ def requeue_or_fail_task(
         for step in steps:
             step.step_status = TASK_STATUS_PENDING
             step.progress_percent = 0
+            step.detail_json = None
             step.started_at = None
             step.finished_at = None
             task_repository.save(step)

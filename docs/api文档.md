@@ -519,7 +519,7 @@
   message: string  # 响应消息
   data?: {
     project_id: integer  # 项目主键
-    batch_id?: integer  # 最近一次生成批次主键
+    batch_id?: integer  # 当前展示批次主键：活跃 run 已创建批次时为 run 批次；活跃 run 未创建批次时为 null；无活跃 run 时为项目最近生成批次
     generation_run_id?: integer  # 当前活跃一键生成 run 主键；无 run 则为 null
     status: string  # 整体展示状态
     status_detail?: string  # 整体细化状态：waiting_dispatch=等待后端调度下一步；waiting_user_confirm=等待用户确认教材解析；retrying=任务被 reaper 重排重试中；blocked=前置缺失，无法继续

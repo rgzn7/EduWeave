@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-13
+@Date: 2026-05-27
 @Author: xisy
 @Discription: 任务中心模块数据访问层
 """
@@ -234,6 +234,26 @@ class TaskCenterRepository:
                 TaskRecord.module_code == module_code,
                 TaskRecord.task_type == task_type,
                 TaskRecord.biz_key == biz_key,
+            )
+            .order_by(TaskRecord.created_at.desc(), TaskRecord.id.desc())
+            .limit(1)
+        )
+        return self.session.scalar(statement)
+
+    def get_latest_task_by_project_and_type(
+        self,
+        *,
+        project_id: int,
+        module_code: str,
+        task_type: str,
+    ) -> TaskRecord | None:
+        """查询项目下指定任务类型的最近一条任务（不区分状态）。"""
+        statement = (
+            select(TaskRecord)
+            .where(
+                TaskRecord.project_id == project_id,
+                TaskRecord.module_code == module_code,
+                TaskRecord.task_type == task_type,
             )
             .order_by(TaskRecord.created_at.desc(), TaskRecord.id.desc())
             .limit(1)
