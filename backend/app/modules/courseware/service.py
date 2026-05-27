@@ -573,6 +573,7 @@ class CoursewareService:
         deck = self.llm_service.generate_structured_output(
             messages=messages,
             response_model=SlideDeckGenerationResult,
+            strict_schema=True,
         )
         return self._validate_slide_deck(deck, context)
 

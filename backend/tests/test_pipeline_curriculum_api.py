@@ -373,6 +373,7 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
             )
 
         if response_model is SlideDeckGenerationResult:
+            assert _extra_kwargs.get("strict_schema") is True
             point_id = int(user_payload["知识点"][0]["id"])
             return SlideDeckGenerationResult(
                 deck_title="三年级数学乘法提升课件",
@@ -1443,10 +1444,17 @@ def test_courseware_task_should_fail_on_slide_deck_stage_when_llm_invalid(
 
     original_generate = OpenAICompatibleLlmService.generate_structured_output
 
-    def fail_slide_deck_generate(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
+    def fail_slide_deck_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
         if response_model is SlideDeckGenerationResult:
+            assert _extra_kwargs.get("strict_schema") is True
             raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 返回课件结构非法")
-        return original_generate(self, messages=messages, response_model=response_model, temperature=temperature)
+        return original_generate(
+            self,
+            messages=messages,
+            response_model=response_model,
+            temperature=temperature,
+            **_extra_kwargs,
+        )
 
     monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", fail_slide_deck_generate)
 
