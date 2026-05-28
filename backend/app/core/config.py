@@ -99,7 +99,11 @@ class Settings(BaseSettings):
 
     raccoon_api_host: str = "https://xiaohuanxiong.com"
     raccoon_api_token: str | None = None
-    raccoon_request_timeout_seconds: int = 60
+    raccoon_request_timeout_seconds: int = 180
+    raccoon_connect_timeout_seconds: int = 10
+    raccoon_read_timeout_seconds: int = 180
+    raccoon_write_timeout_seconds: int = 30
+    raccoon_pool_timeout_seconds: int = 10
     raccoon_poll_interval_seconds: int = 5
     raccoon_short_poll_timeout_seconds: int = 120
 
@@ -268,7 +272,15 @@ class Settings(BaseSettings):
             raise ValueError("MinerU 轮询配置必须大于 0")
         return value
 
-    @field_validator("llm_timeout_seconds", "embedding_timeout_seconds", "raccoon_request_timeout_seconds")
+    @field_validator(
+        "llm_timeout_seconds",
+        "embedding_timeout_seconds",
+        "raccoon_request_timeout_seconds",
+        "raccoon_connect_timeout_seconds",
+        "raccoon_read_timeout_seconds",
+        "raccoon_write_timeout_seconds",
+        "raccoon_pool_timeout_seconds",
+    )
     @classmethod
     def validate_openai_compatible_timeout(cls, value: int) -> int:
         """校验外部接口超时时间。"""

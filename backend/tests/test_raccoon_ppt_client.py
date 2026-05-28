@@ -35,6 +35,10 @@ def build_settings(token: str | None = "test-token"):
         raccoon_api_host="https://xiaohuanxiong.com",
         raccoon_api_token=token,
         raccoon_request_timeout_seconds=60,
+        raccoon_connect_timeout_seconds=10,
+        raccoon_read_timeout_seconds=180,
+        raccoon_write_timeout_seconds=30,
+        raccoon_pool_timeout_seconds=10,
     )
 
 
@@ -80,3 +84,45 @@ def test_raccoon_client_should_raise_when_api_error() -> None:
         client.get_ppt_job("job-1")
 
     assert exc_info.value.code == BusinessErrorCode.RACCOON_REQUEST_FAILED
+
+
+class TimeoutHttpClient:
+    """模拟 httpx 在请求阶段抛出超时异常。"""
+
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def post(self, url: str, headers=None, json=None):  # noqa: ANN001
+        raise self.exc
+
+    def get(self, url: str, headers=None):  # noqa: ANN001
+        raise self.exc
+
+
+def test_raccoon_client_should_wrap_read_timeout_on_create() -> None:
+    """创建任务遇到 httpx.ReadTimeout 时应包装为 RACCOON_REQUEST_FAILED 业务异常。"""
+    client = RaccoonPptClient(
+        settings=build_settings(),
+        http_client=TimeoutHttpClient(httpx.ReadTimeout("The read operation timed out")),
+    )
+
+    with pytest.raises(AppException) as exc_info:
+        client.create_ppt_job(prompt="生成课件", role="教师", scene="培训教学", audience="学生")
+
+    assert exc_info.value.code == BusinessErrorCode.RACCOON_REQUEST_FAILED
+    assert "未获得远程 job_id" in str(exc_info.value)
+    assert exc_info.value.details["exception_type"] == "ReadTimeout"
+
+
+def test_raccoon_client_should_wrap_transport_error_on_query() -> None:
+    """查询任务遇到 httpx.ConnectError 时应包装为 RACCOON_REQUEST_FAILED 业务异常。"""
+    client = RaccoonPptClient(
+        settings=build_settings(),
+        http_client=TimeoutHttpClient(httpx.ConnectError("connection refused")),
+    )
+
+    with pytest.raises(AppException) as exc_info:
+        client.get_ppt_job("job-1")
+
+    assert exc_info.value.code == BusinessErrorCode.RACCOON_REQUEST_FAILED
+    assert exc_info.value.details["exception_type"] == "ConnectError"
