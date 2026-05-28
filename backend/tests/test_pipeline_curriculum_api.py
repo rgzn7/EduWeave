@@ -22,6 +22,7 @@ from app.modules.courseware.schemas import SlideDeckGenerationResult, SlideDraft
 from app.modules.courseware.service import CoursewareService
 from app.modules.curriculum.schemas import CurriculumGenerationResult
 from app.modules.curriculum.tasks import _validate_curriculum_result
+from app.modules.learner_profile.aggregation import ClassProfileGenerationResult
 from app.modules.knowledge.schemas import (
     KnowledgeChapterBoundaryItem,
     KnowledgeChapterBoundaryResult,
@@ -169,14 +170,17 @@ def create_learner_profile_version(client, headers, project_id: int) -> int:
     response = client.post(
         f"/api/v1/projects/{project_id}/learner-profiles",
         headers=headers,
-        files={
-            "file": (
-                "student_profile.docx",
-                b"fake-docx-content",
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        files=[
+            (
+                "files",
+                (
+                    "student_profile.docx",
+                    b"fake-docx-content",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ),
             )
-        },
-        data={"title": "学生学情", "subject_scope": "math"},
+        ],
+        data={"title": "三年级一班", "subject_scope": "math"},
     )
     return response.json()["data"]["latest_version"]["id"]
 
@@ -306,6 +310,36 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
                         ],
                     )
                 ],
+            )
+
+        if response_model is ClassProfileGenerationResult:
+            assert _extra_kwargs.get("strict_schema") is True
+            return ClassProfileGenerationResult(
+                class_summary="班级整体学情摘要：乘法应用能力待提升。",
+                grade_consistency="全部三年级",
+                region_consistency="全部上海",
+                warnings=[],
+                subject_overview=[
+                    {
+                        "subject_code": "math",
+                        "student_count": 1,
+                        "score_avg": 82.0,
+                        "score_min": 82.0,
+                        "score_max": 82.0,
+                        "high_count": 0,
+                        "mid_count": 1,
+                        "low_count": 0,
+                        "summary": "数学计算能力待提升。",
+                    }
+                ],
+                common_strengths=["阅读理解较强"],
+                common_weaknesses=["计算能力待提升"],
+                common_habits=["作业完成及时"],
+                common_behaviors=["性格开朗"],
+                tiered_groups=[
+                    {"tier": "mid", "student_keys": [], "teaching_suggestions": ["夯实计算基础。"]}
+                ],
+                teaching_recommendations=["按高/中/低分层设计练习。"],
             )
 
         user_payload = _merge_user_payload_dicts(messages)

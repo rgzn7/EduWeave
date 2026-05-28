@@ -740,9 +740,9 @@
 
 ### POST `/api/v1/projects/{project_id}/learner-profiles`
 
-**上传学情文件**
+**上传班级学情文件**
 
-向指定项目上传 docx 学情文件，并按配置创建真实学情抽取任务（本地 python-docx 同步解析）。
+向指定项目上传一个班级的多份 docx 学情文件（每份对应一个学生），系统建立单个班级学情文件，并按配置创建真实学情抽取任务：逐份本地 python-docx 同步解析出各学生画像后，再用 LLM 聚合出班级画像。title 字段在此语义下表示班级名称。
 
 **参数**
 
@@ -754,8 +754,8 @@
 
 ```json
 {
-  file: string  # 学情 docx 文件
-  title?: string | null  # 文档标题
+  files: array[string]  # 班级学生学情 docx 文件列表（每份一个学生）
+  title?: string | null  # 班级名称
   grade_code?: string | null  # 年级编码
   subject_scope?: string | null  # 学科范围
   textbook_version_hint_id?: integer | null  # 教材提示版本主键
@@ -937,7 +937,8 @@
       extract_status: string  # 抽取状态
       review_status: string  # 审核状态
       version_status: string  # 版本状态
-      summary_text?: object  # 摘要文本
+      summary_text?: object  # 摘要文本（班级整体学情摘要）
+      class_profile?: object  # 班级画像聚合结果（学科概览、共性强弱、分层建议等）
       raw_result_json?: object  # 抽取结果 JSON
       source_snapshot_json?: object  # 输入快照
       created_by?: object  # 创建人
@@ -999,7 +1000,8 @@
     extract_status: string  # 抽取状态
     review_status: string  # 审核状态
     version_status: string  # 版本状态
-    summary_text?: object  # 摘要文本
+    summary_text?: object  # 摘要文本（班级整体学情摘要）
+    class_profile?: object  # 班级画像聚合结果（学科概览、共性强弱、分层建议等）
     raw_result_json?: object  # 抽取结果 JSON
     source_snapshot_json?: object  # 输入快照
     created_by?: object  # 创建人
@@ -1083,7 +1085,8 @@
     extract_status: string  # 抽取状态
     review_status: string  # 审核状态
     version_status: string  # 版本状态
-    summary_text?: object  # 摘要文本
+    summary_text?: object  # 摘要文本（班级整体学情摘要）
+    class_profile?: object  # 班级画像聚合结果（学科概览、共性强弱、分层建议等）
     raw_result_json?: object  # 抽取结果 JSON
     source_snapshot_json?: object  # 输入快照
     created_by?: object  # 创建人

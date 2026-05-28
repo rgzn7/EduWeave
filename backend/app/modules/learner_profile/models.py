@@ -4,6 +4,18 @@
 @Discription: 学情模块模型导出
 """
 
-from app.modules.p0_models import FileObject, LearnerProfileFile, LearnerProfileRecord, LearnerProfileVersion
+from app.modules.p0_models import (
+    FileObject,
+    LearnerProfileFile,
+    LearnerProfileRecord,
+    LearnerProfileSource,
+    LearnerProfileVersion,
+)
 
-__all__ = ["FileObject", "LearnerProfileFile", "LearnerProfileVersion", "LearnerProfileRecord"]
+__all__ = [
+    "FileObject",
+    "LearnerProfileFile",
+    "LearnerProfileVersion",
+    "LearnerProfileRecord",
+    "LearnerProfileSource",
+]

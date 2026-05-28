@@ -35,27 +35,32 @@ def get_learner_profile_service(session: Annotated[Session, Depends(get_db_sessi
 
 @router.post(
     "/projects/{project_id}/learner-profiles",
-    summary="上传学情文件",
-    description="向指定项目上传 docx 学情文件，并按配置创建真实学情抽取任务（本地 python-docx 同步解析）。",
+    summary="上传班级学情文件",
+    description=(
+        "向指定项目上传一个班级的多份 docx 学情文件（每份对应一个学生），系统建立单个班级学情文件，"
+        "并按配置创建真实学情抽取任务：逐份本地 python-docx 同步解析出各学生画像后，再用 LLM 聚合出班级画像。"
+        "title 字段在此语义下表示班级名称。"
+    ),
     operation_id="learner_profile_create",
     response_model=ApiResponse[LearnerProfileFileDetailResponse],
     status_code=status.HTTP_201_CREATED,
 )
 async def upload_learner_profile(
     project_id: int = Path(..., description="项目主键", examples=[1]),
-    file: UploadFile = File(..., description="学情 docx 文件"),
+    files: list[UploadFile] = File(..., description="班级学生学情 docx 文件列表（每份一个学生）"),
     request: LearnerProfileUploadRequest = Depends(LearnerProfileUploadRequest.as_form),
     service: Annotated[LearnerProfileService, Depends(get_learner_profile_service)] = None,
     current_user: Annotated[SysUser, Depends(get_current_user)] = None,
 ):
-    """上传学情文件。"""
-    content = await file.read()
+    """上传班级学情文件（多份学生 docx）。"""
+    upload_files: list[tuple[str, bytes, str | None]] = []
+    for upload_file in files:
+        content = await upload_file.read()
+        upload_files.append((upload_file.filename or "learner_profile.docx", content, upload_file.content_type))
     detail = service.upload_profile_file(
         owner_user_id=current_user.id,
         project_id=project_id,
-        filename=file.filename or "learner_profile.docx",
-        content=content,
-        content_type=file.content_type,
+        files=upload_files,
         title=request.title,
         grade_code=request.grade_code,
         subject_scope=request.subject_scope,
@@ -63,7 +68,7 @@ async def upload_learner_profile(
         auto_extract=request.auto_extract,
         set_as_current=request.set_as_current,
     )
-    return ResponseFactory.success(detail.model_dump(mode="json"), "上传学情文件成功", status_code=status.HTTP_201_CREATED)
+    return ResponseFactory.success(detail.model_dump(mode="json"), "上传班级学情文件成功", status_code=status.HTTP_201_CREATED)
 
 
 @router.get(

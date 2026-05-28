@@ -753,8 +753,8 @@
         "tags": [
           "学情"
         ],
-        "summary": "上传学情文件",
-        "description": "向指定项目上传 docx 学情文件，并按配置创建真实学情抽取任务（本地 python-docx 同步解析）。",
+        "summary": "上传班级学情文件",
+        "description": "向指定项目上传一个班级的多份 docx 学情文件（每份对应一个学生），系统建立单个班级学情文件，并按配置创建真实学情抽取任务：逐份本地 python-docx 同步解析出各学生画像后，再用 LLM 聚合出班级画像。title 字段在此语义下表示班级名称。",
         "operationId": "learner_profile_create",
         "security": [
           {
@@ -7840,11 +7840,14 @@
       },
       "Body_learner_profile_create": {
         "properties": {
-          "file": {
-            "type": "string",
-            "contentMediaType": "application/octet-stream",
-            "title": "File",
-            "description": "学情 docx 文件"
+          "files": {
+            "items": {
+              "type": "string",
+              "contentMediaType": "application/octet-stream"
+            },
+            "type": "array",
+            "title": "Files",
+            "description": "班级学生学情 docx 文件列表（每份一个学生）"
           },
           "title": {
             "anyOf": [
@@ -7856,9 +7859,9 @@
               }
             ],
             "title": "Title",
-            "description": "文档标题",
+            "description": "班级名称",
             "examples": [
-              "学生学情分析"
+              "三年级一班"
             ]
           },
           "grade_code": {
@@ -7927,7 +7930,7 @@
         },
         "type": "object",
         "required": [
-          "file"
+          "files"
         ],
         "title": "Body_learner_profile_create"
       },
@@ -11927,7 +11930,11 @@
           },
           "summary_text": {
             "title": "Summary Text",
-            "description": "摘要文本"
+            "description": "摘要文本（班级整体学情摘要）"
+          },
+          "class_profile": {
+            "title": "Class Profile",
+            "description": "班级画像聚合结果（学科概览、共性强弱、分层建议等）"
           },
           "raw_result_json": {
             "title": "Raw Result Json",
@@ -12034,7 +12041,11 @@
           },
           "summary_text": {
             "title": "Summary Text",
-            "description": "摘要文本"
+            "description": "摘要文本（班级整体学情摘要）"
+          },
+          "class_profile": {
+            "title": "Class Profile",
+            "description": "班级画像聚合结果（学科概览、共性强弱、分层建议等）"
           },
           "raw_result_json": {
             "title": "Raw Result Json",

@@ -385,11 +385,15 @@ def _build_curriculum_messages(
             "summary_text": profile_version.summary_text,
             "grade_code": profile_version.grade_code,
             "subject_scope": profile_version.subject_scope,
+            "class_profile": (profile_version.raw_result_json or {}).get("class_profile"),
             "records": profile_payload,
         },
     }
     system_prompt = (
-        "你是课程大纲生成助手。请基于教材知识结构和学生学情生成中文课程大纲。"
+        "你是课程大纲生成助手。请基于教材知识结构和班级学情生成中文课程大纲。"
+        "learner_profile_version 是一个班级的学情：records 为全班各学生×学科画像，class_profile 为班级聚合画像"
+        "（学科概览、共性强弱、高/中/低分层分组与教学建议）。课程规划必须面向全班，并兼顾分层（高/中/低）需求，"
+        "在 learner_adjustments 中体现对不同层次学生的差异化安排。"
         "若 generation_batch.chapter_range_json 指定了章节范围，输入的教材章节和知识点已经被收敛到该范围，"
         "必须只围绕该局部范围规划课程。"
         "必须严格输出 JSON 对象，字段如下，类型必须严格匹配，不允许嵌套替换："

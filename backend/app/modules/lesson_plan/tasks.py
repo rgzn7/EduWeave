@@ -889,7 +889,9 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
 
 # 拆分为两段独立 system 提示，便于上游 prompt cache 命中前缀；调整任一段不击穿另一段缓存。
 _LESSON_PLAN_ROLE_AND_SCHEMA_PROMPT = (
-    "你是教案生成助手。请基于课程大纲中的 target_lesson_session、教材知识点和学生学情生成中文教师教案。"
+    "你是教案生成助手。请基于课程大纲中的 target_lesson_session、教材知识点和班级学情生成中文教师教案。"
+    "learner_profile_version 是一个班级的学情：records 为全班各学生×学科画像，class_profile 为班级聚合画像"
+    "（学科概览、共性强弱、高/中/低分层分组与教学建议）；教案须面向全班并兼顾分层，learner_adjustments 中体现差异化安排。"
     "必须严格输出 JSON 对象，字段如下，类型必须严格匹配："
     "lesson_title（字符串，不超过 255 字）；"
     "summary_text（字符串或 null）；"
@@ -992,6 +994,7 @@ def _build_lesson_plan_stable_messages(
             "summary_text": profile_version.summary_text,
             "grade_code": profile_version.grade_code,
             "subject_scope": profile_version.subject_scope,
+            "class_profile": (profile_version.raw_result_json or {}).get("class_profile"),
             "records": profile_payload,
         },
     }

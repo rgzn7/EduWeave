@@ -11,6 +11,7 @@ from app.modules.p0_models import (
     FileObject,
     LearnerProfileFile,
     LearnerProfileRecord,
+    LearnerProfileSource,
     LearnerProfileVersion,
     Project,
     TextbookVersion,
@@ -73,6 +74,21 @@ class LearnerProfileRepository:
         self.session.add(profile_record)
         self.session.flush()
         return profile_record
+
+    def create_profile_source(self, profile_source: LearnerProfileSource) -> LearnerProfileSource:
+        """创建学情班级源文件记录。"""
+        self.session.add(profile_source)
+        self.session.flush()
+        return profile_source
+
+    def list_profile_sources(self, profile_file_id: int) -> list[LearnerProfileSource]:
+        """按班级查询全部学生源文件（按学生序号升序）。"""
+        statement = (
+            select(LearnerProfileSource)
+            .where(LearnerProfileSource.profile_file_id == profile_file_id)
+            .order_by(LearnerProfileSource.student_seq.asc(), LearnerProfileSource.id.asc())
+        )
+        return list(self.session.scalars(statement))
 
     def get_next_version_no(self, profile_file_id: int) -> int:
         """获取学情文件下一个版本号。"""

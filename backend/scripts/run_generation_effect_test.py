@@ -319,9 +319,13 @@ def _upload_profile_with_existing_service(
     ).upload_profile_file(
         owner_user_id=owner_user_id,
         project_id=project.id,
-        filename=PROFILE_PATH.name,
-        content=PROFILE_PATH.read_bytes(),
-        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        files=[
+            (
+                PROFILE_PATH.name,
+                PROFILE_PATH.read_bytes(),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        ],
         title=PROFILE_TITLE,
         grade_code=GRADE_CODE,
         subject_scope=SUBJECT_CODE,

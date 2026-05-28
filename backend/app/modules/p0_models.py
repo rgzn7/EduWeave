@@ -356,6 +356,35 @@ class LearnerProfileRecord(TimestampMixin, Base):
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"), comment="排序")
 
 
+class LearnerProfileSource(TimestampMixin, Base):
+    """学情班级源文件表（一个班级挂多个学生 docx）。"""
+
+    __tablename__ = "learner_profile_source"
+    __table_args__ = (
+        Index("uk_profile_source_file_seq", "profile_file_id", "student_seq", unique=True),
+        Index("idx_profile_source_file", "profile_file_id"),
+        {"comment": "学情班级源文件表"},
+    )
+
+    id: Mapped[int] = mapped_column(MYSQL_BIGINT_UNSIGNED, primary_key=True, autoincrement=True, comment="主键")
+    project_id: Mapped[int] = mapped_column(MYSQL_BIGINT_UNSIGNED, ForeignKey("project.id"), nullable=False, comment="所属项目")
+    profile_file_id: Mapped[int] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("learner_profile_file.id"),
+        nullable=False,
+        comment="学情文件（班级）",
+    )
+    file_object_id: Mapped[int] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("file_object.id"),
+        nullable=False,
+        comment="学生源 docx 文件对象",
+    )
+    student_seq: Mapped[int] = mapped_column(Integer, nullable=False, comment="班级内学生序号（从 1 递增）")
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False, comment="原始文件名")
+    student_name: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="学生姓名（解析后回填）")
+
+
 class ParseVersion(TimestampMixin, Base):
     """解析版本表。"""
 

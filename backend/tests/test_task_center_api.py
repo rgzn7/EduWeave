@@ -44,7 +44,7 @@ def create_project(client, headers) -> int:
     return response.json()["data"]["id"]
 
 
-def test_task_center_should_list_and_detail_tasks(client) -> None:
+def test_task_center_should_list_and_detail_tasks(client, stub_class_profile_llm) -> None:
     """任务中心应返回任务列表和详情。"""
     headers = build_auth_headers(client)
     project_id = create_project(client, headers)
@@ -52,8 +52,17 @@ def test_task_center_should_list_and_detail_tasks(client) -> None:
     client.post(
         f"/api/v1/projects/{project_id}/learner-profiles",
         headers=headers,
-        files={"file": ("student_profile.docx", b"fake-docx-content", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
-        data={"title": "学生学情", "subject_scope": "english"},
+        files=[
+            (
+                "files",
+                (
+                    "student_profile.docx",
+                    b"fake-docx-content",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                ),
+            )
+        ],
+        data={"title": "三年级一班", "subject_scope": "english"},
     )
 
     list_response = client.get(f"/api/v1/tasks?project_id={project_id}", headers=headers)
@@ -70,6 +79,7 @@ def test_task_center_should_list_and_detail_tasks(client) -> None:
         "prepare_source",
         "extract_local",
         "build_profile_version",
+        "aggregate_class_profile",
     ]
 
 
