@@ -38,6 +38,7 @@ from app.modules.task_center.progress import assign_monotonic_progress
 from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.schemas import TaskListItemResponse
 from app.modules.task_center.service import TaskCenterService
+from app.shared.document.naming import build_pptx_filename, strip_lesson_prefix
 from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
 from app.shared.ppt import RaccoonPptJobState, RaccoonPptService
 from app.shared.queue import dispatch_task
@@ -452,11 +453,13 @@ class CoursewareService:
             raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "生成批次不存在")
         pptx_content = self.ppt_service.download_pptx(state.download_url)
         file_hash = hashlib.sha256(pptx_content).hexdigest()
-        filename = f"courseware_{courseware_result.id}.pptx"
+        filename = self._build_courseware_filename(courseware_result)
+        # 文件名改用与教案一致的课题名，object_key 追加 result.id 段保证批次内不同课件不冲突
         object_key = self.storage_client.build_object_key(
             str(generation_batch.project_id),
             "courseware",
             str(generation_batch.id),
+            str(courseware_result.id),
             filename=filename,
         )
         try:
@@ -492,6 +495,21 @@ class CoursewareService:
             file_object.metadata_json = metadata_json
             self.repository.save(file_object)
         courseware_result.export_file_id = file_object.id
+
+    def _build_courseware_filename(self, courseware_result: CoursewareResult) -> str:
+        """构造课件 PPTX 文件名，与教案 DOCX 命名保持一致（课题名-第N讲-课件.pptx）。"""
+        lesson_plan = self.repository.get_lesson_plan(courseware_result.lesson_plan_id)
+        if lesson_plan is None:
+            return build_pptx_filename(f"courseware_{courseware_result.id}", fallback="课件")
+        session_segment = (
+            f"第{lesson_plan.class_session_no}讲" if lesson_plan.class_session_no is not None else None
+        )
+        return build_pptx_filename(
+            strip_lesson_prefix(lesson_plan.lesson_title),
+            session_segment,
+            "课件",
+            fallback="课件",
+        )
 
     def build_generation_context(self, generation_batch_id: int, lesson_plan_id: int) -> dict[str, Any]:
         """构造课件生成上下文。"""
