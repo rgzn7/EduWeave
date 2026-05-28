@@ -3826,7 +3826,7 @@ DOCX 模板 v2（2026-05-27 起生效）共用以下约定：
   deck_title?: string | null  # 课件标题
   slides: array[{
     slide_no: integer  # 页序号
-    slide_type: string  # 页型：cover/toc/knowledge/example/interaction/summary/homework
+    slide_type: 'cover' | 'toc' | 'knowledge' | 'example' | 'interaction' | 'summary' | 'homework'  # 页型：cover/toc/knowledge/example/interaction/summary/homework
     title: string  # 页标题
     bullet_points?: array[string]  # 页面要点
     speaker_notes?: string | null  # 讲解备注
@@ -4167,6 +4167,64 @@ DOCX 模板 v2（2026-05-27 起生效）共用以下约定：
 **响应**
 
 `200` Successful Response
+
+```json
+{
+  success: boolean  # 请求是否成功
+  code: integer  # 业务响应状态码
+  message: string  # 响应消息
+  data?: {
+    id: integer  # 任务主键
+    project_id: integer  # 所属项目主键
+    generation_batch_id?: object  # 生成批次主键
+    module_code: string  # 模块编码
+    task_type: string  # 任务类型
+    biz_key?: string  # 业务键
+    task_status: string  # 任务状态
+    queue_name?: string  # 队列名称
+    current_stage?: string  # 当前阶段
+    progress_percent: integer  # 任务进度
+    retry_count: integer  # 重试次数
+    max_retry_count: integer  # 最大重试次数
+    worker_task_id?: object  # Worker 任务ID
+    last_error_code?: object  # 最近错误码
+    last_error_message?: object  # 最近错误信息
+    payload_json?: object  # 任务载荷
+    result_json?: object  # 任务结果
+    started_at?: object  # 开始时间
+    finished_at?: object  # 结束时间
+    created_at: object  # 创建时间
+    updated_at: object  # 更新时间
+    steps: object  # 任务步骤列表
+  }
+  timestamp: string  # 响应时间，UTC ISO8601 格式
+  request_id: string  # 请求追踪 ID
+  errors?: array[{
+    code: string  # 错误码
+    message: string  # 错误描述
+    details?: object  # 补充信息
+    field?: object  # 字段名
+  }]
+}
+```
+
+---
+
+### POST `/api/v1/tasks/{task_id}/retry`
+
+**重试失败任务**
+
+重试当前教师可见的失败任务。当前版本仅支持 task_status=failure 且 task_type=lesson_plan_generate 的多课时教案生成任务；无请求体。成功后返回 202，任务会回到 pending、retry_count 归零、错误字段清空、步骤重置，并复用原任务、生成批次和任务载荷重新派发。非本人任务返回 404，非失败态或非教案任务返回 409。
+
+**参数**
+
+| 位置 | 名称 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- | --- |
+| path | `task_id` | integer | 是 | 任务主键 |
+
+**响应**
+
+`202` Successful Response
 
 ```json
 {

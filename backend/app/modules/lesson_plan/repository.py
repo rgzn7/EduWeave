@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-04
+@Date: 2026-05-28
 @Author: xisy
 @Discription: 教案模块数据访问层
 """
@@ -17,6 +17,7 @@ from app.modules.p0_models import (
     LearnerProfileRecord,
     LearnerProfileVersion,
     LessonPlan,
+    LessonPlanGenerationItem,
     ParseBlock,
     Project,
 )
@@ -127,6 +128,59 @@ class LessonPlanRepository:
         self.session.add(lesson_plan)
         self.session.flush()
         return lesson_plan
+
+    def ensure_generation_items(
+        self,
+        *,
+        generation_batch_id: int,
+        task_record_id: int,
+        lesson_sessions: list[dict],
+    ) -> list[LessonPlanGenerationItem]:
+        """确保批次下每个课次都有中间结果记录。"""
+        existing_items = self.list_generation_items_by_batch(generation_batch_id)
+        item_by_session_no = {int(item.class_session_no): item for item in existing_items}
+        for lesson_session in lesson_sessions:
+            class_session_no = int(lesson_session["session_no"])
+            item = item_by_session_no.get(class_session_no)
+            if item is None:
+                item = LessonPlanGenerationItem(
+                    generation_batch_id=generation_batch_id,
+                    task_record_id=task_record_id,
+                    class_session_no=class_session_no,
+                    lesson_title=lesson_session.get("title"),
+                    item_status="pending",
+                )
+                self.session.add(item)
+                self.session.flush()
+                item_by_session_no[class_session_no] = item
+                continue
+            item.task_record_id = task_record_id
+            if item.lesson_title is None and lesson_session.get("title"):
+                item.lesson_title = lesson_session.get("title")
+            self.save(item)
+        return [item_by_session_no[int(session["session_no"])] for session in lesson_sessions]
+
+    def list_generation_items_by_batch(self, generation_batch_id: int) -> list[LessonPlanGenerationItem]:
+        """查询批次下全部课次生成中间结果。"""
+        statement = (
+            select(LessonPlanGenerationItem)
+            .where(LessonPlanGenerationItem.generation_batch_id == generation_batch_id)
+            .order_by(LessonPlanGenerationItem.class_session_no.asc(), LessonPlanGenerationItem.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
+    def get_generation_item(
+        self,
+        *,
+        generation_batch_id: int,
+        class_session_no: int,
+    ) -> LessonPlanGenerationItem | None:
+        """按批次与课次查询中间结果。"""
+        statement = select(LessonPlanGenerationItem).where(
+            LessonPlanGenerationItem.generation_batch_id == generation_batch_id,
+            LessonPlanGenerationItem.class_session_no == class_session_no,
+        )
+        return self.session.scalar(statement)
 
     def list_lesson_plans_by_batch(self, generation_batch_id: int) -> list[LessonPlan]:
         """查询批次下全部教案。"""

@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-27
+@Date: 2026-05-28
 @Author: xisy
 @Discription: 应用配置定义
 """
@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = 60
     llm_max_retries: int = 2
     llm_retry_base_seconds: int = 1
+    llm_stream_error_detail_max_chars: int = 4096
     llm_parse_repair_max_attempts: int = 2
     # 多模态开关：开启前需将 llm_model 配置为具备视觉能力的模型，否则保持关闭零影响。
     llm_multimodal_enabled: bool = False
@@ -86,6 +87,10 @@ class Settings(BaseSettings):
     knowledge_extract_max_concurrency: int = 10
     # 教案生成阶段第 1 课暖缓存后，其余课次并行调用 LLM 的最大并发数，1 等价于串行。
     lesson_plan_max_concurrency: int = 10
+    # 单课次教案生成在 LLM 客户端重试耗尽后的业务级重试次数，0 表示不重试。
+    lesson_plan_session_max_retries: int = 2
+    # 单课次教案生成业务级重试的指数退避基数（秒）。
+    lesson_plan_session_retry_base_seconds: int = 3
 
     embedding_api_base_url: str = "https://api.openai.com/v1"
     embedding_api_key: str | None = None
@@ -279,12 +284,12 @@ class Settings(BaseSettings):
             raise ValueError("LLM 重试与修复次数不能为负数")
         return value
 
-    @field_validator("llm_retry_base_seconds")
+    @field_validator("llm_retry_base_seconds", "llm_stream_error_detail_max_chars")
     @classmethod
     def validate_llm_retry_base_seconds(cls, value: int) -> int:
-        """校验 LLM 重试退避基数。"""
+        """校验 LLM 重试退避与错误详情配置。"""
         if value <= 0:
-            raise ValueError("LLM 重试退避基数必须大于 0")
+            raise ValueError("LLM 重试退避与错误详情配置必须大于 0")
         return value
 
     @field_validator("knowledge_extract_max_concurrency")
@@ -301,6 +306,22 @@ class Settings(BaseSettings):
         """校验教案生成并发数。"""
         if value < 1 or value > 10:
             raise ValueError("教案生成并发数必须在 1 到 10 之间")
+        return value
+
+    @field_validator("lesson_plan_session_max_retries")
+    @classmethod
+    def validate_lesson_plan_session_max_retries(cls, value: int) -> int:
+        """校验单课次教案生成重试次数。"""
+        if value < 0:
+            raise ValueError("单课次教案生成重试次数不能为负数")
+        return value
+
+    @field_validator("lesson_plan_session_retry_base_seconds")
+    @classmethod
+    def validate_lesson_plan_session_retry_base_seconds(cls, value: int) -> int:
+        """校验单课次教案生成重试退避基数。"""
+        if value <= 0:
+            raise ValueError("单课次教案生成重试退避基数必须大于 0")
         return value
 
     @field_validator(

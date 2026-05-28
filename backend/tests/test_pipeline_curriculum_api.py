@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-19
+@Date: 2026-05-28
 @Author: xisy
 @Discription: 生成编排与课程大纲、教案、测评、课件接口测试
 """
@@ -30,7 +30,14 @@ from app.modules.knowledge.schemas import (
     KnowledgeExtractionPointDraft,
 )
 from app.modules.lesson_plan.schemas import LessonPlanGenerationResult
-from app.modules.p0_models import ChapterNode, CoursewareResult, KnowledgePoint, LessonPlan, QuestionItem
+from app.modules.p0_models import (
+    ChapterNode,
+    CoursewareResult,
+    KnowledgePoint,
+    LessonPlan,
+    LessonPlanGenerationItem,
+    QuestionItem,
+)
 from app.shared.llm import OpenAICompatibleEmbeddingService, OpenAICompatibleLlmService
 from app.shared.ppt import RaccoonPptJobState, RaccoonPptService
 from app.shared.vector import MilvusVectorService
@@ -1040,6 +1047,17 @@ def test_lesson_plan_parallel_failure_should_not_persist_partial_plans(
             .count()
         )
         assert persisted_count == 0
+        generation_items = (
+            session.query(LessonPlanGenerationItem)
+            .filter(LessonPlanGenerationItem.generation_batch_id == failed_batch["id"])
+            .order_by(LessonPlanGenerationItem.class_session_no.asc())
+            .all()
+        )
+        assert any(item.item_status == "success" for item in generation_items)
+        failed_items = [item for item in generation_items if item.item_status == "failure"]
+        assert failed_items
+        assert failed_items[0].class_session_no == 3
+        assert failed_items[0].last_error_detail_json["failed_session_no"] == 3
     finally:
         session.close()
 
@@ -1049,6 +1067,40 @@ def test_lesson_plan_parallel_failure_should_not_persist_partial_plans(
     assert tasks[0]["task_status"] == "success"
     assert tasks[1]["task_status"] == "failure"
     assert tasks[1]["last_error_code"] == BusinessErrorCode.LLM_RESULT_INVALID.value
+
+    retried_sessions: list[int] = []
+
+    def recovering_generate(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
+        if response_model is LessonPlanGenerationResult:
+            user_payload = _merge_user_payload_dicts(messages)
+            session_no = int(user_payload["target_lesson_session"]["session_no"])
+            retried_sessions.append(session_no)
+            return _build_lesson_plan_result_for_test(messages)
+        return original_generate(
+            self,
+            messages=messages,
+            response_model=response_model,
+            temperature=temperature,
+            **_extra_kwargs,
+        )
+
+    monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", recovering_generate)
+    retry_response = client.post(f"/api/v1/tasks/{tasks[1]['id']}/retry", headers=headers)
+    assert retry_response.status_code == 202
+    assert 1 not in retried_sessions
+    assert 3 in retried_sessions
+
+    session = seeded_session_factory()
+    try:
+        lesson_plans = (
+            session.query(LessonPlan)
+            .filter(LessonPlan.generation_batch_id == failed_batch["id"])
+            .order_by(LessonPlan.class_session_no.asc())
+            .all()
+        )
+        assert [item.class_session_no for item in lesson_plans] == [1, 2, 3, 4]
+    finally:
+        session.close()
 
 
 def test_coverage_report_should_only_count_success_courseware(

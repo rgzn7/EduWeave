@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-27
+@Date: 2026-05-28
 @Author: xisy
 @Discription: 配置模型测试
 """
@@ -175,6 +175,43 @@ def test_invalid_lesson_plan_max_concurrency_should_fail(monkeypatch: pytest.Mon
     apply_required_env(monkeypatch)
     monkeypatch.setenv("JWT_SECRET", "test-secret")
     monkeypatch.setenv("LESSON_PLAN_MAX_CONCURRENCY", value)
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+def test_lesson_plan_session_retry_config_should_use_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """单课次教案重试配置应有安全默认值。"""
+    apply_required_env(monkeypatch)
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    monkeypatch.delenv("LESSON_PLAN_SESSION_MAX_RETRIES", raising=False)
+    monkeypatch.delenv("LESSON_PLAN_SESSION_RETRY_BASE_SECONDS", raising=False)
+    monkeypatch.delenv("LLM_STREAM_ERROR_DETAIL_MAX_CHARS", raising=False)
+
+    settings = Settings()
+
+    assert settings.lesson_plan_session_max_retries == 2
+    assert settings.lesson_plan_session_retry_base_seconds == 3
+    assert settings.llm_stream_error_detail_max_chars == 4096
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("LESSON_PLAN_SESSION_MAX_RETRIES", "-1"),
+        ("LESSON_PLAN_SESSION_RETRY_BASE_SECONDS", "0"),
+        ("LLM_STREAM_ERROR_DETAIL_MAX_CHARS", "0"),
+    ],
+)
+def test_invalid_lesson_plan_retry_config_should_fail(
+    monkeypatch: pytest.MonkeyPatch,
+    key: str,
+    value: str,
+) -> None:
+    """单课次教案重试和流式错误详情配置非法时应启动失败。"""
+    apply_required_env(monkeypatch)
+    monkeypatch.setenv("JWT_SECRET", "test-secret")
+    monkeypatch.setenv(key, value)
 
     with pytest.raises(ValidationError):
         Settings()

@@ -4902,6 +4902,59 @@
           }
         }
       }
+    },
+    "/api/v1/tasks/{task_id}/retry": {
+      "post": {
+        "tags": [
+          "任务中心"
+        ],
+        "summary": "重试失败任务",
+        "description": "重试当前教师可见的失败任务。当前版本仅支持 task_status=failure 且 task_type=lesson_plan_generate 的多课时教案生成任务；无请求体。成功后返回 202，任务会回到 pending、retry_count 归零、错误字段清空、步骤重置，并复用原任务、生成批次和任务载荷重新派发。非本人任务返回 404，非失败态或非教案任务返回 409。",
+        "operationId": "task_center_retry",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "description": "任务主键",
+              "examples": [
+                1
+              ],
+              "title": "Task Id"
+            },
+            "description": "任务主键"
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponse_TaskDetailResponse_"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -9419,11 +9472,14 @@
           },
           "progress_detail": {
             "title": "Progress Detail",
-            "description": "公开进度指标，例如 processed/total/parallel_limit/last_completed 等，不包含内部任务字段",
+            "description": "公开进度指标，例如 processed/total/parallel_limit/last_completed；教案失败时可包含 failed_session_no、failed_session_title、session_retry_count，不包含原始 LLM 错误、prompt、traceback 或内部任务字段",
             "examples": [
               {
+                "failed_session_no": 4,
+                "failed_session_title": "小数乘法练习",
                 "parallel_limit": 4,
                 "processed_sessions": 3,
+                "session_retry_count": 2,
                 "total_sessions": 10
               }
             ]
@@ -14884,6 +14940,15 @@
           },
           "slide_type": {
             "type": "string",
+            "enum": [
+              "cover",
+              "toc",
+              "knowledge",
+              "example",
+              "interaction",
+              "summary",
+              "homework"
+            ],
             "title": "Slide Type",
             "description": "页型：cover/toc/knowledge/example/interaction/summary/homework",
             "examples": [

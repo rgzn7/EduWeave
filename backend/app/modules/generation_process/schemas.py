@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-27
+@Date: 2026-05-28
 @Author: xisy
 @Discription: 生成过程展示模块请求与响应模型
 """
@@ -50,8 +50,21 @@ class GenerationProcessStepResponse(BaseSchema):
     )
     progress_detail: dict[str, Any] | None = Field(
         default=None,
-        description="公开进度指标，例如 processed/total/parallel_limit/last_completed 等，不包含内部任务字段",
-        examples=[{"processed_sessions": 3, "total_sessions": 10, "parallel_limit": 4}],
+        description=(
+            "公开进度指标，例如 processed/total/parallel_limit/last_completed；"
+            "教案失败时可包含 failed_session_no、failed_session_title、session_retry_count，"
+            "不包含原始 LLM 错误、prompt、traceback 或内部任务字段"
+        ),
+        examples=[
+            {
+                "processed_sessions": 3,
+                "total_sessions": 10,
+                "parallel_limit": 4,
+                "failed_session_no": 4,
+                "failed_session_title": "小数乘法练习",
+                "session_retry_count": 2,
+            }
+        ],
     )
     result_detail: dict[str, Any] | None = Field(
         default=None,

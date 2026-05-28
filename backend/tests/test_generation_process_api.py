@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-27
+@Date: 2026-05-28
 @Author: xisy
 @Discription: 生成过程展示接口测试
 """
@@ -606,7 +606,11 @@ def test_generation_process_should_expose_running_lesson_plan_progress_detail(
                 "parallel_limit": 5,
                 "class_session_no": 8,
                 "last_completed_class_session_no": 7,
+                "failed_session_no": 8,
+                "failed_session_title": "分数比较",
+                "session_retry_count": 2,
                 "cache_warmup_completed": True,
+                "last_error_detail": {"error": {"message": "不应公开"}},
                 "lesson_plan_ids": [1, 2],
             },
         )
@@ -626,6 +630,9 @@ def test_generation_process_should_expose_running_lesson_plan_progress_detail(
         "total_sessions": 10,
         "parallel_limit": 5,
         "last_completed_class_session_no": 7,
+        "failed_session_no": 8,
+        "failed_session_title": "分数比较",
+        "session_retry_count": 2,
         "cache_warmup_completed": True,
     }
     assert lesson_step["result_detail"] is None

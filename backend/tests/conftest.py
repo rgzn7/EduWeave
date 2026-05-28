@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-03
+@Date: 2026-05-28
 @Author: xisy
 @Discription: 测试环境公共夹具
 """
@@ -74,8 +74,6 @@ from app.shared.storage import ObsStorageClient
 
 TEST_PASSWORD = "Teacher@123"
 SCHEMA_SQL_PATH = Path(__file__).resolve().parents[2] / "sql" / "20260430_eduweave_mysql_28_tables.sql"
-HOMEWORK_SCHEMA_SQL_PATH = Path(__file__).resolve().parents[2] / "sql" / "20260525_eduweave_homework_tables.sql"
-ORCHESTRATION_SCHEMA_SQL_PATH = Path(__file__).resolve().parents[2] / "sql" / "20260526_phase2_orchestration.sql"
 
 
 def build_mysql_uri(database_name: str) -> str:
@@ -88,7 +86,7 @@ def build_mysql_uri(database_name: str) -> str:
 
 
 def execute_schema_sql(database_name: str) -> None:
-    """向指定 MySQL 数据库执行基础 28 张表 + homework 增量 schema 脚本。"""
+    """向指定 MySQL 数据库执行当前完整初始化 schema 脚本。"""
     settings = get_settings()
     connection = pymysql.connect(
         host=settings.mysql_host,
@@ -101,12 +99,7 @@ def execute_schema_sql(database_name: str) -> None:
     )
     try:
         all_statements: list[str] = []
-        for schema_path in (
-            SCHEMA_SQL_PATH,
-            HOMEWORK_SCHEMA_SQL_PATH,
-            # QUESTION_BASIS_SCHEMA_SQL_PATH 不在此加载：基础 28 表 SQL 已包含 question_basis_json 列
-            ORCHESTRATION_SCHEMA_SQL_PATH,
-        ):
+        for schema_path in (SCHEMA_SQL_PATH,):
             raw_script = schema_path.read_text(encoding="utf-8")
             filtered_lines: list[str] = []
             skip_database_block = False
@@ -188,6 +181,7 @@ def seeded_session_factory(mysql_session_factory):
         for table_name in [
             "audit_log",
             "generation_trace",
+            "lesson_plan_generation_item",
             "task_step_record",
             "task_record",
             "coverage_report",
