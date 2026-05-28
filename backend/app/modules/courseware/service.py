@@ -6,10 +6,12 @@
 
 import hashlib
 import json
+import time
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.logging import get_logger
 from app.core.constants import (
     COURSEWARE_EXPORT_BIZ_TYPE,
     COURSEWARE_GENERATE_TASK_TYPE,
@@ -36,6 +38,7 @@ from app.modules.task_center.progress import assign_monotonic_progress
 from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.schemas import TaskListItemResponse
 from app.modules.task_center.service import TaskCenterService
+from app.shared.document.naming import build_pptx_filename, strip_lesson_prefix
 from app.shared.llm import ChatMessage, OpenAICompatibleLlmService
 from app.shared.ppt import RaccoonPptJobState, RaccoonPptService
 from app.shared.queue import dispatch_task
@@ -50,6 +53,14 @@ RACCOON_ROLE = "教师"
 RACCOON_SCENE = "培训教学"
 RACCOON_AUDIENCE = "学生"
 COURSEWARE_KNOWLEDGE_POINT_LIMIT = 30
+RACCOON_PROMPT_MAX_CHARS = 2000
+RACCOON_PROMPT_BULLET_PREVIEW = 3
+RACCOON_PROMPT_BULLET_PREVIEW_MAX_CHARS = 40
+RACCOON_PROMPT_EXAMPLE_MAX_ITEMS = 5
+RACCOON_PROMPT_EXAMPLE_STEM_MAX_CHARS = 120
+RACCOON_PROMPT_SUMMARY_MAX_CHARS = 400
+
+logger = get_logger(__name__)
 
 
 class CoursewareService:
@@ -235,11 +246,12 @@ class CoursewareService:
             courseware_result.lesson_plan_id,
         )
         prompt = self.build_raccoon_prompt(context, deck)
-        state = self.ppt_service.create_job_and_short_poll(
+        state = self._create_raccoon_job_with_diagnostics(
             prompt=prompt,
-            role=RACCOON_ROLE,
-            scene=RACCOON_SCENE,
-            audience=RACCOON_AUDIENCE,
+            lesson_plan_id=courseware_result.lesson_plan_id,
+            generation_batch_id=courseware_result.generation_batch_id,
+            slide_count=len(deck.slides),
+            stage="regenerate",
         )
         structure["raccoon_prompt_text"] = prompt
         structure["pptx_stale"] = False
@@ -276,14 +288,15 @@ class CoursewareService:
     ) -> tuple[CoursewareResult, RaccoonPptJobState]:
         """基于已生成的结构化课件创建 Raccoon PPT 课件任务。"""
         prompt = self.build_raccoon_prompt(context, deck)
-        state = self.ppt_service.create_job_and_short_poll(
-            prompt=prompt,
-            role=RACCOON_ROLE,
-            scene=RACCOON_SCENE,
-            audience=RACCOON_AUDIENCE,
-        )
         generation_batch = context["generation_batch"]
         lesson_plan = context["lesson_plan"]
+        state = self._create_raccoon_job_with_diagnostics(
+            prompt=prompt,
+            lesson_plan_id=lesson_plan.id,
+            generation_batch_id=generation_batch.id,
+            slide_count=len(deck.slides),
+            stage="create",
+        )
         courseware_result = self.repository.create_courseware_result(
             CoursewareResult(
                 generation_batch_id=generation_batch.id,
@@ -300,6 +313,60 @@ class CoursewareService:
         )
         self.apply_remote_state(courseware_result, state)
         return courseware_result, state
+
+    def _create_raccoon_job_with_diagnostics(
+        self,
+        *,
+        prompt: str,
+        lesson_plan_id: int,
+        generation_batch_id: int,
+        slide_count: int,
+        stage: str,
+    ) -> RaccoonPptJobState:
+        """调用 Raccoon 创建任务的统一入口，附加 prompt 字符数、耗时与异常类型日志。"""
+        logger.info(
+            "raccoon prompt prepared",
+            stage=stage,
+            lesson_plan_id=lesson_plan_id,
+            generation_batch_id=generation_batch_id,
+            slide_count=slide_count,
+            prompt_chars=len(prompt),
+        )
+        started_at = time.monotonic()
+        try:
+            state = self.ppt_service.create_job_and_short_poll(
+                prompt=prompt,
+                role=RACCOON_ROLE,
+                scene=RACCOON_SCENE,
+                audience=RACCOON_AUDIENCE,
+            )
+        except AppException as exc:
+            elapsed_ms = int((time.monotonic() - started_at) * 1000)
+            logger.error(
+                "raccoon job creation failed",
+                stage=stage,
+                lesson_plan_id=lesson_plan_id,
+                generation_batch_id=generation_batch_id,
+                slide_count=slide_count,
+                prompt_chars=len(prompt),
+                elapsed_ms=elapsed_ms,
+                error_code=getattr(exc.code, "value", str(exc.code)),
+                error_message=str(exc),
+            )
+            raise
+        elapsed_ms = int((time.monotonic() - started_at) * 1000)
+        logger.info(
+            "raccoon job created",
+            stage=stage,
+            lesson_plan_id=lesson_plan_id,
+            generation_batch_id=generation_batch_id,
+            slide_count=slide_count,
+            prompt_chars=len(prompt),
+            elapsed_ms=elapsed_ms,
+            job_id=state.job_id,
+            raccoon_status=state.status,
+        )
+        return state
 
     def refresh_remote_state(self, courseware_result: CoursewareResult) -> RaccoonPptJobState:
         """短轮询并应用远程状态。"""
@@ -386,11 +453,13 @@ class CoursewareService:
             raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "生成批次不存在")
         pptx_content = self.ppt_service.download_pptx(state.download_url)
         file_hash = hashlib.sha256(pptx_content).hexdigest()
-        filename = f"courseware_{courseware_result.id}.pptx"
+        filename = self._build_courseware_filename(courseware_result)
+        # 文件名改用与教案一致的课题名，object_key 追加 result.id 段保证批次内不同课件不冲突
         object_key = self.storage_client.build_object_key(
             str(generation_batch.project_id),
             "courseware",
             str(generation_batch.id),
+            str(courseware_result.id),
             filename=filename,
         )
         try:
@@ -426,6 +495,21 @@ class CoursewareService:
             file_object.metadata_json = metadata_json
             self.repository.save(file_object)
         courseware_result.export_file_id = file_object.id
+
+    def _build_courseware_filename(self, courseware_result: CoursewareResult) -> str:
+        """构造课件 PPTX 文件名，与教案 DOCX 命名保持一致（课题名-第N讲-课件.pptx）。"""
+        lesson_plan = self.repository.get_lesson_plan(courseware_result.lesson_plan_id)
+        if lesson_plan is None:
+            return build_pptx_filename(f"courseware_{courseware_result.id}", fallback="课件")
+        session_segment = (
+            f"第{lesson_plan.class_session_no}讲" if lesson_plan.class_session_no is not None else None
+        )
+        return build_pptx_filename(
+            strip_lesson_prefix(lesson_plan.lesson_title),
+            session_segment,
+            "课件",
+            fallback="课件",
+        )
 
     def build_generation_context(self, generation_batch_id: int, lesson_plan_id: int) -> dict[str, Any]:
         """构造课件生成上下文。"""
@@ -587,25 +671,96 @@ class CoursewareService:
 
     @staticmethod
     def build_raccoon_prompt(context: dict[str, Any], deck: SlideDeckGenerationResult) -> str:
-        """基于已组织好的结构化课件构造 Raccoon 排版提示词。"""
+        """构造 Raccoon PPT 自然语言需求提示词，控制在 ≤2000 字以内。"""
         project = context["project"]
-        profile_version = context["profile_version"]
-        payload = {
-            "项目": {
-                "名称": project.name,
-                "学科": project.subject_code,
-                "年级": project.grade_code,
-                "适用对象": project.applicable_target,
-            },
-            "学情摘要": profile_version.summary_text,
-            "课件": deck.model_dump(mode="json"),
-        }
-        return (
-            "请严格按以下已排好的幻灯片结构逐页生成中文 PPTX 课件："
-            "不要改变页序与每页要点，保持 slides 数组的顺序与内容一一对应；"
-            "仅做版式美化与排版，不要新增或删减页面，不要输出解释文字，只生成课件。\n\n"
-            f"{json.dumps(payload, ensure_ascii=False)}"
-        )
+        generation_batch = context["generation_batch"]
+        lesson_plan = context["lesson_plan"]
+
+        # 基础信息段：标题、学科年级、适用对象、课时与页数
+        header_lines: list[str] = ["请生成一份中文课堂教学 PPT。", ""]
+        header_lines.append(f"主题：{deck.deck_title}")
+        subject_grade = " ".join(part for part in (project.subject_code, project.grade_code) if part)
+        if subject_grade:
+            header_lines.append(f"学科年级：{subject_grade}")
+        if project.applicable_target:
+            header_lines.append(f"适用对象：{project.applicable_target}")
+        if generation_batch.session_duration_minutes:
+            session_no = lesson_plan.class_session_no or 1
+            header_lines.append(
+                f"课时：第 {session_no} 课时，约 {generation_batch.session_duration_minutes} 分钟"
+            )
+        header_lines.append(f"页数：约 {len(deck.slides)} 页")
+        if lesson_plan.lesson_title and lesson_plan.lesson_title != deck.deck_title:
+            header_lines.append(f"教案标题：{lesson_plan.lesson_title}")
+
+        summary_text = (lesson_plan.summary_text or "").strip()
+        if summary_text:
+            if len(summary_text) > RACCOON_PROMPT_SUMMARY_MAX_CHARS:
+                summary_text = summary_text[: RACCOON_PROMPT_SUMMARY_MAX_CHARS].rstrip() + "…"
+            header_lines.append(f"教案摘要：{summary_text}")
+
+        # 页面结构段：按 slide_no/slide_type/title 列出，附少量要点预览
+        structure_lines: list[str] = ["", "页面结构建议："]
+        for slide in deck.slides:
+            bullets_preview = ""
+            if slide.bullet_points:
+                previews: list[str] = []
+                for bullet in slide.bullet_points[:RACCOON_PROMPT_BULLET_PREVIEW]:
+                    text = bullet.strip()
+                    if len(text) > RACCOON_PROMPT_BULLET_PREVIEW_MAX_CHARS:
+                        text = text[:RACCOON_PROMPT_BULLET_PREVIEW_MAX_CHARS].rstrip() + "…"
+                    previews.append(text)
+                if previews:
+                    bullets_preview = "（要点：" + "；".join(previews) + "）"
+            structure_lines.append(
+                f"{slide.slide_no}. [{slide.slide_type}] {slide.title}{bullets_preview}"
+            )
+
+        # 例题摘要段：仅取题干首行，限量 5 条，避免塞入完整解析与答案
+        example_slides = [
+            slide
+            for slide in deck.slides
+            if slide.example_block is not None and slide.example_block.stem_text
+        ]
+        example_lines: list[str] = []
+        if example_slides:
+            example_lines.append("")
+            example_lines.append("关键例题：")
+            for slide in example_slides[:RACCOON_PROMPT_EXAMPLE_MAX_ITEMS]:
+                stem_line = slide.example_block.stem_text.strip().splitlines()[0]
+                if len(stem_line) > RACCOON_PROMPT_EXAMPLE_STEM_MAX_CHARS:
+                    stem_line = stem_line[:RACCOON_PROMPT_EXAMPLE_STEM_MAX_CHARS].rstrip() + "…"
+                example_lines.append(f"- 第 {slide.slide_no} 页：{stem_line}")
+
+        footer_lines = [
+            "",
+            "请使用清晰、信息密度适合课堂展示的中文风格，"
+            "按以上顺序与页型生成 PPT，保留覆盖知识讲解、例题、互动、总结与课后作业的关键页型。",
+        ]
+
+        prompt = "\n".join(header_lines + structure_lines + example_lines + footer_lines)
+        # 自然语言摘要正常应远低于 2000 字；超长时按优先级裁剪例题→要点预览→教案摘要，仍超长则硬截断
+        if len(prompt) > RACCOON_PROMPT_MAX_CHARS:
+            original_len = len(prompt)
+            prompt = "\n".join(header_lines + structure_lines + footer_lines)
+            if len(prompt) > RACCOON_PROMPT_MAX_CHARS:
+                trimmed_structure = ["", "页面结构建议："]
+                for slide in deck.slides:
+                    trimmed_structure.append(
+                        f"{slide.slide_no}. [{slide.slide_type}] {slide.title}"
+                    )
+                prompt = "\n".join(header_lines + trimmed_structure + footer_lines)
+            if len(prompt) > RACCOON_PROMPT_MAX_CHARS:
+                prompt = prompt[: RACCOON_PROMPT_MAX_CHARS - 12].rstrip() + "\n（内容已截断）"
+            logger.info(
+                "raccoon prompt compressed",
+                lesson_plan_id=lesson_plan.id,
+                generation_batch_id=generation_batch.id,
+                original_chars=original_len,
+                final_chars=len(prompt),
+                slide_count=len(deck.slides),
+            )
+        return prompt
 
     @staticmethod
     def build_structure_json(

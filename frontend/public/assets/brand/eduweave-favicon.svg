@@ -1,0 +1,8 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="EduWeave">
+  <title>EduWeave</title>
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="#FFFFFF"/>
+  <rect x="4.5" y="4.5" width="55" height="55" rx="13.5" stroke="#E6E6E6"/>
+  <path d="M15 17H31M15 32H28M15 47H31M15 17V47" stroke="#111111" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M35 17L39 47L45 31L51 47L56 17" stroke="#19796D" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M15 54C25 57 34 51 44 54C49 55.5 53 55 57 53" stroke="#D5A44A" stroke-width="3" stroke-linecap="round"/>
+</svg>

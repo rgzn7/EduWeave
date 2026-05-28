@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-03
+@Date: 2026-05-28
 @Author: xisy
 @Discription: 测试环境公共夹具
 """
@@ -74,8 +74,6 @@ from app.shared.storage import ObsStorageClient
 
 TEST_PASSWORD = "Teacher@123"
 SCHEMA_SQL_PATH = Path(__file__).resolve().parents[2] / "sql" / "20260430_eduweave_mysql_28_tables.sql"
-HOMEWORK_SCHEMA_SQL_PATH = Path(__file__).resolve().parents[2] / "sql" / "20260525_eduweave_homework_tables.sql"
-ORCHESTRATION_SCHEMA_SQL_PATH = Path(__file__).resolve().parents[2] / "sql" / "20260526_phase2_orchestration.sql"
 
 
 def build_mysql_uri(database_name: str) -> str:
@@ -88,7 +86,7 @@ def build_mysql_uri(database_name: str) -> str:
 
 
 def execute_schema_sql(database_name: str) -> None:
-    """向指定 MySQL 数据库执行基础 28 张表 + homework 增量 schema 脚本。"""
+    """向指定 MySQL 数据库执行当前完整初始化 schema 脚本。"""
     settings = get_settings()
     connection = pymysql.connect(
         host=settings.mysql_host,
@@ -101,12 +99,7 @@ def execute_schema_sql(database_name: str) -> None:
     )
     try:
         all_statements: list[str] = []
-        for schema_path in (
-            SCHEMA_SQL_PATH,
-            HOMEWORK_SCHEMA_SQL_PATH,
-            # QUESTION_BASIS_SCHEMA_SQL_PATH 不在此加载：基础 28 表 SQL 已包含 question_basis_json 列
-            ORCHESTRATION_SCHEMA_SQL_PATH,
-        ):
+        for schema_path in (SCHEMA_SQL_PATH,):
             raw_script = schema_path.read_text(encoding="utf-8")
             filtered_lines: list[str] = []
             skip_database_block = False
@@ -188,6 +181,7 @@ def seeded_session_factory(mysql_session_factory):
         for table_name in [
             "audit_log",
             "generation_trace",
+            "lesson_plan_generation_item",
             "task_step_record",
             "task_record",
             "coverage_report",
@@ -211,6 +205,7 @@ def seeded_session_factory(mysql_session_factory):
             "parse_block",
             "parse_page",
             "parse_version",
+            "learner_profile_source",
             "learner_profile_record",
             "learner_profile_version",
             "learner_profile_file",
@@ -486,3 +481,59 @@ def mock_local_docx_parser(monkeypatch: pytest.MonkeyPatch):
         )
 
     monkeypatch.setattr(LocalDocxParseService, "parse_document", fake_parse_document)
+
+
+@pytest.fixture()
+def stub_class_profile_llm(monkeypatch: pytest.MonkeyPatch):
+    """桩替换班级学情聚合的 LLM 调用，返回固定合法的班级画像结果。
+
+    非 autouse：仅供学情相关测试显式请求，避免影响 curriculum 等自带 LLM mock 的用例。
+    """
+    from app.modules.learner_profile.aggregation import ClassProfileGenerationResult
+    from app.shared.llm import OpenAICompatibleLlmService
+
+    def fake_generate_structured_output(self, *, messages, response_model, **kwargs):  # noqa: ANN001
+        _ = (self, messages, kwargs)
+        if response_model is ClassProfileGenerationResult:
+            return ClassProfileGenerationResult(
+                class_summary="班级整体学情摘要：语数发展较均衡，计算能力需加强。",
+                grade_consistency="全部三年级",
+                region_consistency="全部上海",
+                warnings=[],
+                subject_overview=[
+                    {
+                        "subject_code": "chinese",
+                        "student_count": 1,
+                        "score_avg": 89.0,
+                        "score_min": 89.0,
+                        "score_max": 89.0,
+                        "high_count": 1,
+                        "mid_count": 0,
+                        "low_count": 0,
+                        "summary": "语文整体表现良好。",
+                    },
+                    {
+                        "subject_code": "math",
+                        "student_count": 1,
+                        "score_avg": 82.0,
+                        "score_min": 82.0,
+                        "score_max": 82.0,
+                        "high_count": 0,
+                        "mid_count": 1,
+                        "low_count": 0,
+                        "summary": "数学计算能力待提升。",
+                    },
+                ],
+                common_strengths=["阅读理解较强"],
+                common_weaknesses=["计算能力待提升"],
+                common_habits=["作业完成及时"],
+                common_behaviors=["性格开朗"],
+                tiered_groups=[
+                    {"tier": "mid", "student_keys": [], "teaching_suggestions": ["夯实计算基础，加强乘法口诀训练。"]}
+                ],
+                teaching_recommendations=["按高/中/低分层设计练习，关注计算薄弱学生。"],
+            )
+        raise AssertionError(f"未预期的 response_model: {response_model}")
+
+    monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", fake_generate_structured_output)
+    return None

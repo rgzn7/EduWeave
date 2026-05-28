@@ -1,44 +1,54 @@
-import { ArrowLeft, BookOpen, History, LogOut, Menu, PenLine } from "lucide-react";
+import { ArrowLeft, History, LogOut, Menu, PenLine } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, Link, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
+import { getResourcePackageTitle } from "../lib/resourceTitle";
 import { useAuthStore } from "../stores/auth";
 import { cn } from "../utils";
+import { BrandWordmark } from "./BrandWordmark";
 
 const sceneLabels: Record<string, string> = {
   homework: "课后作业",
   final_exam: "期末综合测",
 };
 
-function stripExtension(value?: string | null) {
-  return String(value ?? "")
-    .replace(/\.[^.]+$/u, "")
-    .trim();
+function normalizePathname(pathname: string) {
+  return pathname.replace(/\/+$/u, "") || "/";
 }
 
 export function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
   const clearSession = useAuthStore((state) => state.clearSession);
-  const isMenuPage = location.pathname === "/" || location.pathname === "/history";
+  const locationState = location.state as { backTo?: unknown } | null;
+  const normalizedPathname = normalizePathname(location.pathname);
+  const isStartPage = normalizedPathname === "/";
+  const isHistoryPage = normalizedPathname === "/history";
+  const isMenuPage = isStartPage || isHistoryPage;
   const isProcessPage = /^\/projects\/[^/]+$/.test(location.pathname);
-  const resourceMatch = location.pathname.match(/^\/projects\/([^/]+)\/batches\/([^/]+)(?:\/(assessments|homework|coverage)\/([^/]+))?\/?$/);
-  const resourceProjectId = Number(resourceMatch?.[1] ?? 0);
-  const resourceBatchId = Number(resourceMatch?.[2] ?? 0);
-  const resourceKind = resourceMatch?.[3];
-  const resourceDetailId = Number(resourceMatch?.[4] ?? 0);
-  const hasContextHeader = isProcessPage || Boolean(resourceMatch);
+  const batchResourceMatch = location.pathname.match(/^\/projects\/([^/]+)\/batches\/([^/]+)(?:\/(assessments|homework|coverage|learner-profile)\/([^/]+))?\/?$/);
+  const standaloneLearnerProfileMatch = location.pathname.match(/^\/projects\/([^/]+)\/learner-profile\/([^/]+)\/?$/);
+  const resourceProjectId = Number(batchResourceMatch?.[1] ?? standaloneLearnerProfileMatch?.[1] ?? 0);
+  const resourceBatchId = Number(batchResourceMatch?.[2] ?? 0);
+  const resourceKind = batchResourceMatch?.[3] ?? (standaloneLearnerProfileMatch ? "learner-profile" : undefined);
+  const resourceDetailId = Number(batchResourceMatch?.[4] ?? standaloneLearnerProfileMatch?.[2] ?? 0);
+  const hasContextHeader = isProcessPage || Boolean(batchResourceMatch || standaloneLearnerProfileMatch);
   const useQuietHeader = isMenuPage;
 
   const resourceProjectQuery = useQuery({
     queryKey: ["project", resourceProjectId],
     queryFn: () => api.getProject(resourceProjectId),
-    enabled: Boolean(resourceMatch && !resourceKind && resourceProjectId > 0),
+    enabled: Boolean(batchResourceMatch && !resourceKind && resourceProjectId > 0),
   });
   const resourceBatchQuery = useQuery({
     queryKey: ["generation-batch", resourceBatchId],
     queryFn: () => api.getGenerationBatch(resourceBatchId),
-    enabled: Boolean(resourceMatch && !resourceKind && resourceBatchId > 0),
+    enabled: Boolean(batchResourceMatch && !resourceKind && resourceBatchId > 0),
+  });
+  const resourceCurriculumQuery = useQuery({
+    queryKey: ["curriculum-plan", resourceBatchQuery.data?.curriculum_plan_id, "header"],
+    queryFn: () => api.getCurriculumPlan(resourceBatchQuery.data!.curriculum_plan_id!),
+    enabled: Boolean(batchResourceMatch && !resourceKind && resourceBatchQuery.data?.curriculum_plan_id),
   });
   const paperHeaderQuery = useQuery({
     queryKey: ["paper-result", resourceDetailId],
@@ -55,29 +65,34 @@ export function AppShell() {
     ? "生成过程"
     : resourceKind === "coverage"
       ? "覆盖报告"
+      : resourceKind === "learner-profile"
+        ? "学情画像"
       : resourceKind === "homework"
         ? homeworkHeaderQuery.data?.title ?? "课后作业"
       : resourceKind === "assessments"
         ? sceneLabels[String(paperHeaderQuery.data?.scene_type ?? "")] ?? "查看题目"
-        : resourceMatch
-          ? stripExtension(resourceProjectQuery.data?.name) || stripExtension(resourceBatchQuery.data?.batch_name) || "备课资源"
+        : batchResourceMatch
+          ? getResourcePackageTitle({
+              planTitle: resourceCurriculumQuery.data?.plan_title,
+              batchName: resourceBatchQuery.data?.batch_name,
+              projectName: resourceProjectQuery.data?.name,
+            })
           : "";
-  const resourceBackTo = resourceKind ? `/projects/${resourceProjectId}/batches/${resourceBatchId}` : "/history";
+  const stateBackTo = typeof locationState?.backTo === "string" && locationState.backTo.startsWith("/") ? locationState.backTo : null;
+  const resourceBackTo = stateBackTo ?? (resourceKind ? (resourceBatchId > 0 ? `/projects/${resourceProjectId}/batches/${resourceBatchId}` : `/projects/${resourceProjectId}`) : "/history");
 
   return (
     <div className="min-h-screen bg-paper text-ink">
       <aside className="fixed inset-y-0 left-0 hidden w-64 flex-col border-r border-line bg-[#f2f2f2] lg:flex">
         <div className="flex h-16 items-center gap-3 px-5">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-ink text-white">
-            <BookOpen size={19} />
-          </div>
-          <div className="text-sm font-semibold">EduWeave</div>
+          <BrandWordmark className="text-[36px]" />
         </div>
         <nav className="space-y-1 px-3 py-4">
           <Link
+            aria-current={isStartPage ? "page" : undefined}
             className={cn(
               "flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold text-ink/58 transition hover:bg-white hover:text-ink",
-              location.pathname === "/" && !location.hash && "bg-white text-ink shadow-panel",
+              isStartPage && "bg-white text-ink shadow-panel",
             )}
             to="/"
           >
@@ -85,9 +100,10 @@ export function AppShell() {
             开始备课
           </Link>
           <Link
+            aria-current={isHistoryPage ? "page" : undefined}
             className={cn(
               "flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold text-ink/58 transition hover:bg-white hover:text-ink",
-              location.pathname === "/history" && "bg-white text-ink shadow-panel",
+              isHistoryPage && "bg-white text-ink shadow-panel",
             )}
             to="/history"
           >
@@ -148,7 +164,7 @@ export function AppShell() {
                 <Menu size={18} />
               </button>
               <div className="lg:hidden">
-                <div className="text-sm font-semibold">EduWeave</div>
+                <BrandWordmark className="text-[24px]" />
               </div>
             </div>
           )}

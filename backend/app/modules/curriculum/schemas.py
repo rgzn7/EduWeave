@@ -54,12 +54,20 @@ class CurriculumLessonSessionDraft(BaseSchema):
     knowledge_point_refs: list[int] = Field(default_factory=list, description="关联知识点主键列表")
 
 
+class CurriculumCourseOverview(BaseSchema):
+    """LLM 课程大纲课程概览。"""
+
+    audience: str = Field(description="课程对象描述", min_length=1, max_length=255)
+    objective: str = Field(description="课程目标描述", min_length=1, max_length=255)
+    duration: str = Field(description="课时总安排描述", min_length=1, max_length=255)
+
+
 class CurriculumGenerationResult(BaseSchema):
     """LLM 课程大纲生成结果。"""
 
     plan_title: str = Field(description="课程大纲标题", min_length=1, max_length=255)
     summary_text: str | None = Field(default=None, description="课程大纲摘要")
-    course_overview: dict[str, Any] = Field(default_factory=dict, description="课程概览")
+    course_overview: CurriculumCourseOverview = Field(description="课程概览")
     stage_goals: list[str] = Field(default_factory=list, description="阶段目标")
     lesson_sessions: list[CurriculumLessonSessionDraft] = Field(description="课次安排", min_length=1)
     key_points: list[str] = Field(default_factory=list, description="课程重点")
@@ -73,4 +81,12 @@ class CurriculumGenerationResult(BaseSchema):
         session_nos = [session.session_no for session in self.lesson_sessions]
         if len(set(session_nos)) != len(session_nos):
             raise ValueError("课次序号不能重复")
+        session_ref_ids = {
+            point_id
+            for session in self.lesson_sessions
+            for point_id in session.knowledge_point_refs
+        }
+        coverage_ids = set(self.coverage_knowledge_points)
+        if coverage_ids != session_ref_ids:
+            raise ValueError("coverage_knowledge_points 必须等于所有课次知识点引用并集")
         return self

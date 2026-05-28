@@ -1,0 +1,6 @@
+<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Model Gateway">
+  <rect x="2" y="2" width="36" height="36" rx="10" fill="#F8FAFC"/>
+  <path d="M20 7L31 13.3V26.7L20 33L9 26.7V13.3L20 7Z" fill="#FFFFFF" stroke="#253746" stroke-width="2"/>
+  <path d="M20 20L31 13.5M20 20L9 13.5M20 20V33" stroke="#253746" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M14.2 10.4L25.8 17.2" stroke="#0B7A6E" stroke-width="2" stroke-linecap="round"/>
+</svg>

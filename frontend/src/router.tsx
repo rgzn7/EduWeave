@@ -4,6 +4,7 @@ import { AssessmentDetailPage } from "./pages/AssessmentDetailPage";
 import { BatchDetailPage } from "./pages/BatchDetailPage";
 import { CoverageReportPage } from "./pages/CoverageReportPage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { LearnerProfileReportPage } from "./pages/LearnerProfileReportPage";
 import { LoginPage } from "./pages/LoginPage";
 import { ProjectWorkspacePage } from "./pages/ProjectWorkspacePage";
 import { TaskDetailPage } from "./pages/TaskDetailPage";
@@ -49,6 +50,14 @@ export const router = createBrowserRouter([
       {
         path: "projects/:projectId/batches/:batchId/homework/:homeworkResultId",
         element: <AssessmentDetailPage />,
+      },
+      {
+        path: "projects/:projectId/batches/:batchId/learner-profile/:profileVersionId",
+        element: <LearnerProfileReportPage />,
+      },
+      {
+        path: "projects/:projectId/learner-profile/:profileVersionId",
+        element: <LearnerProfileReportPage />,
       },
       {
         path: "projects/:projectId/batches/:batchId/coverage/:coverageReportId",

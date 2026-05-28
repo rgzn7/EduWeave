@@ -77,11 +77,16 @@ export type TextbookVersion = {
   project_id: number;
   version_no: number;
   textbook_name: string;
+  publisher?: string | null;
   subject_code: string;
   grade_code: string;
+  volume_code?: string | null;
+  edition_label?: string | null;
+  isbn?: string | null;
   page_count?: number | null;
   parse_status: string;
   version_status: string;
+  remark?: string | null;
   is_current: boolean;
   source_file?: JsonRecord;
   created_at: string;
@@ -100,6 +105,38 @@ export type LearnerProfileFile = {
   updated_at: string;
 };
 
+export type LearnerProfileSubjectOverview = {
+  subject_code: string;
+  student_count: number;
+  score_avg: number;
+  score_min: number;
+  score_max: number;
+  high_count: number;
+  mid_count: number;
+  low_count: number;
+  summary: string;
+};
+
+export type LearnerProfileTieredGroup = {
+  tier: "high" | "mid" | "low" | string;
+  student_keys: string[];
+  teaching_suggestions: string[];
+};
+
+export type LearnerClassProfile = {
+  class_summary: string;
+  grade_consistency?: string | null;
+  region_consistency?: string | null;
+  warnings?: string[];
+  subject_overview?: LearnerProfileSubjectOverview[];
+  common_strengths?: string[];
+  common_weaknesses?: string[];
+  common_habits?: string[];
+  common_behaviors?: string[];
+  tiered_groups?: LearnerProfileTieredGroup[];
+  teaching_recommendations?: string[];
+};
+
 export type LearnerProfileVersion = {
   id: number;
   project_id: number;
@@ -113,6 +150,7 @@ export type LearnerProfileVersion = {
   review_status: string;
   version_status: string;
   summary_text?: string | null;
+  class_profile?: LearnerClassProfile | null;
   raw_result_json?: JsonRecord | null;
   source_snapshot_json?: JsonRecord | null;
   created_by?: number | null;
@@ -284,6 +322,26 @@ export type KnowledgePoint = {
   updated_at: string;
 };
 
+export type KnowledgeEvidence = {
+  id: number;
+  knowledge_point_id: number;
+  semantic_chunk_id?: number | null;
+  parse_version_id: number;
+  parse_page_id?: number | null;
+  parse_block_id?: number | null;
+  source_file_id?: number | null;
+  evidence_type: string;
+  page_no?: number | null;
+  excerpt_text?: string | null;
+  bbox_json?: JsonRecord | null;
+  score_value?: number | null;
+  created_at: string;
+};
+
+export type KnowledgePointDetail = KnowledgePoint & {
+  evidences: KnowledgeEvidence[];
+};
+
 export type GenerationBatch = {
   id: number;
   project_id: number;
@@ -310,14 +368,49 @@ export type GenerationBatch = {
   updated_at: string;
 };
 
-export type GenerationProcessStatus = "pending" | "running" | "succeeded" | "failed" | "waiting";
+export type GenerationRunStatus = "pending" | "running" | "waiting_user_confirm" | "succeeded" | "failed" | "cancelled";
+
+export type GenerationRunCreatePayload = {
+  course_count: number;
+  session_duration_minutes: number;
+  chapter_range_json?: JsonRecord | null;
+  auto_confirm_parse?: boolean;
+};
+
+export type GenerationRun = {
+  id: number;
+  project_id: number;
+  run_status: GenerationRunStatus;
+  course_count: number;
+  session_duration_minutes: number;
+  chapter_range_json?: JsonRecord | null;
+  auto_confirm_parse: boolean;
+  parse_version_id?: number | null;
+  knowledge_version_id?: number | null;
+  generation_batch_id?: number | null;
+  blocked_reason?: string | null;
+  last_error_code?: string | null;
+  last_error_message?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type GenerationProcessStatus = "pending" | "running" | "succeeded" | "failed";
+export type GenerationProcessStatusDetail = "waiting_dispatch" | "waiting_user_confirm" | "retrying" | "blocked";
+export type GenerationProcessStepStatusDetail = "retrying" | "waiting_dispatch";
 
 export type GenerationProcessStep = {
   code: string;
   display_name: string;
   description: string;
   status: GenerationProcessStatus;
+  status_detail?: GenerationProcessStepStatusDetail | null;
   progress_percent: number;
+  current_stage?: string | null;
+  progress_detail?: JsonRecord | null;
+  result_detail?: JsonRecord | null;
   summary?: string | null;
   started_at?: string | null;
   finished_at?: string | null;
@@ -327,7 +420,10 @@ export type GenerationProcessStep = {
 export type GenerationProcess = {
   project_id: number;
   batch_id?: number | null;
+  generation_run_id?: number | null;
   status: GenerationProcessStatus;
+  status_detail?: GenerationProcessStatusDetail | null;
+  blocked_reason?: string | null;
   current_step_code?: string | null;
   steps: GenerationProcessStep[];
 };

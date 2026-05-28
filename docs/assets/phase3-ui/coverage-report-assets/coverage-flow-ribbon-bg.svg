@@ -1,0 +1,71 @@
+<svg width="1480" height="320" viewBox="0 0 1480 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="panel" x1="0" y1="0" x2="1480" y2="320" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#101418"/>
+      <stop offset="0.5" stop-color="#090D10"/>
+      <stop offset="1" stop-color="#15181C"/>
+    </linearGradient>
+    <radialGradient id="panelGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(690 112) rotate(82) scale(330 980)">
+      <stop stop-color="#FFFFFF" stop-opacity="0.13"/>
+      <stop offset="0.48" stop-color="#8EA39E" stop-opacity="0.045"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="flowStroke" x1="0" y1="154" x2="1480" y2="154" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9EE4C2"/>
+      <stop offset="0.42" stop-color="#98E7C4"/>
+      <stop offset="0.62" stop-color="#F8BD4A"/>
+      <stop offset="0.76" stop-color="#FF7D4F"/>
+      <stop offset="1" stop-color="#FF5E48"/>
+    </linearGradient>
+    <linearGradient id="flowDim" x1="0" y1="154" x2="1480" y2="154" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#CFFFE5" stop-opacity="0.18"/>
+      <stop offset="0.52" stop-color="#BFFFE0" stop-opacity="0.14"/>
+      <stop offset="0.7" stop-color="#FFC55A" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#FF5B45" stop-opacity="0.18"/>
+    </linearGradient>
+    <filter id="softGlow" x="-90" y="-120" width="1660" height="560" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="11" result="blur"/>
+      <feColorMatrix in="blur" type="matrix" values="1 0 0 0 0  0 1 0 0 0.1  0 0 1 0 0.03  0 0 0 0.75 0"/>
+      <feBlend in="SourceGraphic" mode="screen"/>
+    </filter>
+    <filter id="grain" x="0" y="0" width="1480" height="320" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="13" result="noise"/>
+      <feColorMatrix in="noise" type="saturate" values="0"/>
+      <feComponentTransfer>
+        <feFuncA type="table" tableValues="0 0.06"/>
+      </feComponentTransfer>
+    </filter>
+    <path id="flowPath" d="M -60 166 C 72 188 176 121 310 149 C 438 176 514 108 646 134 C 758 156 792 210 904 174 C 1002 142 1082 208 1176 184 C 1285 156 1348 220 1544 170"/>
+  </defs>
+
+  <rect x="1" y="1" width="1478" height="318" rx="22" fill="url(#panel)"/>
+  <rect x="1" y="1" width="1478" height="318" rx="22" fill="url(#panelGlow)"/>
+  <rect x="1" y="1" width="1478" height="318" rx="22" filter="url(#grain)" opacity="0.55"/>
+
+  <g opacity="0.34">
+    <path d="M 0 53 C 214 34 346 58 492 39 C 606 23 748 40 872 25 C 1054 3 1252 31 1480 18" stroke="#FFFFFF" stroke-opacity="0.06"/>
+    <path d="M 0 283 C 178 260 336 292 520 270 C 760 242 924 292 1130 264 C 1260 247 1370 270 1480 250" stroke="#FFFFFF" stroke-opacity="0.045"/>
+  </g>
+
+  <g filter="url(#softGlow)">
+    <use href="#flowPath" stroke="url(#flowDim)" stroke-width="76" stroke-linecap="round"/>
+    <use href="#flowPath" stroke="url(#flowDim)" stroke-width="54" stroke-linecap="round" opacity="0.55"/>
+  </g>
+
+  <g stroke="url(#flowStroke)" stroke-linecap="round">
+    <path d="M -60 128 C 74 150 176 86 310 111 C 438 135 514 70 646 94 C 762 116 792 170 904 136 C 1002 106 1082 170 1176 146 C 1284 119 1348 182 1544 134" stroke-width="1.25" opacity="0.48"/>
+    <path d="M -60 135 C 74 156 176 94 310 119 C 438 143 514 78 646 102 C 762 124 792 178 904 144 C 1002 114 1082 178 1176 154 C 1284 127 1348 190 1544 142" stroke-width="1.4" opacity="0.56"/>
+    <path d="M -60 142 C 74 163 176 102 310 127 C 438 151 514 86 646 110 C 762 132 792 186 904 152 C 1002 122 1082 186 1176 162 C 1284 135 1348 198 1544 150" stroke-width="1.6" opacity="0.66"/>
+    <path d="M -60 149 C 74 170 176 110 310 135 C 438 159 514 94 646 118 C 762 140 792 194 904 160 C 1002 130 1082 194 1176 170 C 1284 143 1348 206 1544 158" stroke-width="1.8" opacity="0.78"/>
+    <path d="M -60 156 C 74 177 176 118 310 143 C 438 167 514 102 646 126 C 762 148 792 202 904 168 C 1002 138 1082 202 1176 178 C 1284 151 1348 214 1544 166" stroke-width="2" opacity="0.95"/>
+    <path d="M -60 163 C 74 184 176 126 310 151 C 438 175 514 110 646 134 C 762 156 792 210 904 176 C 1002 146 1082 210 1176 186 C 1284 159 1348 222 1544 174" stroke-width="1.8" opacity="0.82"/>
+    <path d="M -60 170 C 74 191 176 134 310 159 C 438 183 514 118 646 142 C 762 164 792 218 904 184 C 1002 154 1082 218 1176 194 C 1284 167 1348 230 1544 182" stroke-width="1.6" opacity="0.7"/>
+    <path d="M -60 177 C 74 198 176 142 310 167 C 438 191 514 126 646 150 C 762 172 792 226 904 192 C 1002 162 1082 226 1176 202 C 1284 175 1348 238 1544 190" stroke-width="1.4" opacity="0.58"/>
+    <path d="M -60 184 C 74 205 176 150 310 175 C 438 199 514 134 646 158 C 762 180 792 234 904 200 C 1002 170 1082 234 1176 210 C 1284 183 1348 246 1544 198" stroke-width="1.2" opacity="0.46"/>
+  </g>
+
+  <g opacity="0.44" stroke="#FFFFFF" stroke-opacity="0.08">
+    <use href="#flowPath" stroke-width="1"/>
+  </g>
+  <rect x="1" y="1" width="1478" height="318" rx="22" stroke="#FFFFFF" stroke-opacity="0.1"/>
+</svg>

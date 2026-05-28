@@ -9,7 +9,7 @@ import { isTaskActiveStatus } from "../../hooks/useTaskPolling";
 import { api } from "../../lib/api";
 import type { CoursewareResult, GenerationBatch, LessonPlan, Task } from "../../types";
 import { cn, formatDate, getErrorMessage } from "../../utils";
-import { asRecord } from "./helpers";
+import { asRecord, formatLessonTitle } from "./helpers";
 import { KeyValueGrid, LoadingBlock, SectionBlock, StatCard, TaskSummaryCard } from "./shared";
 
 function getTextField(record: Record<string, unknown> | null, key: string) {
@@ -33,7 +33,11 @@ function getLessonLabel(lesson?: LessonPlan) {
   if (!lesson) {
     return "请选择教案";
   }
-  return `第 ${lesson.class_session_no ?? "-"} 课 / ${lesson.lesson_title}`;
+  return `第 ${lesson.class_session_no ?? "-"} 课 / ${formatLessonTitle(lesson.lesson_title)}`;
+}
+
+function isFailedStatus(status?: string | null) {
+  return ["failed", "failure", "error"].includes(String(status ?? "").toLowerCase());
 }
 
 function CoursewareDetail({ result, lesson }: { result?: CoursewareResult; lesson?: LessonPlan }) {
@@ -52,7 +56,7 @@ function CoursewareDetail({ result, lesson }: { result?: CoursewareResult; lesso
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="label">课件 #{result.id}</div>
-            <h2 className="mt-1 break-words text-xl font-bold text-ink">{lesson?.lesson_title ?? `教案 #${result.lesson_plan_id}`}</h2>
+            <h2 className="mt-1 break-words text-xl font-bold text-ink">{lesson ? formatLessonTitle(lesson.lesson_title) : `教案 #${result.lesson_plan_id}`}</h2>
             <p className="mt-2 text-sm text-ink/55">
               教案 #{result.lesson_plan_id} / {formatDate(result.updated_at)}
             </p>
@@ -138,6 +142,7 @@ export function CoursewareTab({
   const queryClient = useQueryClient();
   const [replyText, setReplyText] = useState("");
   const selectedLessonResult = selectedLessonId ? results.find((item) => item.lesson_plan_id === selectedLessonId) : undefined;
+  const selectedLessonResultFailed = isFailedStatus(selectedLessonResult?.result_status);
   const activeTask = isTaskActiveStatus(task?.task_status);
   const preview = getPreview(result);
 
@@ -155,6 +160,16 @@ export function CoursewareTab({
         throw new Error("缺少选中的教案");
       }
       return api.createCoursewareTask(selectedLesson.id);
+    },
+    onSuccess: invalidateCourseware,
+  });
+
+  const retryMutation = useMutation({
+    mutationFn: () => {
+      if (!selectedLessonResult) {
+        throw new Error("缺少需要重试的课件结果");
+      }
+      return api.regenerateCoursewareResult(selectedLessonResult.id);
     },
     onSuccess: invalidateCourseware,
   });
@@ -210,10 +225,12 @@ export function CoursewareTab({
         ? "当前教案尚未 ready"
         : activeTask
           ? "当前教案已有等待或运行中的课件任务"
-          : selectedLessonResult
+          : selectedLessonResult && !selectedLessonResultFailed
             ? "当前教案已存在课件结果"
-            : createMutation.isPending
-              ? "正在创建课件任务"
+            : createMutation.isPending || retryMutation.isPending
+              ? selectedLessonResultFailed
+                ? "正在重试课件任务"
+                : "正在创建课件任务"
               : null;
 
   const canRefresh = result?.result_status === "processing";
@@ -237,13 +254,19 @@ export function CoursewareTab({
               课件由当前选中的 ready 教案生成，生成结果会绑定到这个教案；PPTX 归档完成后才会开放下载。
             </p>
           </div>
-          <button className="btn btn-primary" disabled={Boolean(createDisabledReason)} onClick={() => createMutation.mutate()} type="button">
-            <Plus size={16} />
-            生成课件
+          <button
+            className="btn btn-primary"
+            disabled={Boolean(createDisabledReason)}
+            onClick={() => (selectedLessonResultFailed ? retryMutation.mutate() : createMutation.mutate())}
+            type="button"
+          >
+            {selectedLessonResultFailed ? <RefreshCw size={16} /> : <Plus size={16} />}
+            {selectedLessonResultFailed ? "重试课件" : "生成课件"}
           </button>
         </div>
         {createDisabledReason ? <div className="mt-3 text-xs font-semibold text-ink/45">{createDisabledReason}</div> : null}
         {createMutation.error ? <ErrorNotice title="课件任务创建失败" message={getErrorMessage(createMutation.error)} /> : null}
+        {retryMutation.error ? <ErrorNotice title="课件重试失败" message={getErrorMessage(retryMutation.error)} /> : null}
       </section>
 
       {listLoading ? <LoadingBlock description="正在读取当前批次下各教案绑定的课件结果。" text="加载课件结果" /> : null}
@@ -268,7 +291,7 @@ export function CoursewareTab({
                       type="button"
                     >
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-bold">{lesson.lesson_title}</div>
+                        <div className="truncate text-sm font-bold">{formatLessonTitle(lesson.lesson_title)}</div>
                         <div className="mt-1 text-xs text-ink/50">第 {lesson.class_session_no ?? "-"} 课</div>
                       </div>
                       {lessonResult ? <StatusBadge status={lessonResult.result_status} /> : <span className="text-xs font-semibold text-ink/35">未生成</span>}

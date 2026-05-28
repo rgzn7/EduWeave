@@ -93,8 +93,18 @@ class LearnerProfileParseResult:
     records: list[LearnerProfileRecordDraft]
 
 
-def parse_learner_profile_text(markdown_text: str, *, fallback_title: str, fallback_filename: str) -> LearnerProfileParseResult:
-    """按赛题样例规则抽取学情结构化结果。"""
+def parse_learner_profile_text(
+    markdown_text: str,
+    *,
+    fallback_title: str,
+    fallback_filename: str,
+    student_seq: int | None = None,
+) -> LearnerProfileParseResult:
+    """按赛题样例规则抽取单个学生学情结构化结果。
+
+    student_seq 为班级内学生序号；传入时会拼入 student_key 前缀，确保同名学生在同一
+    班级版本下不冲突唯一键 (profile_version_id, student_key, subject_code)。
+    """
     normalized_text = _normalize_markdown_text(markdown_text)
     sections = _split_sections(normalized_text)
     basic_info = _parse_basic_info(sections.get("基本信息", ""))
@@ -116,7 +126,7 @@ def parse_learner_profile_text(markdown_text: str, *, fallback_title: str, fallb
         summary_text = _build_subject_summary(subject_name, description_text, time_plan_text, score_map.get(subject_name))
         records.append(
             LearnerProfileRecordDraft(
-                student_key=_build_student_key(basic_info.get("姓名") or fallback_filename, subject_code),
+                student_key=_build_student_key(basic_info.get("姓名") or fallback_filename, subject_code, student_seq),
                 student_name=basic_info.get("姓名") or fallback_title,
                 is_anonymous=1 if "xx" in (basic_info.get("姓名") or "").lower() else 0,
                 region_name=basic_info.get("所属地区"),
@@ -328,9 +338,12 @@ def _split_sentences(text: str) -> list[str]:
     return [sentence.strip() for sentence in raw_sentences if sentence.strip()]
 
 
-def _build_student_key(student_name: str, subject_code: str) -> str:
+def _build_student_key(student_name: str, subject_code: str, student_seq: int | None = None) -> str:
     normalized_name = re.sub(r"\W+", "_", student_name, flags=re.UNICODE).strip("_")
-    return f"{normalized_name or 'student'}_{subject_code}"
+    base_key = f"{normalized_name or 'student'}_{subject_code}"
+    if student_seq is not None:
+        return f"s{student_seq}_{base_key}"
+    return base_key
 
 
 def _normalize_grade_code(grade_text: str | None) -> str | None:

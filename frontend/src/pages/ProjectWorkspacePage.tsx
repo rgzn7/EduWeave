@@ -21,16 +21,13 @@ import {
   Wand2,
   type LucideIcon,
 } from "lucide-react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { EmptyState } from "../components/EmptyState";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { isTaskActiveStatus } from "../hooks/useTaskPolling";
 import {
-  clearAutoCoreGenerationMarker,
   DEFAULT_COURSE_COUNT,
   DEFAULT_SESSION_DURATION_MINUTES,
-  readAutoCoreGenerationMarker,
-  type AutoCoreGenerationMarker,
 } from "../lib/autoCoreGeneration";
 import { api } from "../lib/api";
 import type {
@@ -44,9 +41,12 @@ import type {
   KnowledgeChapter,
   KnowledgePoint,
   KnowledgeVersion,
+  LearnerClassProfile,
   LearnerProfileFile,
+  LearnerProfileRecord,
+  LearnerProfileSubjectOverview,
+  LearnerProfileTieredGroup,
   LearnerProfileVersion,
-  LearnerProfileVersionDetail,
   PageResult,
   PaperResult,
   ParseEvidenceSummary,
@@ -61,7 +61,15 @@ const READY_STATUS = "ready";
 const SUCCESS_STATUS = "success";
 const CONFIRMED_STATUS = "confirmed";
 const PROCESS_STEP_COUNT = 5;
+const FAST_REFETCH_WINDOW_MS = 15_000;
 const FAILURE_STATUSES = new Set(["failed", "failure", "error", "cancelled"]);
+
+type ProjectWorkspaceLocationState = {
+  generationSettings?: {
+    courseCount?: number;
+    sessionDurationMinutes?: number;
+  };
+} | null;
 
 type ProcessState = "complete" | "current" | "waiting";
 
@@ -78,12 +86,14 @@ type ActionConfig = {
 
 type StepMaterialAction = {
   label: string;
-  fileName: string;
-  metaItems: string[];
-  openLabel: string;
+  href?: string;
+  state?: Record<string, unknown>;
+  fileName?: string;
+  metaItems?: string[];
+  openLabel?: string;
   opening?: boolean;
   disabled?: boolean;
-  onOpen: () => void;
+  onOpen?: () => void;
 };
 
 function latestById<T extends { id: number }>(items: T[] | undefined) {
@@ -105,6 +115,10 @@ function isTextbookParseTask(task: Task) {
 
 function isKnowledgeTask(task: Task) {
   return task.module_code === "knowledge" || task.task_type === "knowledge_extract";
+}
+
+function isLearnerProfileTask(task: Task) {
+  return task.module_code === "learner_profile" || task.task_type === "learner_profile_extract";
 }
 
 function numberValue(value: unknown) {
@@ -154,12 +168,20 @@ function preferredParseVersion(parseVersions: ParseVersion[], tasks: Task[]) {
   );
 }
 
-function isReadyProfileVersion(profileVersion?: LearnerProfileVersion | LearnerProfileVersionDetail) {
+function isReadyProfileVersion(profileVersion?: LearnerProfileVersion) {
   return profileVersion?.extract_status === SUCCESS_STATUS && isReadyVersion(profileVersion);
 }
 
 function isCompleteStatus(status?: string | null) {
   return ["success", "completed", "complete", "ready", "done"].includes(String(status ?? "").toLowerCase());
+}
+
+function isTaskSuccessStatus(status?: string | null) {
+  return isCompleteStatus(status);
+}
+
+function normalizeGenerationSetting(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : fallback;
 }
 
 function isFailureStatus(status?: string | null) {
@@ -242,22 +264,6 @@ function extractTagItems(value: unknown): string[] {
 
 function uniqueItems(items: string[], limit = 5) {
   return [...new Set(items.map((item) => item.trim()).filter(Boolean))].slice(0, limit);
-}
-
-function scoreLabel(score?: number | null) {
-  if (score === undefined || score === null) {
-    return "已完成分析";
-  }
-  if (score >= 85) {
-    return `基础扎实，约 ${score} 分`;
-  }
-  if (score >= 70) {
-    return `中等偏上，约 ${score} 分`;
-  }
-  if (score >= 60) {
-    return `基础待稳固，约 ${score} 分`;
-  }
-  return `需要重点帮扶，约 ${score} 分`;
 }
 
 function displayCount(value: number | null | undefined, fallback = "-") {
@@ -405,57 +411,6 @@ function ParseSummaryCard({
       {!summary ? (
         <SoftNotice>{isLoading ? "正在读取教材理解结果。" : "教材理解结果已完成，结构化证据正在同步。"}</SoftNotice>
       ) : null}
-    </div>
-  );
-}
-
-function LearnerSummaryCard({
-  detail,
-  fallback,
-  isLoading,
-}: {
-  detail?: LearnerProfileVersionDetail;
-  fallback?: LearnerProfileVersion;
-  isLoading: boolean;
-}) {
-  const records = detail?.records ?? [];
-  const targetRecord = records[0];
-  const weaknesses = uniqueItems(records.flatMap((record) => extractTagItems(record.weakness_tags_json)), 4);
-  const habits = uniqueItems(records.flatMap((record) => [...extractTagItems(record.habit_tags_json), ...extractTagItems(record.behavior_traits_json)]), 4);
-  const timePlans = uniqueItems(records.flatMap((record) => extractTagItems(record.time_plan_json)), 3);
-
-  if (!detail && fallback?.summary_text) {
-    return <SoftNotice>{fallback.summary_text}</SoftNotice>;
-  }
-
-  if (!detail) {
-    return <SoftNotice>{isLoading ? "正在读取学情分析结果。" : "学情分析已完成，摘要正在同步。"}</SoftNotice>;
-  }
-
-  return (
-    <div className="grid gap-3 md:grid-cols-2">
-      <div className="rounded-2xl border border-line bg-[#fbfbfb] p-4">
-        <div className="text-xs font-medium text-ink/42">学生基础</div>
-        <div className="mt-2 text-sm font-semibold text-ink">{scoreLabel(targetRecord?.score_value)}</div>
-      </div>
-      <div className="rounded-2xl border border-line bg-[#fbfbfb] p-4">
-        <div className="text-xs font-medium text-ink/42">薄弱点</div>
-        <div className="mt-2">
-          <ChipList items={weaknesses} emptyText="未识别到明确薄弱点" />
-        </div>
-      </div>
-      <div className="rounded-2xl border border-line bg-[#fbfbfb] p-4">
-        <div className="text-xs font-medium text-ink/42">学习习惯</div>
-        <div className="mt-2">
-          <ChipList items={habits} emptyText="暂无学习习惯摘要" />
-        </div>
-      </div>
-      <div className="rounded-2xl border border-line bg-[#fbfbfb] p-4">
-        <div className="text-xs font-medium text-ink/42">课时安排</div>
-        <div className="mt-2">
-          <ChipList items={timePlans} emptyText="暂无课时安排摘要" />
-        </div>
-      </div>
     </div>
   );
 }
@@ -621,13 +576,23 @@ function CurrentActionPanel({
 }
 
 const PHASE2_STEP_ORDER = [
-  "mineru_parse",
   "learner_profile",
+  "mineru_parse",
   "knowledge_structure",
   "curriculum_plan",
   "lesson_plan_generate",
   "coverage_check",
 ] as const;
+
+const phase2StepOrderIndex = new Map<string, number>(PHASE2_STEP_ORDER.map((code, index) => [code, index]));
+
+function orderPhase2Steps(steps: GenerationProcessStep[]) {
+  return [...steps].sort((left, right) => {
+    const leftIndex = phase2StepOrderIndex.get(left.code) ?? Number.MAX_SAFE_INTEGER;
+    const rightIndex = phase2StepOrderIndex.get(right.code) ?? Number.MAX_SAFE_INTEGER;
+    return leftIndex - rightIndex;
+  });
+}
 
 const PHASE2_STEP_UI: Record<
   string,
@@ -640,37 +605,37 @@ const PHASE2_STEP_UI: Record<
 > = {
   mineru_parse: {
     title: "教材内容解析",
-    toolName: "MinerU 教材解析工具",
+    toolName: "使用 MinerU 教材解析工具",
     description: "识别教材章节、页码、图表、题目和知识点。",
     icon: FileText,
   },
   learner_profile: {
     title: "学情信息分析",
-    toolName: "学情理解工具",
-    description: "分析学生基础、薄弱点、学习习惯和班级画像。",
+    toolName: "使用学情理解工具",
+    description: "分析学情信息和班级画像。",
     icon: BookOpen,
   },
   knowledge_structure: {
     title: "重组教学内容",
-    toolName: "知识点梳理工具",
+    toolName: "使用知识点梳理工具",
     description: "整理课程知识点、能力目标、重点难点和关联关系。",
     icon: ListChecks,
   },
   curriculum_plan: {
     title: "整套课程规划",
-    toolName: "课程规划工具",
+    toolName: "使用课程规划工具",
     description: "生成整套课程课次安排、教学目标和课时规划。",
     icon: Clock3,
   },
   lesson_plan_generate: {
-    title: "多课时教案生成",
-    toolName: "教案生成工具",
+    title: "整套教案生成",
+    toolName: "使用教案生成工具",
     description: "为每一课生成教学目标、重点难点、教学流程和课后安排。",
     icon: BookOpen,
   },
   coverage_check: {
     title: "校验知识覆盖",
-    toolName: "覆盖检查工具",
+    toolName: "使用覆盖检查工具",
     description: "检查课程、教案、题目和课件的知识点覆盖情况。",
     icon: Target,
   },
@@ -678,7 +643,7 @@ const PHASE2_STEP_UI: Record<
 
 const CORE_OUTPUTS = [
   { label: "课程总纲", stepCode: "curriculum_plan", icon: FileText },
-  { label: "多课时教案", stepCode: "lesson_plan_generate", icon: BookOpen },
+  { label: "整套教案", stepCode: "lesson_plan_generate", icon: BookOpen },
   { label: "覆盖报告", stepCode: "coverage_check", icon: Target },
 ] as const;
 
@@ -721,7 +686,7 @@ function clampProgress(value: number) {
 }
 
 function isGenerationActive(status?: GenerationProcessStatus) {
-  return status === "running" || status === "pending" || status === "waiting";
+  return status === "running" || status === "pending";
 }
 
 function timestampMs(value?: string | null) {
@@ -730,6 +695,15 @@ function timestampMs(value?: string | null) {
   }
   const time = new Date(value).getTime();
   return Number.isFinite(time) ? time : null;
+}
+
+function latestSucceededStepFinishedAt(process?: GenerationProcess) {
+  return Math.max(
+    0,
+    ...(process?.steps ?? [])
+      .filter((step) => step.status === "succeeded")
+      .map((step) => timestampMs(step.finished_at) ?? 0),
+  );
 }
 
 function formatDurationMs(durationMs: number) {
@@ -746,9 +720,16 @@ function formatDurationMs(durationMs: number) {
 function formatGenerationRuntime(process: GenerationProcess | undefined, currentTime: number, fallbackStartedAt?: string) {
   const fallbackStart = timestampMs(fallbackStartedAt);
   const isActive = isGenerationActive(process?.status);
+  const stepStartTimes = (process?.steps ?? [])
+    .map((step) => timestampMs(step.started_at))
+    .filter((value): value is number => value !== null);
+  const firstStepStart = stepStartTimes.length ? Math.min(...stepStartTimes) : null;
 
-  if (fallbackStart && isActive) {
-    return formatDurationMs(currentTime - fallbackStart);
+  if (isActive) {
+    const startedAt = firstStepStart ?? fallbackStart;
+    if (startedAt) {
+      return formatDurationMs(currentTime - startedAt);
+    }
   }
 
   const elapsedMs = (process?.steps ?? []).reduce((total, step) => {
@@ -770,19 +751,537 @@ function formatGenerationRuntime(process: GenerationProcess | undefined, current
   return fallbackStart ? formatDurationMs(currentTime - fallbackStart) : "--:--";
 }
 
-function extractNumberBefore(value: string | null | undefined, unit: string) {
-  if (!value) {
-    return null;
+const COUNT_FORMATTER = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 });
+const PERCENT_FORMATTER = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 });
+type LearnerProfileDisplayVersion = LearnerProfileVersion & { records?: LearnerProfileRecord[] };
+
+function metricNumber(detail: JsonRecord | null | undefined, key: string) {
+  const value = detail?.[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
   }
-  const match = value.match(new RegExp(`(\\d+)\\s*${unit}`));
-  return match?.[1] ?? null;
+  if (typeof value === "string" && value.trim()) {
+    const numericValue = Number(value);
+    return Number.isFinite(numericValue) ? numericValue : null;
+  }
+  return null;
+}
+
+function metricText(detail: JsonRecord | null | undefined, key: string) {
+  return stringValue(detail?.[key]);
+}
+
+function formatCount(value: number) {
+  return COUNT_FORMATTER.format(Math.round(value));
+}
+
+function formatPercent(value: number) {
+  return `${PERCENT_FORMATTER.format(value)}%`;
+}
+
+function learnerClassProfileFrom(version?: LearnerProfileDisplayVersion | null) {
+  if (version?.class_profile) {
+    return version.class_profile;
+  }
+  const rawResult = valueAsRecord(version?.raw_result_json);
+  const rawClassProfile = valueAsRecord(rawResult?.class_profile);
+  return rawClassProfile ? (rawClassProfile as unknown as LearnerClassProfile) : null;
+}
+
+function subjectOverviewsFrom(profile: LearnerClassProfile | null) {
+  return Array.isArray(profile?.subject_overview) ? profile.subject_overview : [];
+}
+
+function tieredGroupsFrom(profile: LearnerClassProfile | null) {
+  return Array.isArray(profile?.tiered_groups) ? profile.tiered_groups : [];
+}
+
+function formatScore(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "-";
+  }
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function formatSubjectLabel(subjectCode: string) {
+  return SUBJECT_LABELS[subjectCode] ?? subjectCode;
+}
+
+const SUBJECT_ORDER = ["chinese", "math", "english"];
+const TIER_LABELS: Record<string, string> = {
+  high: "高分层",
+  mid: "中分层",
+  low: "待提升层",
+};
+
+function profileRecordsFrom(version?: LearnerProfileDisplayVersion | null) {
+  return Array.isArray(version?.records) ? version.records : [];
+}
+
+function uniqueStudentKeys(records: LearnerProfileRecord[]) {
+  return uniqueItems(
+    records.map((record) => record.student_name || record.student_key).filter(Boolean),
+    200,
+  );
+}
+
+function learnerProfileStudentCount(version: LearnerProfileDisplayVersion | null | undefined, classProfile: LearnerClassProfile | null, records: LearnerProfileRecord[]) {
+  const rawResult = valueAsRecord(version?.raw_result_json);
+  const rawCount = metricNumber(rawResult, "student_count");
+  if (rawCount !== null) {
+    return rawCount;
+  }
+  const subjectCount = Math.max(0, ...subjectOverviewsFrom(classProfile).map((item) => item.student_count || 0));
+  if (subjectCount > 0) {
+    return subjectCount;
+  }
+  return uniqueStudentKeys(records).length || null;
+}
+
+function scorePercent(value: number | null | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, value));
+}
+
+function scoreFromRecord(record: LearnerProfileRecord) {
+  const value = record.score_value;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function tagsFromRecord(record: JsonRecord | null | undefined) {
+  return uniqueItems(extractTagItems(record), 8);
+}
+
+function normalizeTierStudentKey(key: string) {
+  return key.replace(/_(chinese|math|english|science|physics|chemistry|biology|history|geography|politics)$/i, "");
+}
+
+function tierStudentCount(group: LearnerProfileTieredGroup) {
+  return new Set((group.student_keys ?? []).map((key) => normalizeTierStudentKey(key))).size;
+}
+
+function overviewSubjectCount(items: LearnerProfileSubjectOverview[]) {
+  return new Set(items.map((item) => item.subject_code).filter(Boolean)).size;
+}
+
+function sortedSubjectOverviews(items: LearnerProfileSubjectOverview[]) {
+  return [...items].sort((a, b) => {
+    const orderA = SUBJECT_ORDER.indexOf(a.subject_code);
+    const orderB = SUBJECT_ORDER.indexOf(b.subject_code);
+    return (orderA === -1 ? 99 : orderA) - (orderB === -1 ? 99 : orderB);
+  });
+}
+
+function sortedProfileRecords(records: LearnerProfileRecord[]) {
+  return [...records].sort((a, b) => {
+    const orderA = SUBJECT_ORDER.indexOf(a.subject_code);
+    const orderB = SUBJECT_ORDER.indexOf(b.subject_code);
+    return (orderA === -1 ? 99 : orderA) - (orderB === -1 ? 99 : orderB) || a.sort_order - b.sort_order;
+  });
+}
+
+function LearnerReportShell({
+  children,
+  kicker,
+  summary,
+  title,
+}: {
+  children: ReactNode;
+  kicker: string;
+  summary?: string | null;
+  title: string;
+}) {
+  return (
+    <section className="rounded-xl border border-line bg-[#fafaf8] p-4 shadow-[0_18px_48px_rgba(17,17,17,0.045)] sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-line/70 pb-4">
+        <div>
+          <div className="text-xs font-semibold tracking-[0.12em] text-[#0f8f7a]">{kicker}</div>
+          <h3 className="mt-2 text-xl font-semibold text-ink">{title}</h3>
+          {summary ? <p className="mt-2 max-w-4xl text-sm leading-6 text-ink/58">{summary}</p> : null}
+        </div>
+      </div>
+      <div className="mt-5">{children}</div>
+    </section>
+  );
+}
+
+function ReportMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-[118px] rounded-lg border border-line/80 bg-white px-3 py-2">
+      <div className="text-xs text-ink/42">{label}</div>
+      <div className="mt-1 text-base font-semibold text-ink">{value}</div>
+    </div>
+  );
+}
+
+function ScoreRangeBar({ avg, max, min }: { avg?: number | null; max?: number | null; min?: number | null }) {
+  const minValue = scorePercent(min);
+  const maxValue = scorePercent(max);
+  const avgValue = scorePercent(avg);
+  const start = Math.min(minValue, maxValue);
+  const end = Math.max(minValue, maxValue);
+  return (
+    <div className="relative h-1.5 w-full rounded-full bg-[#e8ebe7]">
+      <span
+        className="absolute top-0 h-1.5 rounded-full bg-[#b7d8cb]"
+        style={{ left: `${start}%`, right: `${100 - end}%` }}
+      />
+      <span
+        className="absolute top-1/2 h-3 w-1 -translate-y-1/2 rounded-full bg-[#0f8f7a]"
+        style={{ left: `${avgValue}%` }}
+      />
+    </div>
+  );
+}
+
+function SectionHeading({ title, description }: { title: string; description?: string }) {
+  return (
+    <div className="mb-3 flex items-baseline justify-between gap-3">
+      <h4 className="text-sm font-semibold text-ink">{title}</h4>
+      {description ? <span className="text-xs text-ink/40">{description}</span> : null}
+    </div>
+  );
+}
+
+function ClassSubjectOverviewTable({ items }: { items: LearnerProfileSubjectOverview[] }) {
+  const visibleItems = sortedSubjectOverviews(items).slice(0, 5);
+  if (!visibleItems.length) {
+    return <p className="rounded-lg bg-white px-4 py-5 text-sm text-ink/45">班级基础数据暂未返回。</p>;
+  }
+  return (
+    <div className="overflow-hidden rounded-lg border border-line bg-white">
+      <div className="grid grid-cols-[0.8fr_0.9fr_0.9fr_1.1fr_1.4fr] gap-4 border-b border-line/80 bg-[#f7f8f6] px-4 py-2 text-xs font-medium text-ink/45">
+        <span>学科</span>
+        <span>覆盖学生</span>
+        <span>平均分</span>
+        <span>最高 / 最低</span>
+        <span>高 / 中 / 待提升</span>
+      </div>
+      {visibleItems.map((item) => (
+        <div className="grid grid-cols-[0.8fr_0.9fr_0.9fr_1.1fr_1.4fr] items-center gap-4 border-b border-line/70 px-4 py-3 last:border-b-0" key={item.subject_code}>
+          <div className="font-semibold text-ink">{formatSubjectLabel(item.subject_code)}</div>
+          <div className="text-sm text-ink/58">{formatCount(item.student_count)} 名</div>
+          <div>
+            <div className="text-lg font-semibold text-ink">{formatScore(item.score_avg)}</div>
+            <ScoreRangeBar avg={item.score_avg} max={item.score_max} min={item.score_min} />
+          </div>
+          <div className="text-sm text-ink/58">
+            <span className="font-medium text-ink">{formatScore(item.score_max)}</span>
+            <span className="mx-1 text-ink/28">/</span>
+            <span>{formatScore(item.score_min)}</span>
+          </div>
+          <div className="text-sm text-ink/58">
+            <span className="font-semibold text-[#0f8f7a]">{formatCount(item.high_count)}</span>
+            <span className="mx-1 text-ink/26">/</span>
+            <span>{formatCount(item.mid_count)}</span>
+            <span className="mx-1 text-ink/26">/</span>
+            <span className="text-[#a35b13]">{formatCount(item.low_count)}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function SimpleInsightList({ emptyText, items }: { emptyText: string; items: string[] }) {
+  const visibleItems = uniqueItems(items, 4);
+  if (!visibleItems.length) {
+    return <p className="text-sm leading-6 text-ink/45">{emptyText}</p>;
+  }
+  return (
+    <div className="space-y-2">
+      {visibleItems.map((item) => (
+        <div className="flex gap-2 text-sm leading-6 text-ink/68" key={item}>
+          <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[#0f8f7a]" />
+          <span>{item}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ClassFeaturePanel({ profile }: { profile: LearnerClassProfile }) {
+  const strengths = [...(profile.common_strengths ?? []), ...(profile.common_behaviors ?? [])];
+  return (
+    <div className="rounded-lg border border-line bg-white p-4">
+      <SectionHeading description="优势、薄弱点与习惯" title="共性特征" />
+      <div className="grid gap-4 md:grid-cols-3">
+        <div>
+          <div className="mb-2 text-xs font-semibold text-ink/42">共性优势</div>
+          <SimpleInsightList emptyText="暂未返回共性优势。" items={strengths} />
+        </div>
+        <div>
+          <div className="mb-2 text-xs font-semibold text-ink/42">主要薄弱点</div>
+          <SimpleInsightList emptyText="暂未发现明显薄弱点。" items={profile.common_weaknesses ?? []} />
+        </div>
+        <div>
+          <div className="mb-2 text-xs font-semibold text-ink/42">学习习惯</div>
+          <SimpleInsightList emptyText="学习习惯摘要暂未返回。" items={profile.common_habits ?? []} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ClassTeachingPanel({ groups, recommendations }: { groups: LearnerProfileTieredGroup[]; recommendations: string[] }) {
+  const sortedGroups = [...groups].sort((a, b) => {
+    const order = ["high", "mid", "low"];
+    return order.indexOf(a.tier) - order.indexOf(b.tier);
+  });
+  const fallbackItems = uniqueItems(recommendations, 3);
+  return (
+    <div className="rounded-lg border border-line bg-white p-4">
+      <SectionHeading description="按后端分层建议生成" title="教学建议" />
+      {sortedGroups.length ? (
+        <div className="space-y-2">
+          {sortedGroups.slice(0, 3).map((group) => (
+            <div className="grid gap-3 rounded-md bg-[#f7f8f6] px-3 py-3 md:grid-cols-[108px_88px_1fr]" key={group.tier}>
+              <div className="font-semibold text-ink">{TIER_LABELS[group.tier] ?? group.tier}</div>
+              <div className="text-sm text-ink/50">{formatCount(tierStudentCount(group))} 名</div>
+              <div className="text-sm leading-6 text-ink/64">{uniqueItems(group.teaching_suggestions ?? [], 1)[0] ?? "暂无建议。"}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <SimpleInsightList emptyText="教学建议暂未返回。" items={fallbackItems} />
+      )}
+    </div>
+  );
+}
+
+function ClassLearnerProfileView({
+  classProfile,
+  profileVersion,
+}: {
+  classProfile: LearnerClassProfile;
+  profileVersion?: LearnerProfileDisplayVersion | null;
+}) {
+  const subjectOverviews = subjectOverviewsFrom(classProfile);
+  const records = profileRecordsFrom(profileVersion);
+  const studentCount = learnerProfileStudentCount(profileVersion, classProfile, records);
+  const warningCount = classProfile.warnings?.length ?? 0;
+  return (
+    <LearnerReportShell
+      kicker="CLASS PROFILE"
+      summary={classProfile.class_summary || profileVersion?.summary_text}
+      title="班级学情画像"
+    >
+      <div className="mb-5 flex flex-wrap gap-2">
+        <ReportMetric label="学生规模" value={studentCount !== null ? `${formatCount(studentCount)} 名` : "-"} />
+        <ReportMetric label="覆盖学科" value={`${formatCount(overviewSubjectCount(subjectOverviews))} 个`} />
+        <ReportMetric label="数据提示" value={warningCount ? `${formatCount(warningCount)} 条` : "无异常"} />
+      </div>
+      <div className="space-y-4">
+        <div className="rounded-lg border border-line bg-white p-4">
+          <SectionHeading description="平均分、最高/最低与分层人数" title="班级基础" />
+          <ClassSubjectOverviewTable items={subjectOverviews} />
+        </div>
+        <div className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
+          <ClassFeaturePanel profile={classProfile} />
+          <ClassTeachingPanel groups={tieredGroupsFrom(classProfile)} recommendations={classProfile.teaching_recommendations ?? []} />
+        </div>
+      </div>
+    </LearnerReportShell>
+  );
+}
+
+function recordSummary(record: LearnerProfileRecord) {
+  return record.summary_text?.replace(/\s+/g, " ").trim() || "暂无简述。";
+}
+
+function StudentSubjectTable({ records }: { records: LearnerProfileRecord[] }) {
+  const visibleRecords = sortedProfileRecords(records).slice(0, 5);
+  if (!visibleRecords.length) {
+    return <p className="rounded-lg bg-white px-4 py-5 text-sm text-ink/45">学生画像记录加载中。</p>;
+  }
+  return (
+    <div className="overflow-hidden rounded-lg border border-line bg-white">
+      <div className="grid grid-cols-[0.7fr_0.8fr_1.2fr_1.2fr_1.7fr] gap-4 border-b border-line/80 bg-[#f7f8f6] px-4 py-2 text-xs font-medium text-ink/45">
+        <span>学科</span>
+        <span>分数</span>
+        <span>能力标签</span>
+        <span>薄弱点</span>
+        <span>简述</span>
+      </div>
+      {visibleRecords.map((record) => {
+        const score = scoreFromRecord(record);
+        return (
+          <div className="grid grid-cols-[0.7fr_0.8fr_1.2fr_1.2fr_1.7fr] items-center gap-4 border-b border-line/70 px-4 py-3 last:border-b-0" key={record.id}>
+            <div className="font-semibold text-ink">{formatSubjectLabel(record.subject_code)}</div>
+            <div>
+              <div className="text-lg font-semibold text-ink">{formatScore(score)}</div>
+              <div className="mt-1 h-1.5 rounded-full bg-[#e8ebe7]">
+                <span className="block h-1.5 rounded-full bg-[#0f8f7a]" style={{ width: `${scorePercent(score)}%` }} />
+              </div>
+            </div>
+            <div className="text-sm leading-6 text-ink/58">{uniqueItems(tagsFromRecord(record.ability_tags_json), 2).join("、") || "暂无"}</div>
+            <div className="text-sm leading-6 text-ink/58">{uniqueItems(tagsFromRecord(record.weakness_tags_json), 2).join("、") || "暂无"}</div>
+            <div className="line-clamp-2 text-sm leading-6 text-ink/58">{recordSummary(record)}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function StudentFeaturePanel({ records }: { records: LearnerProfileRecord[] }) {
+  const strengths = uniqueItems(
+    records.flatMap((record) => [...tagsFromRecord(record.advantage_tags_json), ...tagsFromRecord(record.ability_tags_json)]),
+    6,
+  );
+  const weaknesses = uniqueItems(records.flatMap((record) => tagsFromRecord(record.weakness_tags_json)), 6);
+  const habits = uniqueItems(
+    records.flatMap((record) => [...tagsFromRecord(record.habit_tags_json), ...tagsFromRecord(record.behavior_traits_json)]),
+    4,
+  );
+  return (
+    <div className="rounded-lg border border-line bg-white p-4">
+      <SectionHeading description="能力、薄弱点与习惯" title="学习特征" />
+      <div className="grid gap-4 md:grid-cols-3">
+        <div>
+          <div className="mb-2 text-xs font-semibold text-ink/42">优势能力</div>
+          <SimpleInsightList emptyText="暂未返回优势能力。" items={strengths} />
+        </div>
+        <div>
+          <div className="mb-2 text-xs font-semibold text-ink/42">薄弱点</div>
+          <SimpleInsightList emptyText="暂未返回薄弱点。" items={weaknesses} />
+        </div>
+        <div>
+          <div className="mb-2 text-xs font-semibold text-ink/42">学习习惯</div>
+          <SimpleInsightList emptyText="暂未返回学习习惯。" items={habits} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function timePlanRowsFrom(records: LearnerProfileRecord[]): Array<{ subject: string; text: string; meta?: string }> {
+  return records.flatMap((record) => {
+    const detail = valueAsRecord(record.time_plan_json);
+    const items = Array.isArray(detail?.items) ? detail.items : [];
+    return items.flatMap((item) => {
+      const itemRecord = valueAsRecord(item);
+      if (!itemRecord) {
+        const text = stringValue(item);
+        return text ? [{ subject: formatSubjectLabel(record.subject_code), text }] : [];
+      }
+      const subject = stringValue(itemRecord.subject_name) || formatSubjectLabel(record.subject_code);
+      const text = stringValue(itemRecord.raw_text) || stringValue(itemRecord.description) || stringValue(itemRecord.summary);
+      const lessonsPerWeek = metricNumber(itemRecord, "lessons_per_week");
+      const hoursPerSession = metricNumber(itemRecord, "class_hours_per_session");
+      const meta = [
+        lessonsPerWeek !== null ? `每周 ${formatCount(lessonsPerWeek)} 次` : "",
+        hoursPerSession !== null ? `每次 ${formatScore(hoursPerSession)} 课时` : "",
+      ].filter(Boolean).join(" · ");
+      return [{ subject, text: text || meta || "暂无安排摘要。", meta }];
+    });
+  });
+}
+
+function StudentPlanPanel({ records }: { records: LearnerProfileRecord[] }) {
+  const rows = timePlanRowsFrom(records).slice(0, 4);
+  return (
+    <div className="rounded-lg border border-line bg-white p-4">
+      <SectionHeading description="来自 time_plan_json" title="学习安排" />
+      {rows.length ? (
+        <div className="space-y-2">
+          {rows.map((row, index) => (
+            <div className="grid gap-2 rounded-md bg-[#f7f8f6] px-3 py-3 md:grid-cols-[84px_120px_1fr]" key={`${row.subject}-${index}`}>
+              <div className="font-semibold text-ink">{row.subject}</div>
+              <div className="text-sm text-ink/45">{row.meta || "安排建议"}</div>
+              <div className="text-sm leading-6 text-ink/64">{row.text}</div>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm leading-6 text-ink/45">学习安排暂未返回。</p>
+      )}
+    </div>
+  );
+}
+
+function StudentLearnerProfileView({ profileVersion }: { profileVersion?: LearnerProfileDisplayVersion | null }) {
+  const records = profileRecordsFrom(profileVersion);
+  const studentName = uniqueItems(records.map((record) => record.student_name || "").filter(Boolean), 1)[0] ?? "学生";
+  const scores = records.map(scoreFromRecord).filter((value): value is number => value !== null);
+  const highestScore = scores.length ? Math.max(...scores) : null;
+  const improvementTag = uniqueItems(records.flatMap((record) => tagsFromRecord(record.weakness_tags_json)), 1)[0] ?? "待补充";
+  const subjectCount = new Set(records.map((record) => record.subject_code).filter(Boolean)).size;
+  const summary = profileVersion?.summary_text || records.map((record) => record.summary_text).find(Boolean) || "";
+
+  return (
+    <LearnerReportShell
+      kicker="STUDENT PROFILE"
+      summary={summary}
+      title="学生学情画像"
+    >
+      <div className="mb-5 flex flex-wrap gap-2">
+        <ReportMetric label="学生" value={studentName} />
+        <ReportMetric label="覆盖学科" value={subjectCount ? `${formatCount(subjectCount)} 个` : "-"} />
+        <ReportMetric label="最高分" value={highestScore !== null ? formatScore(highestScore) : "-"} />
+        <ReportMetric label="提升重点" value={improvementTag} />
+      </div>
+      <div className="space-y-4">
+        <div className="rounded-lg border border-line bg-white p-4">
+          <SectionHeading description="分数、能力标签与薄弱点" title="基础表现" />
+          <StudentSubjectTable records={records} />
+        </div>
+        <div className="grid gap-4 xl:grid-cols-[1.05fr_0.95fr]">
+          <StudentFeaturePanel records={records} />
+          <StudentPlanPanel records={records} />
+        </div>
+      </div>
+    </LearnerReportShell>
+  );
+}
+
+function LearnerProfileLoadingCard({ recordCount }: { recordCount: number | null }) {
+  return (
+    <div className="rounded-lg border border-line bg-[#fbfbfb] p-4">
+      <h3 className="text-sm font-semibold text-ink">画像详情加载中</h3>
+      <p className="mt-2 text-sm leading-6 text-ink/55">
+        已完成学情分析{recordCount !== null ? `，生成 ${formatCount(recordCount)} 条画像记录` : ""}；详情稍后刷新。
+      </p>
+    </div>
+  );
+}
+
+function LearnerProfileDetailPanel({
+  profileVersion,
+  step,
+}: {
+  profileVersion?: LearnerProfileDisplayVersion | null;
+  step?: GenerationProcessStep;
+}) {
+  const classProfile = learnerClassProfileFrom(profileVersion);
+  const records = profileRecordsFrom(profileVersion);
+  const studentCount = learnerProfileStudentCount(profileVersion, classProfile, records);
+  const recordCount = metricNumber(valueAsRecord(step?.result_detail), "profile_record_count");
+
+  if (classProfile && (studentCount ?? 0) > 1) {
+    return <ClassLearnerProfileView classProfile={classProfile} profileVersion={profileVersion} />;
+  }
+
+  if (records.length) {
+    return <StudentLearnerProfileView profileVersion={profileVersion} />;
+  }
+
+  return <LearnerProfileLoadingCard recordCount={recordCount} />;
 }
 
 function formatPhase2StepSummary(step: GenerationProcessStep) {
+  if (step.status_detail === "retrying") {
+    return "任务已重排，正在等待新的执行实例继续处理。";
+  }
+  if (step.status_detail === "waiting_dispatch") {
+    return "";
+  }
   if (step.status === "failed") {
     return step.error_message || "生成失败，请稍后重试。";
   }
-  if (step.status === "pending" || step.status === "waiting") {
+  if (step.status === "pending") {
     if (step.code === "lesson_plan_generate") {
       return "等待课程规划完成后自动开始。";
     }
@@ -792,42 +1291,87 @@ function formatPhase2StepSummary(step: GenerationProcessStep) {
     return "等待前置步骤完成后自动开始。";
   }
   if (step.status === "running") {
+    if (step.summary) {
+      return step.summary;
+    }
     const runningSummaries: Record<string, string> = {
       mineru_parse: "正在解析教材结构、页码与内容。",
-      learner_profile: "正在分析学生基础、薄弱点与学习特征。",
+      learner_profile: "正在分析学情画像。",
       knowledge_structure: "正在提取章节、知识点与教学线索。",
       curriculum_plan: "正在规划课次安排、教学目标与课时节奏。",
-      lesson_plan_generate: "正在生成多课时教案与课堂流程。",
+      lesson_plan_generate: "正在生成整套教案与课堂流程。",
       coverage_check: "正在检查课程、教案与资源的知识覆盖。",
     };
     return runningSummaries[step.code] ?? getPhase2StepMeta(step).description;
   }
   if (step.status === "succeeded") {
+    const detail = valueAsRecord(step.result_detail);
     if (step.code === "mineru_parse") {
-      const pageCount = extractNumberBefore(step.summary, "页");
-      return pageCount ? `已完成教材结构、页码与内容识别，共 ${pageCount} 页。` : "已完成教材结构、页码与内容识别。";
+      const pageCount = metricNumber(detail, "page_count");
+      return pageCount !== null ? `已完成教材解析，共识别 ${formatCount(pageCount)} 页内容。` : "已完成教材解析。";
     }
     if (step.code === "learner_profile") {
-      return "已完成学生基础、薄弱点与学习特征分析。";
+      const recordCount = metricNumber(detail, "profile_record_count");
+      return recordCount !== null ? `已完成学情分析，生成 ${formatCount(recordCount)} 条画像记录。` : "已完成学情分析。";
     }
     if (step.code === "knowledge_structure") {
-      const chapterCount = extractNumberBefore(step.summary, "个章节");
-      const pointCount = extractNumberBefore(step.summary, "个知识点");
-      return chapterCount && pointCount
-        ? `已完成教学重点整理，识别 ${chapterCount} 个章节、${pointCount} 个知识点。`
-        : "已完成章节结构与教学重点整理。";
+      const chapterCount = metricNumber(detail, "chapter_count");
+      const pointCount = metricNumber(detail, "point_count");
+      return chapterCount !== null && pointCount !== null
+        ? `已完成教学重点整理，识别 ${formatCount(chapterCount)} 个章节、${formatCount(pointCount)} 个知识点。`
+        : step.summary || "已完成章节结构与教学重点整理。";
     }
     if (step.code === "curriculum_plan") {
-      return "已完成整套课程的课次安排与教学目标。";
+      const planTitle = metricText(detail, "plan_title");
+      const courseCount = metricNumber(detail, "course_count");
+      if (planTitle && courseCount !== null) {
+        return `课程总纲《${planTitle}》已生成，共 ${formatCount(courseCount)} 课次。`;
+      }
+      return courseCount !== null
+        ? `已完成整套课程的课次安排与教学目标，共 ${formatCount(courseCount)} 课次。`
+        : step.summary || "已完成整套课程的课次安排与教学目标。";
     }
     if (step.code === "lesson_plan_generate") {
-      return "已完成多课时教案生成。";
+      const lessonPlanCount = metricNumber(detail, "lesson_plan_count");
+      return lessonPlanCount !== null ? `已完成整套教案生成，共 ${formatCount(lessonPlanCount)} 个课次。` : step.summary || "已完成整套教案生成。";
     }
     if (step.code === "coverage_check") {
-      return "已完成核心资源覆盖检查。";
+      const coverageRate = metricNumber(detail, "coverage_rate");
+      const coveredCount = metricNumber(detail, "covered_count");
+      const totalCount = metricNumber(detail, "total_count");
+      if (coverageRate !== null && coveredCount !== null && totalCount !== null) {
+        return `已完成核心资源覆盖检查，知识点覆盖 ${formatPercent(coverageRate)}，已覆盖 ${formatCount(coveredCount)} / ${formatCount(totalCount)}。`;
+      }
+      return coverageRate !== null ? `已完成核心资源覆盖检查，知识点覆盖 ${formatPercent(coverageRate)}。` : step.summary || "已完成核心资源覆盖检查。";
     }
   }
   return step.summary || getPhase2StepMeta(step).description;
+}
+
+const BLOCKED_REASON_LABELS: Record<string, string> = {
+  NO_CURRENT_TEXTBOOK: "缺少当前教材版本，暂时无法继续。",
+  NO_CURRENT_LEARNER_PROFILE: "缺少当前学情版本，学情抽取完成后会继续。",
+  LEARNER_PROFILE_NOT_READY: "学情版本尚未就绪，完成后会继续生成。",
+  WAITING_USER_CONFIRM: "等待确认教材理解结果后继续。",
+};
+
+function formatProcessStatusDetail(process: GenerationProcess | undefined, currentTime: number, fallbackStartedAt?: string) {
+  if (!process?.status_detail) {
+    return null;
+  }
+  if (process.status_detail === "waiting_dispatch") {
+    return null;
+  }
+  if (process.status_detail === "waiting_user_confirm") {
+    return "等待确认教材理解结果。";
+  }
+  if (process.status_detail === "retrying") {
+    return "任务正在重试，新的执行实例启动后会继续推进。";
+  }
+  if (process.status_detail === "blocked") {
+    return process.blocked_reason ? BLOCKED_REASON_LABELS[process.blocked_reason] ?? `流程暂时阻塞：${process.blocked_reason}` : "流程暂时阻塞。";
+  }
+  return null;
 }
 
 function TimelineMarker({ status }: { status: GenerationProcessStatus }) {
@@ -856,10 +1400,16 @@ function TimelineMarker({ status }: { status: GenerationProcessStatus }) {
 }
 
 function GenerationStepCard({
+  shouldStretchConnector,
+  defaultExpanded,
+  detailContent,
   isLast,
   materialAction,
   step,
 }: {
+  shouldStretchConnector?: boolean;
+  defaultExpanded?: boolean;
+  detailContent?: ReactNode;
   isLast: boolean;
   materialAction?: StepMaterialAction;
   step: GenerationProcessStep;
@@ -870,18 +1420,25 @@ function GenerationStepCard({
   const isRunning = step.status === "running";
   const isFailed = step.status === "failed";
   const isSucceeded = step.status === "succeeded";
-  const isPending = step.status === "pending" || step.status === "waiting";
+  const isPending = step.status === "pending";
   const isExpandable = isSucceeded;
-  const [manualExpanded, setManualExpanded] = useState(false);
+  const [manualExpanded, setManualExpanded] = useState(defaultExpanded ?? false);
   const [materialOpen, setMaterialOpen] = useState(false);
   const materialPopoverRef = useRef<HTMLDivElement | null>(null);
   const isExpanded = isRunning || isFailed || (isSucceeded && manualExpanded);
+  const stepSummary = formatPhase2StepSummary(step);
 
   useEffect(() => {
     if (!isSucceeded) {
       setManualExpanded(false);
     }
   }, [isSucceeded]);
+
+  useEffect(() => {
+    if (isSucceeded && defaultExpanded) {
+      setManualExpanded(true);
+    }
+  }, [defaultExpanded, isSucceeded]);
 
   useEffect(() => {
     if (!materialAction) {
@@ -916,7 +1473,14 @@ function GenerationStepCard({
 
   return (
     <article className="relative md:pl-10">
-      {!isLast ? <div className="absolute left-3 top-8 bottom-[-1rem] hidden w-px bg-line md:block" /> : null}
+      {!isLast ? (
+        <div
+          className={cn(
+            "absolute left-3 top-8 hidden w-px bg-line md:block",
+            shouldStretchConnector ? "bottom-[-3rem]" : "bottom-[-1rem]",
+          )}
+        />
+      ) : null}
       <div className="absolute left-0 top-5 hidden md:block">
         <TimelineMarker status={step.status} />
       </div>
@@ -933,15 +1497,26 @@ function GenerationStepCard({
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className={cn("text-lg font-semibold text-ink", isPending ? "text-ink/42" : null)}>{meta.title}</h2>
-            <p className={cn("mt-1 text-sm leading-6", isPending ? "text-ink/36" : isFailed ? "font-medium text-[#9f1f16]" : "text-ink/58")}>
-              {formatPhase2StepSummary(step)}
-            </p>
+            {stepSummary ? (
+              <p className={cn("mt-1 text-sm leading-6", isPending ? "text-ink/36" : isFailed ? "font-medium text-[#9f1f16]" : "text-ink/58")}>
+                {stepSummary}
+              </p>
+            ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
-            {materialAction ? (
+            {materialAction?.href ? (
+              <Link
+                className="rounded-md px-2 py-1 text-sm font-semibold text-[#0F766E] underline-offset-4 transition hover:bg-[#ecfdf5] hover:text-[#0D9488] hover:underline"
+                onClick={(event) => event.stopPropagation()}
+                state={materialAction.state}
+                to={materialAction.href}
+              >
+                {materialAction.label}
+              </Link>
+            ) : materialAction ? (
               <div className="relative" ref={materialPopoverRef}>
                 <button
-                  className="rounded-md px-2 py-1 text-sm font-semibold text-[#2563eb] transition hover:bg-[#eff6ff] hover:text-[#1d4ed8]"
+                  className="rounded-md px-2 py-1 text-sm font-semibold text-[#0F766E] underline-offset-4 transition hover:bg-[#ecfdf5] hover:text-[#0D9488] hover:underline"
                   onClick={(event) => {
                     event.stopPropagation();
                     setMaterialOpen((value) => !value);
@@ -961,14 +1536,14 @@ function GenerationStepCard({
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="break-words text-base font-semibold leading-6 text-ink">{materialAction.fileName}</div>
-                        {materialAction.metaItems.length ? (
+                        {materialAction.metaItems?.length ? (
                           <div className="mt-2 text-sm leading-5 text-ink/50">{materialAction.metaItems.join(" · ")}</div>
                         ) : null}
                       </div>
                     </div>
                     <button
                       className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-ink text-sm font-semibold text-white transition hover:bg-ink/88 disabled:cursor-not-allowed disabled:bg-ink/20"
-                      disabled={materialAction.disabled || materialAction.opening}
+                      disabled={materialAction.disabled || materialAction.opening || !materialAction.onOpen}
                       onClick={materialAction.onOpen}
                       type="button"
                     >
@@ -1014,6 +1589,11 @@ function GenerationStepCard({
                 <span className="w-10 text-right text-sm font-semibold text-ink/70">{progress}%</span>
               </div>
             ) : null}
+            {detailContent ? (
+              <div onClick={(event) => event.stopPropagation()}>
+                {detailContent}
+              </div>
+            ) : null}
           </div>
         ) : null}
       </section>
@@ -1022,27 +1602,54 @@ function GenerationStepCard({
 }
 
 function GenerationProcessTimeline({
+  currentTime,
+  fallbackStartedAt,
   materialActions,
   process,
   isLoading,
+  stepDetails,
 }: {
+  currentTime: number;
+  fallbackStartedAt?: string;
   materialActions?: Partial<Record<string, StepMaterialAction>>;
   process?: GenerationProcess;
   isLoading: boolean;
+  stepDetails?: Partial<Record<string, ReactNode>>;
 }) {
-  const steps = process?.steps?.length ? process.steps : fallbackGenerationSteps();
+  const steps = orderPhase2Steps(process?.steps?.length ? process.steps : fallbackGenerationSteps());
+  const statusDetailMessage = formatProcessStatusDetail(process, currentTime, fallbackStartedAt);
+  const shouldStretchCompletedTimeline =
+    process?.status === "succeeded" && steps.length > 1 && steps.every((step) => step.status === "succeeded") && !statusDetailMessage;
 
   return (
-    <div className="relative space-y-4">
+    <div
+      className={cn(
+        "relative space-y-5",
+        shouldStretchCompletedTimeline ? "md:flex md:h-full md:flex-col md:justify-between md:space-y-0" : "md:space-y-4",
+      )}
+    >
       {isLoading && !process ? (
         <div className="mb-2 flex items-center gap-2 text-sm text-ink/45">
           <Loader2 className="animate-spin" size={15} />
           正在同步生成过程
         </div>
       ) : null}
+      {statusDetailMessage ? (
+        <div className="rounded-lg border border-line bg-white px-4 py-3 text-sm font-medium leading-6 text-ink/58 shadow-[0_8px_24px_rgba(17,17,17,0.04)]">
+          {statusDetailMessage}
+        </div>
+      ) : null}
       {steps.map((step, index) => (
-        <GenerationStepCard isLast={index === steps.length - 1} key={step.code} materialAction={materialActions?.[step.code]} step={step} />
-      ))}
+          <GenerationStepCard
+            defaultExpanded={step.code === "learner_profile" && step.status === "succeeded" && Boolean(stepDetails?.[step.code])}
+            detailContent={stepDetails?.[step.code]}
+            isLast={index === steps.length - 1}
+            key={step.code}
+            materialAction={materialActions?.[step.code]}
+            shouldStretchConnector={shouldStretchCompletedTimeline}
+            step={step}
+          />
+        ))}
     </div>
   );
 }
@@ -1120,6 +1727,16 @@ function GenerationOutputPanel({
   const isFailed = process?.status === "failed";
   const completedOutputs = CORE_OUTPUTS.filter((item) => statusByCode.get(item.stepCode) === "succeeded");
   const unfinishedOutputs = CORE_OUTPUTS.filter((item) => statusByCode.get(item.stepCode) !== "succeeded");
+  const processingStat = isSucceeded
+    ? { icon: Check, label: "流程状态", value: "已完成" }
+    : isFailed
+      ? { icon: AlertCircle, label: "流程状态", value: "需处理" }
+      : {
+          icon: Loader2,
+          iconClassName: runningCount > 0 ? "animate-spin" : undefined,
+          label: "正在处理",
+          value: `${runningCount} 项`,
+        };
 
   return (
     <aside className="sticky top-8 space-y-4">
@@ -1128,7 +1745,7 @@ function GenerationOutputPanel({
         <div className="mt-5 grid gap-4">
           <ProcessStat icon={Clock3} label="已运行" value={formatGenerationRuntime(process, currentTime, fallbackStartedAt)} />
           <ProcessStat icon={Check} label="已完成" value={`${completedCount} / ${totalCount} 步`} />
-          <ProcessStat icon={Loader2} iconClassName={runningCount > 0 ? "animate-spin" : undefined} label="正在处理" value={`${runningCount} 项`} />
+          <ProcessStat {...processingStat} />
         </div>
 
         <div className="my-6 h-px bg-line" />
@@ -1161,8 +1778,11 @@ function GenerationOutputPanel({
         </section>
 
         {isSucceeded && batchId ? (
-          <Link className="btn btn-primary mt-6 h-12 w-full rounded-lg" to={`/projects/${process.project_id}/batches/${batchId}`}>
-            <ExternalLink size={17} />
+          <Link
+            className="btn mt-6 h-12 w-full rounded-lg border-[#0E8779] bg-[linear-gradient(135deg,#0E8779,#006A60)] text-white shadow-[0_14px_30px_rgba(6,95,84,0.18)] hover:border-[#006A60] hover:shadow-[0_16px_34px_rgba(6,95,84,0.22)] focus:ring-[#0E8779]/30"
+            to={`/projects/${process.project_id}/batches/${batchId}`}
+          >
+            <ArrowRight size={17} />
             查看备课资源
           </Link>
         ) : null}
@@ -1217,21 +1837,29 @@ function buildProcessContext(project?: Project, textbook?: TextbookVersion) {
 
 export function ProjectWorkspacePage() {
   const queryClient = useQueryClient();
+  const location = useLocation();
   const projectId = toNumberId(useParams().projectId);
   const [selectedTextbookId, setSelectedTextbookId] = useState<number | null>(null);
   const [selectedProfileFileId, setSelectedProfileFileId] = useState<number | null>(null);
   const [selectedProfileVersionId, setSelectedProfileVersionId] = useState<number | null>(null);
   const [selectedParseVersionId, setSelectedParseVersionId] = useState<number | null>(null);
   const [selectedKnowledgeVersionId, setSelectedKnowledgeVersionId] = useState<number | null>(null);
-  const [autoCoreGenerationMarker, setAutoCoreGenerationMarker] = useState<AutoCoreGenerationMarker | null>(() =>
-    readAutoCoreGenerationMarker(projectId),
-  );
   const [currentTime, setCurrentTime] = useState(() => Date.now());
-  const autoTriggeredStepKeys = useRef<Set<string>>(new Set());
+  const startRunTriggeredKeyRef = useRef<string | null>(null);
+  const learnerProfileSuccessSyncKeyRef = useRef<string | null>(null);
+  const [fastRefetchUntil, setFastRefetchUntil] = useState(0);
+  const locationState = location.state as ProjectWorkspaceLocationState;
+  const generationCourseCount = normalizeGenerationSetting(locationState?.generationSettings?.courseCount, DEFAULT_COURSE_COUNT);
+  const generationSessionDurationMinutes = normalizeGenerationSetting(
+    locationState?.generationSettings?.sessionDurationMinutes,
+    DEFAULT_SESSION_DURATION_MINUTES,
+  );
+  const isFastRefetching = currentTime < fastRefetchUntil;
 
   useEffect(() => {
-    setAutoCoreGenerationMarker(readAutoCoreGenerationMarker(projectId));
-    autoTriggeredStepKeys.current.clear();
+    startRunTriggeredKeyRef.current = null;
+    learnerProfileSuccessSyncKeyRef.current = null;
+    setFastRefetchUntil(0);
   }, [projectId]);
 
   useEffect(() => {
@@ -1240,10 +1868,26 @@ export function ProjectWorkspacePage() {
     return () => window.clearInterval(timer);
   }, []);
 
+  const tasksQuery = useQuery({
+    queryKey: ["tasks", projectId],
+    queryFn: () => api.listTasks({ project_id: projectId, page: 1, page_size: 30 }),
+    enabled: projectId > 0,
+    refetchInterval: (query) => {
+      const hasProcessingProfileTask = query.state.data?.items.some(
+        (task) => isLearnerProfileTask(task) && isTaskActiveStatus(task.task_status),
+      );
+      return isFastRefetching || hasProcessingProfileTask ? 1_000 : 5_000;
+    },
+  });
+  const isLearnerProfileTaskProcessing = tasksQuery.data?.items.some(
+    (task) => isLearnerProfileTask(task) && isTaskActiveStatus(task.task_status),
+  ) ?? false;
+
   const projectQuery = useQuery({
     queryKey: ["project", projectId],
     queryFn: () => api.getProject(projectId),
     enabled: projectId > 0,
+    refetchInterval: isFastRefetching || isLearnerProfileTaskProcessing ? 1_000 : false,
   });
 
   const textbooksQuery = useQuery({
@@ -1262,42 +1906,28 @@ export function ProjectWorkspacePage() {
     queryKey: ["parse-versions", selectedTextbookId],
     queryFn: () => api.listParseVersions(selectedTextbookId!),
     enabled: Boolean(selectedTextbookId),
-    refetchInterval: 8_000,
+    refetchInterval: isFastRefetching ? 1_000 : 8_000,
   });
 
   const profileVersionsQuery = useQuery({
     queryKey: ["learner-profile-versions", projectId, selectedProfileFileId],
     queryFn: () => api.listLearnerProfileVersions(projectId, selectedProfileFileId!),
     enabled: Boolean(projectId && selectedProfileFileId),
-    refetchInterval: 8_000,
-  });
-
-  const profileDetailQuery = useQuery({
-    queryKey: ["learner-profile-version-detail", selectedProfileVersionId],
-    queryFn: () => api.getLearnerProfileVersion(selectedProfileVersionId!),
-    enabled: Boolean(selectedProfileVersionId),
-    retry: false,
+    refetchInterval: isFastRefetching ? 1_000 : 8_000,
   });
 
   const knowledgeVersionsQuery = useQuery({
     queryKey: ["knowledge-versions", selectedParseVersionId],
     queryFn: () => api.listKnowledgeVersions(selectedParseVersionId!),
     enabled: Boolean(selectedParseVersionId),
-    refetchInterval: 8_000,
+    refetchInterval: isFastRefetching ? 1_000 : 8_000,
   });
 
   const generationBatchesQuery = useQuery({
     queryKey: ["generation-batches", projectId],
     queryFn: () => api.listGenerationBatches(projectId),
     enabled: projectId > 0,
-    refetchInterval: 8_000,
-  });
-
-  const tasksQuery = useQuery({
-    queryKey: ["tasks", projectId],
-    queryFn: () => api.listTasks({ project_id: projectId, page: 1, page_size: 30 }),
-    enabled: projectId > 0,
-    refetchInterval: 5_000,
+    refetchInterval: isFastRefetching ? 1_000 : 8_000,
   });
 
   const generationProcessQuery = useQuery({
@@ -1306,7 +1936,17 @@ export function ProjectWorkspacePage() {
     enabled: projectId > 0,
     refetchInterval: (query) => {
       const process = query.state.data;
-      return process?.status === "succeeded" || process?.status === "failed" ? false : 5_000;
+      return process?.status === "succeeded" || process?.status === "failed" ? false : isFastRefetching ? 1_000 : 5_000;
+    },
+  });
+
+  const activeGenerationRunQuery = useQuery({
+    queryKey: ["generation-run-active", projectId],
+    queryFn: () => api.getActiveGenerationRun(projectId),
+    enabled: projectId > 0,
+    refetchInterval: (query) => {
+      const run = query.state.data;
+      return run && ["pending", "running", "waiting_user_confirm"].includes(run.run_status) ? (isFastRefetching ? 1_000 : 5_000) : false;
     },
   });
 
@@ -1318,6 +1958,7 @@ export function ProjectWorkspacePage() {
   const generationBatches = generationBatchesQuery.data?.items ?? [];
   const tasks = tasksQuery.data?.items ?? [];
   const generationProcess = generationProcessQuery.data;
+  const activeGenerationRun = activeGenerationRunQuery.data ?? null;
 
   useEffect(() => {
     const preferred = textbooks.find((item) => item.is_current) ?? latestById(textbooks);
@@ -1405,7 +2046,7 @@ export function ProjectWorkspacePage() {
     [tasks],
   );
   const profileTask = useMemo(
-    () => latestTaskBy(tasks, (task) => task.module_code === "learner_profile" || task.task_type === "learner_profile_extract"),
+    () => latestTaskBy(tasks, isLearnerProfileTask),
     [tasks],
   );
   const knowledgeTask = useMemo(
@@ -1422,7 +2063,9 @@ export function ProjectWorkspacePage() {
 
   const materialComplete = Boolean(selectedTextbook && selectedProfileFile);
   const parseComplete = isConfirmedParseVersion(selectedParseVersion);
-  const profileComplete = isReadyProfileVersion(profileDetailQuery.data ?? selectedProfileVersion);
+  const hasUnfinishedProfileTask = Boolean(profileTask && !isTaskSuccessStatus(profileTask.task_status));
+  const profileComplete = isReadyProfileVersion(selectedProfileVersion) && !hasUnfinishedProfileTask;
+  const hasReadyProjectBaseline = Boolean(projectQuery.data?.current_textbook_version_id && projectQuery.data?.current_learner_profile_version_id);
   const knowledgeComplete = isReadyVersion(selectedKnowledgeVersion);
   const hasSuccessfulParseVersion = parseVersions.some((item) => item.parse_status === SUCCESS_STATUS);
   const hasActiveParseTask = tasks.some((task) => isTextbookParseTask(task) && isTaskActiveStatus(task.task_status));
@@ -1442,9 +2085,6 @@ export function ProjectWorkspacePage() {
     isFailureStatus(selectedProfileVersion?.extract_status);
   const knowledgeFailed = isFailureStatus(knowledgeTask?.task_status);
   const generationFailed = isFailureStatus(generationTask?.task_status) || isFailureStatus(latestBatch?.batch_status);
-  const autoCoreGenerationEnabled = Boolean(autoCoreGenerationMarker);
-  const generationCourseCount = autoCoreGenerationMarker?.courseCount ?? DEFAULT_COURSE_COUNT;
-  const generationSessionDurationMinutes = autoCoreGenerationMarker?.sessionDurationMinutes ?? DEFAULT_SESSION_DURATION_MINUTES;
 
   const materialState: ProcessState = materialComplete ? "complete" : "current";
   const parseState: ProcessState = parseComplete ? "complete" : selectedTextbook ? "current" : "waiting";
@@ -1452,12 +2092,19 @@ export function ProjectWorkspacePage() {
   const knowledgeState: ProcessState = knowledgeComplete ? "complete" : parseComplete ? "current" : "waiting";
   const generationState: ProcessState = generationComplete ? "complete" : knowledgeComplete && profileComplete ? "current" : "waiting";
 
+  useEffect(() => {
+    if (projectId > 0 && profileComplete && !projectQuery.data?.current_learner_profile_version_id) {
+      queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+    }
+  }, [profileComplete, projectId, projectQuery.data?.current_learner_profile_version_id, queryClient]);
+
   const invalidateWorkspace = () => {
     queryClient.invalidateQueries({ queryKey: ["project", projectId] });
     queryClient.invalidateQueries({ queryKey: ["textbooks", projectId] });
     queryClient.invalidateQueries({ queryKey: ["learner-profiles", projectId] });
     queryClient.invalidateQueries({ queryKey: ["tasks", projectId] });
     queryClient.invalidateQueries({ queryKey: ["generation-process", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["generation-run-active", projectId] });
     queryClient.invalidateQueries({ queryKey: ["generation-batches", projectId] });
     if (selectedTextbookId) {
       queryClient.invalidateQueries({ queryKey: ["parse-versions", selectedTextbookId] });
@@ -1468,8 +2115,8 @@ export function ProjectWorkspacePage() {
     if (selectedProfileFileId) {
       queryClient.invalidateQueries({ queryKey: ["learner-profile-versions", projectId, selectedProfileFileId] });
     }
-    if (selectedProfileVersionId) {
-      queryClient.invalidateQueries({ queryKey: ["learner-profile-version-detail", selectedProfileVersionId] });
+    if (selectedProfileVersion?.id) {
+      queryClient.invalidateQueries({ queryKey: ["learner-profile-version-detail", selectedProfileVersion.id] });
     }
   };
 
@@ -1504,375 +2151,137 @@ export function ProjectWorkspacePage() {
     onSuccess: invalidateWorkspace,
   });
 
-  const openMaterialFile = useMutation({
-    mutationFn: async ({ fileObjectId }: { fileObjectId: number; kind: "textbook" | "profile" }) => {
-      const result = await api.getFileDownloadUrl(fileObjectId);
-      if (!result.signed_url) {
-        throw new Error("暂时无法打开材料，请稍后重试。");
-      }
-      return result.signed_url;
-    },
-    onSuccess: (url) => window.open(url, "_blank", "noopener,noreferrer"),
+  const startGenerationRun = useMutation({
+    mutationFn: () =>
+      api.startGenerationRun(projectId, {
+        course_count: generationCourseCount,
+        session_duration_minutes: generationSessionDurationMinutes,
+        auto_confirm_parse: true,
+      }),
+    onSuccess: invalidateWorkspace,
   });
 
-  const selectedTextbookSource = valueAsRecord(selectedTextbook?.source_file);
-  const selectedProfileSource = valueAsRecord(selectedProfileFile?.source_file);
-  const selectedTextbookFileObjectId = fileObjectIdFrom(selectedTextbook?.source_file);
-  const selectedProfileFileObjectId = fileObjectIdFrom(selectedProfileFile?.source_file, selectedProfileFile?.source_file_id);
+  const learnerProfileStep = generationProcess?.steps?.find((step) => step.code === "learner_profile");
+  const learnerProfileSucceeded =
+    profileComplete || isTaskSuccessStatus(profileTask?.task_status) || learnerProfileStep?.status === "succeeded";
+  const learnerProfileReportVersionId = selectedProfileVersion?.id ?? projectQuery.data?.current_learner_profile_version_id;
+  const learnerProfileReportBatchId = generationProcess?.batch_id ?? latestBatch?.id;
+  const learnerProfileReportUrl =
+    learnerProfileSucceeded && learnerProfileReportVersionId
+      ? learnerProfileReportBatchId
+        ? `/projects/${projectId}/batches/${learnerProfileReportBatchId}/learner-profile/${learnerProfileReportVersionId}`
+        : `/projects/${projectId}/learner-profile/${learnerProfileReportVersionId}`
+      : null;
   const materialActions = useMemo<Partial<Record<string, StepMaterialAction>>>(() => {
     const actions: Partial<Record<string, StepMaterialAction>> = {};
-    if (selectedTextbook) {
-      actions.mineru_parse = {
-        label: "查看教材",
-        fileName: fileNameFrom(selectedTextbook.source_file, selectedTextbook.textbook_name),
-        metaItems: [
-          selectedTextbook.page_count ? `${selectedTextbook.page_count} 页` : "",
-          formatDate(stringValue(selectedTextbookSource?.created_at) || selectedTextbook.created_at),
-        ].filter(Boolean),
-        openLabel: "打开教材",
-        opening: openMaterialFile.isPending && openMaterialFile.variables?.kind === "textbook",
-        disabled: !selectedTextbookFileObjectId,
-        onOpen: () => selectedTextbookFileObjectId && openMaterialFile.mutate({ fileObjectId: selectedTextbookFileObjectId, kind: "textbook" }),
-      };
-    }
-    if (selectedProfileFile) {
-      const recordCount = profileDetailQuery.data?.records?.length;
+    if (learnerProfileReportUrl) {
       actions.learner_profile = {
         label: "查看学情",
-        fileName: fileNameFrom(selectedProfileFile.source_file, selectedProfileFile.title),
-        metaItems: [
-          recordCount ? `${recordCount} 份学情记录` : "",
-          formatDate(stringValue(selectedProfileSource?.created_at) || selectedProfileFile.created_at),
-        ].filter(Boolean),
-        openLabel: "打开学情",
-        opening: openMaterialFile.isPending && openMaterialFile.variables?.kind === "profile",
-        disabled: !selectedProfileFileObjectId,
-        onOpen: () => selectedProfileFileObjectId && openMaterialFile.mutate({ fileObjectId: selectedProfileFileObjectId, kind: "profile" }),
+        href: learnerProfileReportUrl,
+        state: { backTo: `/projects/${projectId}` },
       };
     }
     return actions;
   }, [
-    openMaterialFile,
-    profileDetailQuery.data?.records?.length,
-    selectedProfileFile,
-    selectedProfileFileObjectId,
-    selectedProfileSource?.created_at,
-    selectedTextbook,
-    selectedTextbookFileObjectId,
-    selectedTextbookSource?.created_at,
+    learnerProfileReportUrl,
   ]);
 
-  const autoMutationError = createParseTask.error ?? confirmParseVersion.error ?? createKnowledgeTask.error ?? createBatch.error;
-  const hasAutoBlockingFailure =
-    parseFailed || profileFailed || knowledgeFailed || generationFailed || Boolean(autoMutationError);
-  const hasAutoMutationPending =
-    createParseTask.isPending || confirmParseVersion.isPending || createKnowledgeTask.isPending || createBatch.isPending;
-  const autoElapsedText = autoCoreGenerationMarker
-    ? `已运行 ${formatElapsedTime(autoCoreGenerationMarker.createdAt, currentTime)}`
-    : undefined;
-
-  const triggerAutoStep = (stepKey: string, action: () => void) => {
-    if (autoTriggeredStepKeys.current.has(stepKey)) {
+  useEffect(() => {
+    if (projectId <= 0 || !learnerProfileSucceeded || profileFailed) {
       return;
     }
-    autoTriggeredStepKeys.current.add(stepKey);
-    action();
-  };
 
-  useEffect(() => {
-    if (autoCoreGenerationEnabled && generationComplete && latestBatch) {
-      clearAutoCoreGenerationMarker(projectId);
-      setAutoCoreGenerationMarker(null);
+    const syncKey = [
+      projectId,
+      profileTask?.id ?? "no-task",
+      selectedProfileVersion?.id ?? projectQuery.data?.current_learner_profile_version_id ?? "no-version",
+    ].join(":");
+    if (learnerProfileSuccessSyncKeyRef.current === syncKey) {
+      return;
     }
-  }, [autoCoreGenerationEnabled, generationComplete, latestBatch, projectId]);
+
+    learnerProfileSuccessSyncKeyRef.current = syncKey;
+    setFastRefetchUntil(Date.now() + FAST_REFETCH_WINDOW_MS);
+    queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["tasks", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["generation-process", projectId] });
+    queryClient.invalidateQueries({ queryKey: ["generation-run-active", projectId] });
+    if (selectedProfileFileId) {
+      queryClient.invalidateQueries({ queryKey: ["learner-profile-versions", projectId, selectedProfileFileId] });
+    }
+  }, [
+    learnerProfileSucceeded,
+    profileFailed,
+    profileTask?.id,
+    projectId,
+    projectQuery.data?.current_learner_profile_version_id,
+    queryClient,
+    selectedProfileFileId,
+    selectedProfileVersion?.id,
+  ]);
 
   useEffect(() => {
+    const hasRunInBackend = Boolean(activeGenerationRun || generationProcess?.generation_run_id);
     if (
-      !autoCoreGenerationEnabled ||
       projectId <= 0 ||
       !selectedTextbook ||
       !selectedProfileFile ||
-      hasAutoBlockingFailure ||
-      hasAutoMutationPending ||
+      !learnerProfileSucceeded ||
+      !hasReadyProjectBaseline ||
+      hasRunInBackend ||
+      hasActiveParseTask ||
+      hasActiveKnowledgeTask ||
+      generationComplete ||
+      latestBatch ||
+      startGenerationRun.isPending ||
+      activeGenerationRunQuery.isLoading ||
       textbooksQuery.isLoading ||
       learnerProfilesQuery.isLoading ||
-      parseVersionsQuery.isLoading ||
-      profileVersionsQuery.isLoading ||
-      knowledgeVersionsQuery.isLoading ||
-      generationBatchesQuery.isLoading ||
-      tasksQuery.isLoading
+      generationBatchesQuery.isLoading
     ) {
       return;
     }
 
-    if (!selectedParseVersion && !parseActive && !hasSuccessfulParseVersion && !hasActiveParseTask) {
-      triggerAutoStep(`parse:${selectedTextbook.id}`, () => createParseTask.mutate());
+    const triggerKey = [
+      "profile",
+      projectId,
+      projectQuery.data?.current_textbook_version_id,
+      projectQuery.data?.current_learner_profile_version_id,
+    ].join(":");
+    if (startRunTriggeredKeyRef.current === triggerKey) {
       return;
     }
 
-    if (selectedParseVersion?.parse_status === SUCCESS_STATUS && selectedParseVersion.review_status !== CONFIRMED_STATUS) {
-      triggerAutoStep(`confirm-parse:${selectedParseVersion.id}`, () => confirmParseVersion.mutate());
-      return;
-    }
-
-    if (parseComplete && !knowledgeComplete && !knowledgeActive && !hasActiveKnowledgeTask && selectedParseVersion) {
-      triggerAutoStep(`knowledge:${selectedParseVersion.id}`, () => createKnowledgeTask.mutate());
-      return;
-    }
-
-    if (parseComplete && profileComplete && knowledgeComplete && !latestBatch && !generationActive) {
-      triggerAutoStep(`batch:${selectedKnowledgeVersion?.id}:${selectedProfileVersion?.id}`, () => createBatch.mutate());
-    }
+    startRunTriggeredKeyRef.current = triggerKey;
+    setFastRefetchUntil(Date.now() + FAST_REFETCH_WINDOW_MS);
+    startGenerationRun.reset();
+    startGenerationRun.mutate(undefined, {
+      onError: () => {
+        startRunTriggeredKeyRef.current = null;
+      },
+      onSuccess: () => {
+        setFastRefetchUntil(Date.now() + FAST_REFETCH_WINDOW_MS);
+      },
+    });
   }, [
-    autoCoreGenerationEnabled,
-    confirmParseVersion,
-    createBatch,
-    createKnowledgeTask,
-    createParseTask,
-    generationActive,
+    activeGenerationRun,
+    activeGenerationRunQuery.isLoading,
     generationBatchesQuery.isLoading,
-    hasAutoBlockingFailure,
-    hasAutoMutationPending,
+    generationComplete,
+    generationProcess?.generation_run_id,
     hasActiveKnowledgeTask,
     hasActiveParseTask,
-    hasSuccessfulParseVersion,
-    knowledgeActive,
-    knowledgeComplete,
-    knowledgeVersionsQuery.isLoading,
+    hasReadyProjectBaseline,
     latestBatch,
+    learnerProfileSucceeded,
     learnerProfilesQuery.isLoading,
-    parseActive,
-    parseComplete,
-    parseVersionsQuery.isLoading,
-    profileComplete,
-    profileVersionsQuery.isLoading,
     projectId,
-    selectedKnowledgeVersion?.id,
-    selectedParseVersion,
+    projectQuery.data?.current_learner_profile_version_id,
+    projectQuery.data?.current_textbook_version_id,
     selectedProfileFile,
-    selectedProfileVersion?.id,
     selectedTextbook,
-    tasksQuery.isLoading,
+    startGenerationRun,
     textbooksQuery.isLoading,
-  ]);
-
-  const action: ActionConfig = useMemo(() => {
-    if (autoCoreGenerationEnabled) {
-      if (autoMutationError) {
-        return {
-          title: "自动生成遇到问题",
-          message: getErrorMessage(autoMutationError),
-          meta: autoElapsedText,
-        };
-      }
-      if (parseFailed) {
-        return {
-          title: "教材理解失败",
-          message: taskErrorMessage(parsingTask, "教材解析没有成功，请查看任务详情或重新创建备课。"),
-          meta: autoElapsedText,
-        };
-      }
-      if (profileFailed) {
-        return {
-          title: "学情分析失败",
-          message: taskErrorMessage(profileTask, "学情分析没有成功，当前接口不支持对已上传学情重新抽取。"),
-          meta: autoElapsedText,
-        };
-      }
-      if (knowledgeFailed) {
-        return {
-          title: "教学重点整理失败",
-          message: taskErrorMessage(knowledgeTask, "知识点抽取没有成功，请查看任务详情或重新创建备课。"),
-          meta: autoElapsedText,
-        };
-      }
-      if (generationFailed) {
-        return {
-          title: "核心备课包生成失败",
-          message: taskErrorMessage(generationTask, "课程方案、教案或覆盖报告生成没有成功，请查看任务详情。"),
-          meta: autoElapsedText,
-        };
-      }
-      if (generationComplete && latestBatch) {
-        return {
-          title: "备课资源已生成",
-          message: "课程方案、教案和覆盖报告已准备好；PPT 与课后作业可按课生成，期末综合测可按整套生成。",
-          meta: autoElapsedText,
-          buttonLabel: "查看备课资源",
-          buttonIcon: ExternalLink,
-          onClick: () => window.location.assign(`/projects/${projectId}/batches/${latestBatch.id}`),
-        };
-      }
-      if (!selectedParseVersion || selectedParseVersion.parse_status !== SUCCESS_STATUS || selectedParseVersion.review_status !== CONFIRMED_STATUS) {
-        return {
-          title: "自动生成中",
-          message: "正在理解教材，完成后会自动确认结果并整理教学重点。",
-          meta: autoElapsedText,
-          buttonLabel: "正在自动处理",
-          buttonIcon: Loader2,
-          disabled: true,
-          loading: true,
-        };
-      }
-      if (profileActive && knowledgeActive && !profileComplete && !knowledgeComplete) {
-        return {
-          title: "自动生成中",
-          message: "正在并行分析学情和整理教学重点，完成后会自动生成核心备课包。",
-          meta: autoElapsedText,
-          buttonLabel: "正在自动处理",
-          buttonIcon: Loader2,
-          disabled: true,
-          loading: true,
-        };
-      }
-      if (!profileComplete) {
-        return {
-          title: "自动生成中",
-          message: "正在分析学情，完成后会和教材知识点一起用于生成核心备课包。",
-          meta: autoElapsedText,
-          buttonLabel: "正在自动处理",
-          buttonIcon: Loader2,
-          disabled: true,
-          loading: true,
-        };
-      }
-      if (!knowledgeComplete) {
-        return {
-          title: "自动生成中",
-          message: "正在整理章节、知识点和重点讲解线索，完成后会自动生成核心备课包。",
-          meta: autoElapsedText,
-          buttonLabel: "正在自动处理",
-          buttonIcon: Loader2,
-          disabled: true,
-          loading: true,
-        };
-      }
-      return {
-        title: "自动生成中",
-        message: "正在生成课程方案、多课教案和覆盖报告；PPT 与课后作业可按课生成，期末综合测可按整套生成。",
-        meta: autoElapsedText,
-        buttonLabel: "正在自动处理",
-        buttonIcon: Loader2,
-        disabled: true,
-        loading: true,
-      };
-    }
-
-    if (!selectedTextbook || !selectedProfileFile) {
-      return {
-        title: "请先补齐材料",
-        message: "上传教材 PDF 和学情分析 DOCX 后，EduWeave 会开始理解教材和分析学情。",
-      };
-    }
-    if (!selectedParseVersion || selectedParseVersion.parse_status !== SUCCESS_STATUS) {
-      return {
-        title: parseActive ? "正在理解教材" : "可以理解教材了",
-        message: parseActive ? "教材结构正在识别，完成后会展示页数、图表、公式和证据片段。" : "先让系统读懂教材结构，再继续整理知识点。",
-        buttonLabel: parseActive ? "正在理解教材" : "理解教材",
-        buttonIcon: parseActive ? Loader2 : BookOpen,
-        disabled: parseActive || createParseTask.isPending,
-        loading: createParseTask.isPending || parseActive,
-        onClick: () => createParseTask.mutate(),
-      };
-    }
-    if (selectedParseVersion.review_status !== CONFIRMED_STATUS) {
-      return {
-        title: "请确认教材理解结果",
-        message: "确认后，系统会基于这份教材理解结果整理教学重点。",
-        buttonLabel: "确认教材理解结果",
-        buttonIcon: Check,
-        disabled: confirmParseVersion.isPending,
-        loading: confirmParseVersion.isPending,
-        onClick: () => confirmParseVersion.mutate(),
-      };
-    }
-    if (profileActive && knowledgeActive && !profileComplete && !knowledgeComplete) {
-      return {
-        title: "并行处理中",
-        message: "正在并行分析学情和整理教学重点，完成后会自动生成核心备课包。",
-        buttonLabel: "正在处理",
-        buttonIcon: Loader2,
-        disabled: true,
-        loading: true,
-      };
-    }
-    if (!profileComplete) {
-      return {
-        title: profileActive ? "正在分析学情" : "等待学情分析",
-        message: "学情会用于调整讲解重点和练习难度，完成后继续整理教学重点。",
-        buttonLabel: profileActive ? "正在分析学情" : undefined,
-        buttonIcon: Loader2,
-        disabled: true,
-        loading: profileActive,
-      };
-    }
-    if (!knowledgeComplete) {
-      return {
-        title: knowledgeActive ? "正在整理教学重点" : "可以整理教学重点了",
-        message: "系统会把教材内容整理成章节、知识点和重点讲解线索。",
-        buttonLabel: knowledgeActive ? "正在整理教学重点" : "整理教学重点",
-        buttonIcon: knowledgeActive ? Loader2 : Target,
-        disabled: knowledgeActive || createKnowledgeTask.isPending,
-        loading: knowledgeActive || createKnowledgeTask.isPending,
-        onClick: () => createKnowledgeTask.mutate(),
-      };
-    }
-    if (generationActive) {
-      return {
-        title: "正在生成备课资源",
-        message: "课程方案、多课教案和覆盖报告正在准备中；PPT 与课后作业可按课生成，期末综合测可按整套生成。",
-        buttonLabel: "正在生成",
-        buttonIcon: Loader2,
-        disabled: true,
-        loading: true,
-      };
-    }
-    if (generationComplete && latestBatch) {
-      return {
-        title: "备课资源已生成",
-        message: "课程方案、教案和覆盖报告已准备好；PPT 与课后作业可按课生成，期末综合测可按整套生成。",
-        buttonLabel: "查看备课资源",
-        buttonIcon: ExternalLink,
-        onClick: () => window.location.assign(`/projects/${projectId}/batches/${latestBatch.id}`),
-      };
-    }
-    return {
-      title: latestBatch ? "可以重新生成" : "可以生成备课资源了",
-      message: "将基于教材、学情和教学重点生成课程方案和多课教案；PPT 与课后作业可按课生成，期末综合测可按整套生成。",
-      buttonLabel: "生成备课资源",
-      buttonIcon: Wand2,
-      disabled: createBatch.isPending,
-      loading: createBatch.isPending,
-      onClick: () => createBatch.mutate(),
-    };
-  }, [
-    autoCoreGenerationEnabled,
-    autoElapsedText,
-    autoMutationError,
-    confirmParseVersion,
-    createBatch,
-    createKnowledgeTask,
-    createParseTask,
-    generationActive,
-    generationComplete,
-    generationFailed,
-    generationTask,
-    knowledgeActive,
-    knowledgeComplete,
-    knowledgeFailed,
-    knowledgeTask,
-    latestBatch,
-    parseActive,
-    parseFailed,
-    parsingTask,
-    profileFailed,
-    profileActive,
-    profileComplete,
-    profileTask,
-    projectId,
-    selectedParseVersion,
-    selectedProfileFile,
-    selectedTextbook,
   ]);
 
   if (projectId <= 0) {
@@ -1910,20 +2319,26 @@ export function ProjectWorkspacePage() {
         </div>
 
         <div className="process-layout">
-          <main>
-            {openMaterialFile.error ? (
+          <main className="h-full">
+            {startGenerationRun.error ? (
               <div className="mb-4">
-                <ErrorNotice title="材料暂时无法打开" message={getErrorMessage(openMaterialFile.error)} />
+                <ErrorNotice title="启动生成失败" message={getErrorMessage(startGenerationRun.error)} />
               </div>
             ) : null}
             {generationProcessQuery.error && !generationProcess ? (
               <ErrorNotice title="生成过程加载失败" message={getErrorMessage(generationProcessQuery.error)} />
             ) : (
-              <GenerationProcessTimeline materialActions={materialActions} process={generationProcess} isLoading={generationProcessQuery.isLoading} />
+              <GenerationProcessTimeline
+                currentTime={currentTime}
+                fallbackStartedAt={activeGenerationRun?.started_at ?? undefined}
+                isLoading={generationProcessQuery.isLoading}
+                materialActions={materialActions}
+                process={generationProcess}
+              />
             )}
           </main>
 
-          <GenerationOutputPanel process={generationProcess} currentTime={currentTime} fallbackStartedAt={autoCoreGenerationMarker?.createdAt} />
+          <GenerationOutputPanel process={generationProcess} currentTime={currentTime} fallbackStartedAt={activeGenerationRun?.started_at ?? undefined} />
         </div>
       </div>
     </div>

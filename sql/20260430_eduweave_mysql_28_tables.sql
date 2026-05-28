@@ -1,6 +1,6 @@
--- @Date: 2026-04-30
+-- @Date: 2026-05-28
 -- @Author: xisy
--- @Discription: EduWeave MySQL 31张表初始化脚本
+-- @Discription: EduWeave MySQL 34张表初始化脚本
 
 SET NAMES utf8mb4;
 CREATE DATABASE IF NOT EXISTS `eduweave`
@@ -12,6 +12,7 @@ SET FOREIGN_KEY_CHECKS = 0;
 
 DROP TABLE IF EXISTS `audit_log`;
 DROP TABLE IF EXISTS `generation_trace`;
+DROP TABLE IF EXISTS `lesson_plan_generation_item`;
 DROP TABLE IF EXISTS `task_step_record`;
 DROP TABLE IF EXISTS `task_record`;
 DROP TABLE IF EXISTS `coverage_report`;
@@ -21,6 +22,7 @@ DROP TABLE IF EXISTS `homework_blueprint`;
 DROP TABLE IF EXISTS `question_item`;
 DROP TABLE IF EXISTS `paper_result`;
 DROP TABLE IF EXISTS `courseware_result`;
+DROP TABLE IF EXISTS `generation_run`;
 DROP TABLE IF EXISTS `generation_batch`;
 DROP TABLE IF EXISTS `assessment_blueprint`;
 DROP TABLE IF EXISTS `lesson_plan`;
@@ -34,6 +36,7 @@ DROP TABLE IF EXISTS `parse_issue`;
 DROP TABLE IF EXISTS `parse_block`;
 DROP TABLE IF EXISTS `parse_page`;
 DROP TABLE IF EXISTS `parse_version`;
+DROP TABLE IF EXISTS `learner_profile_source`;
 DROP TABLE IF EXISTS `learner_profile_record`;
 DROP TABLE IF EXISTS `learner_profile_version`;
 DROP TABLE IF EXISTS `learner_profile_file`;
@@ -72,6 +75,7 @@ CREATE TABLE `project` (
   `current_textbook_version_id` BIGINT UNSIGNED NULL COMMENT '当前教材版本',
   `current_learner_profile_version_id` BIGINT UNSIGNED NULL COMMENT '当前学情版本',
   `latest_generation_batch_id` BIGINT UNSIGNED NULL COMMENT '最近生成批次',
+  `active_generation_run_id` BIGINT UNSIGNED NULL COMMENT '当前活跃一键生成运行',
   `last_activity_at` DATETIME(3) NULL COMMENT '最近活动时间',
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
@@ -79,6 +83,7 @@ CREATE TABLE `project` (
   UNIQUE KEY `uk_project_project_code` (`project_code`),
   KEY `idx_project_owner_status` (`owner_user_id`, `status`),
   KEY `idx_project_subject_grade` (`subject_code`, `grade_code`),
+  KEY `idx_project_active_generation_run` (`active_generation_run_id`),
   CONSTRAINT `fk_project_owner_user` FOREIGN KEY (`owner_user_id`) REFERENCES `sys_user` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='项目表';
 
@@ -212,6 +217,24 @@ CREATE TABLE `learner_profile_record` (
   CONSTRAINT `fk_profile_record_version` FOREIGN KEY (`profile_version_id`) REFERENCES `learner_profile_version` (`id`),
   CONSTRAINT `fk_profile_record_textbook_hint` FOREIGN KEY (`textbook_version_hint_id`) REFERENCES `textbook_version` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学情画像记录表';
+
+CREATE TABLE `learner_profile_source` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `project_id` BIGINT UNSIGNED NOT NULL COMMENT '所属项目',
+  `profile_file_id` BIGINT UNSIGNED NOT NULL COMMENT '学情文件（班级）',
+  `file_object_id` BIGINT UNSIGNED NOT NULL COMMENT '学生源 docx 文件对象',
+  `student_seq` INT NOT NULL COMMENT '班级内学生序号（从 1 递增）',
+  `original_filename` VARCHAR(255) NOT NULL COMMENT '原始文件名',
+  `student_name` VARCHAR(128) NULL COMMENT '学生姓名（解析后回填）',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_profile_source_file_seq` (`profile_file_id`, `student_seq`),
+  KEY `idx_profile_source_file` (`profile_file_id`),
+  CONSTRAINT `fk_profile_source_project` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`),
+  CONSTRAINT `fk_profile_source_file` FOREIGN KEY (`profile_file_id`) REFERENCES `learner_profile_file` (`id`),
+  CONSTRAINT `fk_profile_source_file_object` FOREIGN KEY (`file_object_id`) REFERENCES `file_object` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='学情班级源文件表';
 
 CREATE TABLE `parse_version` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
@@ -551,6 +574,34 @@ CREATE TABLE `generation_batch` (
   CONSTRAINT `fk_generation_batch_created_by` FOREIGN KEY (`created_by`) REFERENCES `sys_user` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='生成批次表';
 
+CREATE TABLE `generation_run` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `project_id` BIGINT UNSIGNED NOT NULL COMMENT '所属项目',
+  `run_status` VARCHAR(32) NOT NULL DEFAULT 'pending' COMMENT '运行状态：pending/running/waiting_user_confirm/succeeded/failed/cancelled',
+  `course_count` INT NOT NULL COMMENT '课次数',
+  `session_duration_minutes` INT NOT NULL COMMENT '单次时长',
+  `chapter_range_json` JSON NULL COMMENT '章节范围',
+  `auto_confirm_parse` TINYINT(1) NOT NULL DEFAULT 1 COMMENT '解析自动确认开关',
+  `parse_version_id` BIGINT UNSIGNED NULL COMMENT '本次运行使用的解析版本',
+  `knowledge_version_id` BIGINT UNSIGNED NULL COMMENT '本次运行使用的知识版本',
+  `generation_batch_id` BIGINT UNSIGNED NULL COMMENT '本次运行创建的生成批次',
+  `last_error_code` VARCHAR(64) NULL COMMENT '错误码',
+  `last_error_message` VARCHAR(500) NULL COMMENT '错误信息',
+  `blocked_reason` VARCHAR(64) NULL COMMENT '阻塞原因编码',
+  `started_at` DATETIME(3) NULL COMMENT '开始时间',
+  `finished_at` DATETIME(3) NULL COMMENT '结束时间',
+  `created_by` BIGINT UNSIGNED NULL COMMENT '创建人',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  KEY `idx_generation_run_project_status` (`project_id`, `run_status`, `created_at`),
+  CONSTRAINT `fk_generation_run_project` FOREIGN KEY (`project_id`) REFERENCES `project` (`id`),
+  CONSTRAINT `fk_generation_run_parse_version` FOREIGN KEY (`parse_version_id`) REFERENCES `parse_version` (`id`),
+  CONSTRAINT `fk_generation_run_knowledge_version` FOREIGN KEY (`knowledge_version_id`) REFERENCES `knowledge_version` (`id`),
+  CONSTRAINT `fk_generation_run_generation_batch` FOREIGN KEY (`generation_batch_id`) REFERENCES `generation_batch` (`id`),
+  CONSTRAINT `fk_generation_run_created_by` FOREIGN KEY (`created_by`) REFERENCES `sys_user` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='一键生成运行表';
+
 CREATE TABLE `courseware_result` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
   `generation_batch_id` BIGINT UNSIGNED NOT NULL COMMENT '生成批次',
@@ -735,6 +786,8 @@ CREATE TABLE `task_record` (
   `last_error_message` VARCHAR(500) NULL COMMENT '错误信息',
   `started_at` DATETIME(3) NULL COMMENT '开始时间',
   `finished_at` DATETIME(3) NULL COMMENT '结束时间',
+  `last_heartbeat_at` DATETIME(3) NULL COMMENT '最近心跳时间',
+  `execution_attempt_id` VARCHAR(36) NULL COMMENT '本次执行实例ID',
   `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
   `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
   PRIMARY KEY (`id`),
@@ -744,6 +797,30 @@ CREATE TABLE `task_record` (
   CONSTRAINT `fk_task_record_batch` FOREIGN KEY (`generation_batch_id`) REFERENCES `generation_batch` (`id`),
   CONSTRAINT `fk_task_record_operator` FOREIGN KEY (`operator_user_id`) REFERENCES `sys_user` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='任务主表';
+
+CREATE TABLE `lesson_plan_generation_item` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `generation_batch_id` BIGINT UNSIGNED NOT NULL COMMENT '生成批次',
+  `task_record_id` BIGINT UNSIGNED NULL COMMENT '任务主表',
+  `class_session_no` INT NOT NULL COMMENT '课次序号',
+  `lesson_title` VARCHAR(255) NULL COMMENT '课次标题',
+  `item_status` VARCHAR(32) NOT NULL DEFAULT 'pending' COMMENT '课次生成状态：pending/processing/success/failure',
+  `summary_text` TEXT NULL COMMENT '摘要',
+  `content_json` JSON NULL COMMENT '教案内容',
+  `llm_usage_json` JSON NULL COMMENT 'LLM 用量',
+  `last_error_code` VARCHAR(64) NULL COMMENT '错误码',
+  `last_error_message` VARCHAR(500) NULL COMMENT '错误信息',
+  `last_error_detail_json` JSON NULL COMMENT '错误详情',
+  `retry_count` INT NOT NULL DEFAULT 0 COMMENT '重试次数',
+  `created_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
+  `updated_at` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_lesson_plan_generation_item_session` (`generation_batch_id`, `class_session_no`),
+  KEY `idx_lesson_plan_generation_item_task` (`task_record_id`, `item_status`),
+  KEY `idx_lesson_plan_generation_item_batch_status` (`generation_batch_id`, `item_status`),
+  CONSTRAINT `fk_lesson_plan_generation_item_batch` FOREIGN KEY (`generation_batch_id`) REFERENCES `generation_batch` (`id`),
+  CONSTRAINT `fk_lesson_plan_generation_item_task` FOREIGN KEY (`task_record_id`) REFERENCES `task_record` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='教案课次生成中间结果表';
 
 CREATE TABLE `task_step_record` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT COMMENT '主键',
@@ -810,7 +887,9 @@ ALTER TABLE `project`
   ADD CONSTRAINT `fk_project_current_profile_version`
     FOREIGN KEY (`current_learner_profile_version_id`) REFERENCES `learner_profile_version` (`id`),
   ADD CONSTRAINT `fk_project_latest_generation_batch`
-    FOREIGN KEY (`latest_generation_batch_id`) REFERENCES `generation_batch` (`id`);
+    FOREIGN KEY (`latest_generation_batch_id`) REFERENCES `generation_batch` (`id`),
+  ADD CONSTRAINT `fk_project_active_generation_run`
+    FOREIGN KEY (`active_generation_run_id`) REFERENCES `generation_run` (`id`);
 
 ALTER TABLE `lesson_plan`
   ADD CONSTRAINT `fk_lesson_plan_generation_batch`

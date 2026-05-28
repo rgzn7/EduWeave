@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-16
+@Date: 2026-05-28
 @Author: xisy
 @Discription: LLM 服务配置、重试、流式与解析-修复行为测试
 """
@@ -56,6 +56,7 @@ def build_settings(
     *,
     llm_max_retries: int = 2,
     llm_retry_base_seconds: int = 1,
+    llm_stream_error_detail_max_chars: int = 4096,
     llm_parse_repair_max_attempts: int = 2,
 ) -> Settings:
     """构造测试配置。"""
@@ -76,6 +77,7 @@ def build_settings(
         llm_reasoning_effort=reasoning_effort,
         llm_max_retries=llm_max_retries,
         llm_retry_base_seconds=llm_retry_base_seconds,
+        llm_stream_error_detail_max_chars=llm_stream_error_detail_max_chars,
         llm_parse_repair_max_attempts=llm_parse_repair_max_attempts,
         milvus_uri="http://127.0.0.1:19530",
         milvus_embedding_dim=4,
@@ -458,6 +460,115 @@ def test_response_stream_raises_on_error_event() -> None:
         )
 
     assert exc_info.value.code == BusinessErrorCode.LLM_REQUEST_FAILED
+    assert exc_info.value.details == {
+        "api_format": "responses",
+        "transport": "stream",
+        "event_type": "response.failed",
+        "retryable": True,
+        "error": {"message": "boom"},
+    }
+
+
+def test_response_stream_retries_sse_error_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Responses 流式 200+错误事件应在单次请求层重试。"""
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    calls = {"n": 0}
+    failed_sse = _sse_event("response.failed", {"error": {"message": "boom"}})
+    success_sse = (
+        _sse_event("response.output_text.delta", {"delta": "{\"ok\": true}"})
+        + _sse_event("response.completed", {"response": {}})
+        + b"data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        content = failed_sse if calls["n"] == 1 else success_sse
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=content)
+
+    settings = build_settings(None, llm_max_retries=2)
+    service = OpenAICompatibleLlmService(client=_build_real_client(handler, settings), settings=settings)
+
+    result = service.generate_structured_output(
+        messages=[ChatMessage(role="user", content="返回 ok")],
+        response_model=DemoStructuredResponse,
+    )
+
+    assert result.ok is True
+    assert calls["n"] == 2
+
+
+def test_response_stream_should_preserve_safe_incomplete_detail() -> None:
+    """Responses incomplete 事件应保留安全原因字段。"""
+    sse = _sse_event(
+        "response.incomplete",
+        {"response": {"id": "resp_1", "status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}}},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+
+    settings = build_settings(None, llm_max_retries=0)
+    service = OpenAICompatibleLlmService(client=_build_real_client(handler, settings), settings=settings)
+
+    with pytest.raises(AppException) as exc_info:
+        service.generate_structured_output(
+            messages=[ChatMessage(role="user", content="返回 ok")],
+            response_model=DemoStructuredResponse,
+        )
+
+    assert exc_info.value.details == {
+        "api_format": "responses",
+        "transport": "stream",
+        "event_type": "response.incomplete",
+        "retryable": True,
+        "response": {"id": "resp_1", "status": "incomplete"},
+        "incomplete_details": {"reason": "max_output_tokens"},
+    }
+
+
+def test_response_stream_should_not_retry_non_retryable_sse_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """不可恢复的 Responses 流式错误不应进入请求层重试。"""
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    calls = {"n": 0}
+    failed_sse = _sse_event(
+        "response.failed",
+        {"error": {"type": "invalid_request_error", "code": "context_length_exceeded", "message": "too long"}},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=failed_sse)
+
+    settings = build_settings(None, llm_max_retries=2)
+    service = OpenAICompatibleLlmService(client=_build_real_client(handler, settings), settings=settings)
+
+    with pytest.raises(AppException) as exc_info:
+        service.generate_structured_output(
+            messages=[ChatMessage(role="user", content="返回 ok")],
+            response_model=DemoStructuredResponse,
+        )
+
+    assert calls["n"] == 1
+    assert exc_info.value.details["retryable"] is False
+
+
+def test_response_stream_should_truncate_safe_error_detail() -> None:
+    """流式错误详情应按配置截断。"""
+    sse = _sse_event("response.failed", {"error": {"message": "x" * 20}})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=sse)
+
+    settings = build_settings(None, llm_max_retries=0, llm_stream_error_detail_max_chars=8)
+    service = OpenAICompatibleLlmService(client=_build_real_client(handler, settings), settings=settings)
+
+    with pytest.raises(AppException) as exc_info:
+        service.generate_structured_output(
+            messages=[ChatMessage(role="user", content="返回 ok")],
+            response_model=DemoStructuredResponse,
+        )
+
+    assert exc_info.value.details["error"]["message"] == "x" * 8
 
 
 def test_chat_completion_stream_accumulates_delta() -> None:
@@ -499,6 +610,34 @@ def test_chat_completion_stream_raises_on_error_event() -> None:
         )
 
     assert exc_info.value.code == BusinessErrorCode.LLM_REQUEST_FAILED
+
+
+def test_chat_completion_stream_retries_error_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Chat Completions 流式 200+error 体应在单次请求层重试。"""
+    monkeypatch.setattr(time, "sleep", lambda *_: None)
+    calls = {"n": 0}
+    failed_sse = _sse_data({"error": {"message": "boom"}})
+    success_sse = (
+        _sse_data(_chat_chunk("{\"ok\": "))
+        + _sse_data(_chat_chunk("true}"))
+        + b"data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        content = failed_sse if calls["n"] == 1 else success_sse
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=content)
+
+    settings = build_settings(None, llm_api_format="chat", llm_max_retries=2)
+    service = OpenAICompatibleLlmService(client=_build_real_client(handler, settings), settings=settings)
+
+    result = service.generate_structured_output(
+        messages=[ChatMessage(role="user", content="返回 json ok")],
+        response_model=DemoStructuredResponse,
+    )
+
+    assert result.ok is True
+    assert calls["n"] == 2
 
 
 def test_chat_completion_non_stream_json_fallback() -> None:

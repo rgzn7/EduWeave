@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-30
+@Date: 2026-05-28
 @Author: xisy
 @Discription: EduWeave P0 阶段数据库模型骨架
 """
@@ -354,6 +354,35 @@ class LearnerProfileRecord(TimestampMixin, Base):
     summary_text: Mapped[str | None] = mapped_column(Text, nullable=True, comment="摘要")
     evidence_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="原文依据")
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"), comment="排序")
+
+
+class LearnerProfileSource(TimestampMixin, Base):
+    """学情班级源文件表（一个班级挂多个学生 docx）。"""
+
+    __tablename__ = "learner_profile_source"
+    __table_args__ = (
+        Index("uk_profile_source_file_seq", "profile_file_id", "student_seq", unique=True),
+        Index("idx_profile_source_file", "profile_file_id"),
+        {"comment": "学情班级源文件表"},
+    )
+
+    id: Mapped[int] = mapped_column(MYSQL_BIGINT_UNSIGNED, primary_key=True, autoincrement=True, comment="主键")
+    project_id: Mapped[int] = mapped_column(MYSQL_BIGINT_UNSIGNED, ForeignKey("project.id"), nullable=False, comment="所属项目")
+    profile_file_id: Mapped[int] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("learner_profile_file.id"),
+        nullable=False,
+        comment="学情文件（班级）",
+    )
+    file_object_id: Mapped[int] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("file_object.id"),
+        nullable=False,
+        comment="学生源 docx 文件对象",
+    )
+    student_seq: Mapped[int] = mapped_column(Integer, nullable=False, comment="班级内学生序号（从 1 递增）")
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False, comment="原始文件名")
+    student_name: Mapped[str | None] = mapped_column(String(128), nullable=True, comment="学生姓名（解析后回填）")
 
 
 class ParseVersion(TimestampMixin, Base):
@@ -938,6 +967,48 @@ class LessonPlan(TimestampMixin, Base):
         nullable=True,
         comment="创建人",
     )
+
+
+class LessonPlanGenerationItem(TimestampMixin, Base):
+    """教案课次生成中间结果表。"""
+
+    __tablename__ = "lesson_plan_generation_item"
+    __table_args__ = (
+        Index("uk_lesson_plan_generation_item_session", "generation_batch_id", "class_session_no", unique=True),
+        Index("idx_lesson_plan_generation_item_task", "task_record_id", "item_status"),
+        Index("idx_lesson_plan_generation_item_batch_status", "generation_batch_id", "item_status"),
+        {"comment": "教案课次生成中间结果表"},
+    )
+
+    id: Mapped[int] = mapped_column(MYSQL_BIGINT_UNSIGNED, primary_key=True, autoincrement=True, comment="主键")
+    generation_batch_id: Mapped[int] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("generation_batch.id"),
+        nullable=False,
+        comment="生成批次",
+    )
+    task_record_id: Mapped[int | None] = mapped_column(
+        MYSQL_BIGINT_UNSIGNED,
+        ForeignKey("task_record.id"),
+        nullable=True,
+        comment="任务主表",
+    )
+    class_session_no: Mapped[int] = mapped_column(Integer, nullable=False, comment="课次序号")
+    lesson_title: Mapped[str | None] = mapped_column(String(255), nullable=True, comment="课次标题")
+    item_status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="pending",
+        server_default=text("'pending'"),
+        comment="课次生成状态：pending/processing/success/failure",
+    )
+    summary_text: Mapped[str | None] = mapped_column(Text, nullable=True, comment="摘要")
+    content_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="教案内容")
+    llm_usage_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="LLM 用量")
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True, comment="错误码")
+    last_error_message: Mapped[str | None] = mapped_column(String(500), nullable=True, comment="错误信息")
+    last_error_detail_json: Mapped[dict[str, Any] | None] = mapped_column(MYSQL_JSON, nullable=True, comment="错误详情")
+    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"), comment="重试次数")
 
 
 class AssessmentBlueprint(TimestampMixin, Base):

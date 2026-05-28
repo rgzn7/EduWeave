@@ -1,0 +1,7 @@
+<svg width="40" height="40" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Milvus">
+  <rect x="2" y="2" width="36" height="36" rx="10" fill="#F2F9FF"/>
+  <path d="M6.5 20C9.8 14.8 14.2 12.2 20 12.2C25.8 12.2 30.2 14.8 33.5 20C30.2 25.2 25.8 27.8 20 27.8C14.2 27.8 9.8 25.2 6.5 20Z" fill="#E5F3FF" stroke="#159BFF" stroke-width="2.2" stroke-linejoin="round"/>
+  <circle cx="20" cy="20" r="5.2" fill="#159BFF"/>
+  <circle cx="20" cy="20" r="2" fill="#FFFFFF"/>
+  <path d="M11 20H7M33 20H29M20 8V12" stroke="#0B7A6E" stroke-width="2" stroke-linecap="round"/>
+</svg>

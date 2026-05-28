@@ -11,11 +11,10 @@ import {
   DEFAULT_SESSION_DURATION_MINUTES,
   SESSION_DURATION_MINUTES_MAX,
   SESSION_DURATION_MINUTES_MIN,
-  markAutoCoreGeneration,
 } from "../lib/autoCoreGeneration";
 import { api } from "../lib/api";
 import { cn, formatDate } from "../utils";
-import type { GenerationBatch, Project } from "../types";
+import type { GenerationBatch, Project, TextbookVersion } from "../types";
 
 type ProjectCaseState = "completed" | "processing" | "failed" | "ready_to_generate" | "incomplete";
 
@@ -25,6 +24,7 @@ type ProjectCase = {
   statusLabel: string;
   actionLabel: string;
   detailLabel?: string;
+  textbook?: TextbookVersion;
   href: string;
 };
 
@@ -128,27 +128,31 @@ function extractVolumeLabel(name: string) {
   return "";
 }
 
-function getProjectDisplayTitle(project: Project) {
-  const name = stripExtension(project.name);
-  const subject = subjectLabels[project.subject_code];
-  const grade = gradeLabels[project.grade_code];
+function getProjectDisplayTitle(project: Project, textbook?: TextbookVersion) {
+  const name = stripExtension(textbook?.textbook_name || project.name);
+  const subject = subjectLabels[textbook?.subject_code || project.subject_code];
+  const grade = gradeLabels[textbook?.grade_code || project.grade_code];
   const looksLikeTextbookName = name.includes("教材") || name.includes("出版社");
-  if (looksLikeTextbookName && subject && grade) {
+  if ((textbook || looksLikeTextbookName) && subject && grade) {
     return `${subject}${grade}${extractVolumeLabel(name)}`;
   }
   return name;
 }
 
-function getProjectDisplaySubtitle(project: Project) {
-  const name = stripExtension(project.name);
-  const subject = subjectLabels[project.subject_code] ?? project.subject_code;
-  const grade = gradeLabels[project.grade_code] ?? project.grade_code;
-  const publisher = extractPublisher(name);
+function getProjectDisplaySubtitle(project: Project, textbook?: TextbookVersion) {
+  const name = stripExtension(textbook?.textbook_name || project.name);
+  const subject = subjectLabels[textbook?.subject_code || project.subject_code] ?? textbook?.subject_code ?? project.subject_code;
+  const grade = gradeLabels[textbook?.grade_code || project.grade_code] ?? textbook?.grade_code ?? project.grade_code;
+  const publisher = textbook?.publisher || extractPublisher(name);
   return publisher ? `${publisher} · ${subject} / ${grade}` : `${subject} / ${grade}`;
 }
 
 function hasLessonPlan(batch?: GenerationBatch) {
   return Boolean(batch?.lesson_plan_id || (Array.isArray(batch?.lesson_plan_ids) && batch.lesson_plan_ids.length > 0));
+}
+
+function isReadyLearnerProfileFile(profileFile: Awaited<ReturnType<typeof api.uploadLearnerProfile>>) {
+  return profileFile.latest_version?.version_status === "ready" && profileFile.latest_version.extract_status === "success";
 }
 
 function getFailedCaseDetailLabel(batch?: GenerationBatch) {
@@ -164,42 +168,18 @@ function getFailedCaseDetailLabel(batch?: GenerationBatch) {
   return "覆盖报告待继续生成";
 }
 
-function getCaseStatusLabel(project: Project, state: ProjectCaseState) {
+function getCaseStatusLabel(state: ProjectCaseState) {
   if (state === "completed") {
     return "已完成";
   }
-  if (state === "processing") {
-    return "生成中";
-  }
-  if (state === "failed") {
-    return "待继续";
-  }
-  if (state === "ready_to_generate") {
-    return "待生成";
-  }
-  if (project.current_textbook_version_id || project.current_learner_profile_version_id) {
-    return "待补充";
-  }
-  return "未开始";
+  return "生成中";
 }
 
-function getCaseActionLabel(project: Project, state: ProjectCaseState) {
+function getCaseActionLabel(state: ProjectCaseState) {
   if (state === "completed") {
     return "查看资源";
   }
-  if (state === "processing") {
-    return "查看进度";
-  }
-  if (state === "ready_to_generate") {
-    return "继续生成";
-  }
-  if (state === "failed") {
-    return "继续生成";
-  }
-  if (project.current_textbook_version_id || project.current_learner_profile_version_id) {
-    return "继续补充";
-  }
-  return "开始补充";
+  return "查看进度";
 }
 
 function getCaseLink(project: Project, state: ProjectCaseState) {
@@ -209,14 +189,15 @@ function getCaseLink(project: Project, state: ProjectCaseState) {
   return `/projects/${project.id}`;
 }
 
-function buildProjectCase(project: Project, batch?: GenerationBatch, hasBatchError?: boolean): ProjectCase {
+function buildProjectCase(project: Project, batch?: GenerationBatch, hasBatchError?: boolean, textbook?: TextbookVersion): ProjectCase {
   const state = getCaseState(project, batch, hasBatchError);
   return {
     project,
     state,
-    statusLabel: getCaseStatusLabel(project, state),
-    actionLabel: getCaseActionLabel(project, state),
+    statusLabel: getCaseStatusLabel(state),
+    actionLabel: getCaseActionLabel(state),
     detailLabel: state === "failed" ? getFailedCaseDetailLabel(batch) : undefined,
+    textbook,
     href: getCaseLink(project, state),
   };
 }
@@ -256,8 +237,9 @@ function ComposerMaterialRow({
   title,
   description,
   accept,
-  file,
+  files,
   disabled,
+  multiple,
   onChange,
   actionLabel,
 }: {
@@ -265,11 +247,17 @@ function ComposerMaterialRow({
   title: string;
   description: string;
   accept: string;
-  file: File | null;
+  files: File[];
   disabled?: boolean;
-  onChange: (file: File | null) => void;
+  multiple?: boolean;
+  onChange: (files: File[]) => void;
   actionLabel: string;
 }) {
+  const selectedLabel =
+    files.length > 1
+      ? `已选择 ${files.length} 份：${files.slice(0, 2).map((file) => file.name).join("、")}${files.length > 2 ? " 等" : ""}`
+      : files[0]?.name;
+
   return (
     <div className={cn("flex flex-col gap-4 px-3 py-5 transition md:flex-row md:items-center md:justify-between", disabled && "opacity-45")}>
       <div className="flex min-w-0 gap-4">
@@ -277,10 +265,10 @@ function ComposerMaterialRow({
         <div className="min-w-0">
           <h2 className="text-base font-semibold text-ink">{title}</h2>
           <p className="mt-1 text-sm leading-6 text-ink/52">{description}</p>
-          {file ? (
+          {selectedLabel ? (
             <div className="mt-3 flex min-w-0 items-center gap-2 text-sm font-medium text-ink">
               <CheckCircle2 className="shrink-0" size={16} />
-              <span className="truncate">{file.name}</span>
+              <span className="truncate">{selectedLabel}</span>
             </div>
           ) : null}
         </div>
@@ -298,10 +286,11 @@ function ComposerMaterialRow({
           type="file"
           accept={accept}
           disabled={disabled}
-          onChange={(event) => onChange(event.target.files?.[0] ?? null)}
+          multiple={multiple}
+          onChange={(event) => onChange(Array.from(event.target.files ?? []))}
         />
         <UploadCloud size={16} />
-        {file ? "更换" : actionLabel}
+        {files.length ? "更换" : actionLabel}
       </label>
     </div>
   );
@@ -360,7 +349,7 @@ function GenerationSettingStepper({
 
 function LessonPrepComposer({
   textbookFile,
-  profileFile,
+  profileFiles,
   courseCount,
   sessionDurationMinutes,
   isPending,
@@ -370,12 +359,12 @@ function LessonPrepComposer({
   onSessionDurationMinutesChange,
 }: {
   textbookFile: File | null;
-  profileFile: File | null;
+  profileFiles: File[];
   courseCount: number;
   sessionDurationMinutes: number;
   isPending: boolean;
   onTextbookChange: (file: File | null) => void;
-  onProfileChange: (file: File | null) => void;
+  onProfileChange: (files: File[]) => void;
   onCourseCountChange: (value: number) => void;
   onSessionDurationMinutesChange: (value: number) => void;
 }) {
@@ -385,23 +374,24 @@ function LessonPrepComposer({
         accept="application/pdf,.pdf"
         actionLabel="选择教材"
         description="基于教材生成课程方案、教案、PPT 课件和配套测练。"
-        file={textbookFile}
+        files={textbookFile ? [textbookFile] : []}
         step={1}
         title="上传教材 PDF"
-        onChange={onTextbookChange}
+        onChange={(files) => onTextbookChange(files[0] ?? null)}
       />
       <div className="mx-3 border-t border-line/75" />
       <ComposerMaterialRow
         accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         actionLabel="选择学情"
-        description="根据学生基础、薄弱点和课时安排，调整讲解重点和练习难度。"
+        description="可一次选择多份学生 DOCX，系统会聚合为班级画像并用于生成备课资源。"
         disabled={!textbookFile}
-        file={profileFile}
+        files={profileFiles}
+        multiple
         step={2}
-        title="补充学情分析 DOCX"
+        title="上传班级学情 DOCX"
         onChange={onProfileChange}
       />
-      {textbookFile && profileFile ? (
+      {textbookFile && profileFiles.length ? (
         <>
           <div className="mx-3 border-t border-line/75" />
           <div className="grid gap-4 px-3 py-5 lg:grid-cols-[auto_minmax(0,1fr)_auto] lg:items-center lg:gap-8">
@@ -423,7 +413,7 @@ function LessonPrepComposer({
               />
               <GenerationSettingStepper
                 disabled={isPending}
-                label="课时"
+                label="时长"
                 max={SESSION_DURATION_MINUTES_MAX}
                 min={SESSION_DURATION_MINUTES_MIN}
                 step={5}
@@ -460,8 +450,8 @@ function CaseStatusPill({ label, state }: { label: string; state: ProjectCaseSta
 }
 
 function CaseCard({ item }: { item: ProjectCase }) {
-  const title = getProjectDisplayTitle(item.project);
-  const subtitle = getProjectDisplaySubtitle(item.project);
+  const title = getProjectDisplayTitle(item.project, item.textbook);
+  const subtitle = getProjectDisplaySubtitle(item.project, item.textbook);
   const date = formatDate(item.project.last_activity_at ?? item.project.updated_at);
 
   return (
@@ -505,7 +495,7 @@ export function DashboardPage() {
   const location = useLocation();
   const queryClient = useQueryClient();
   const [textbookFile, setTextbookFile] = useState<File | null>(null);
-  const [profileFile, setProfileFile] = useState<File | null>(null);
+  const [profileFiles, setProfileFiles] = useState<File[]>([]);
   const [courseCount, setCourseCount] = useState(DEFAULT_COURSE_COUNT);
   const [sessionDurationMinutes, setSessionDurationMinutes] = useState(DEFAULT_SESSION_DURATION_MINUTES);
   const isHistoryPage = location.pathname === "/history";
@@ -514,13 +504,20 @@ export function DashboardPage() {
     queryKey: ["projects"],
     queryFn: () => api.listProjects({ page: 1, page_size: 50 }),
   });
+  const projectsErrorNotice = projectsQuery.error ? (
+    <ErrorNotice title="备课记录加载失败" message="后端项目接口暂时不可用，请确认数据库已更新到最新后端 SQL。" />
+  ) : null;
 
   const startLessonPrep = useMutation({
     mutationFn: async () => {
-      if (!textbookFile || !profileFile) {
+      if (!textbookFile || !profileFiles.length) {
         throw new Error("MATERIAL_REQUIRED");
       }
       const textbookName = stripExtension(textbookFile.name);
+      const profileTitle =
+        profileFiles.length > 1
+          ? `${stripExtension(profileFiles[0].name) || "班级学情"}等${profileFiles.length}名学生`
+          : stripExtension(profileFiles[0].name) || profileFiles[0].name;
       const project = await api.createProject({
         name: textbookName || "AI 备课",
         subject_code: inferSubjectCode(textbookFile.name),
@@ -532,18 +529,35 @@ export function DashboardPage() {
         textbook_name: textbookName || textbookFile.name,
         set_as_current: true,
       });
-      await api.uploadLearnerProfile(project.id, {
-        file: profileFile,
-        title: stripExtension(profileFile.name) || profileFile.name,
+      const profile = await api.uploadLearnerProfile(project.id, {
+        files: profileFiles,
+        title: profileTitle,
         auto_extract: true,
         set_as_current: true,
       });
+      if (isReadyLearnerProfileFile(profile)) {
+        try {
+          await api.startGenerationRun(project.id, {
+            course_count: courseCount,
+            session_duration_minutes: sessionDurationMinutes,
+            auto_confirm_parse: true,
+          });
+        } catch {
+          // ProjectWorkspacePage will retry once the backend baseline is visible.
+        }
+      }
       return project;
     },
     onSuccess: (project) => {
-      markAutoCoreGeneration(project.id, { courseCount, sessionDurationMinutes });
       queryClient.invalidateQueries({ queryKey: ["projects"] });
-      navigate(`/projects/${project.id}`);
+      navigate(`/projects/${project.id}`, {
+        state: {
+          generationSettings: {
+            courseCount,
+            sessionDurationMinutes,
+          },
+        },
+      });
     },
   });
 
@@ -556,9 +570,19 @@ export function DashboardPage() {
       retry: false,
     })),
   });
+  const textbookQueries = useQueries({
+    queries: projects.map((project) => ({
+      queryKey: ["textbooks", project.id, "dashboard-card"],
+      queryFn: () => api.listTextbooks(project.id),
+      enabled: Boolean(project.current_textbook_version_id),
+      retry: false,
+    })),
+  });
   const projectCases = projects.map((project, index) => {
     const batchQuery = batchQueries[index];
-    return buildProjectCase(project, batchQuery?.data as GenerationBatch | undefined, batchQuery?.isError);
+    const textbooks = textbookQueries[index]?.data?.items ?? [];
+    const currentTextbook = textbooks.find((item) => item.id === project.current_textbook_version_id) ?? textbooks.find((item) => item.is_current);
+    return buildProjectCase(project, batchQuery?.data as GenerationBatch | undefined, batchQuery?.isError, currentTextbook);
   });
   const sortedCases = sortRecentCases(projectCases);
   const visibleCases = isHistoryPage ? sortedCases : sortedCases.slice(0, 4);
@@ -566,13 +590,13 @@ export function DashboardPage() {
   function handleTextbookChange(file: File | null) {
     setTextbookFile(file);
     if (!file) {
-      setProfileFile(null);
+      setProfileFiles([]);
     }
   }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (textbookFile && profileFile) {
+    if (textbookFile && profileFiles.length) {
       startLessonPrep.mutate();
     }
   }
@@ -584,7 +608,7 @@ export function DashboardPage() {
           <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
             <div>
               <h1 className="text-3xl font-semibold tracking-[-0.03em] text-ink md:text-4xl">备课记录</h1>
-              <p className="mt-3 text-sm text-ink/45">查看所有备课，包括正在生成、待继续和已完成的记录。</p>
+              <p className="mt-3 text-sm text-ink/45">查看所有备课，包括正在生成和已完成的记录。</p>
             </div>
             <Link className="btn btn-primary h-10 shrink-0 rounded-md px-4" to="/">
               <Plus size={16} />
@@ -598,6 +622,8 @@ export function DashboardPage() {
                 <Loader2 className="mr-2 animate-spin" size={17} />
                 正在加载
               </div>
+            ) : projectsErrorNotice ? (
+              <div className="col-span-full">{projectsErrorNotice}</div>
             ) : visibleCases.length ? (
               visibleCases.map((item) => <CaseCard item={item} key={item.project.id} />)
             ) : (
@@ -622,11 +648,11 @@ export function DashboardPage() {
           <LessonPrepComposer
             courseCount={courseCount}
             isPending={startLessonPrep.isPending}
-            profileFile={profileFile}
+            profileFiles={profileFiles}
             sessionDurationMinutes={sessionDurationMinutes}
             textbookFile={textbookFile}
             onCourseCountChange={setCourseCount}
-            onProfileChange={setProfileFile}
+            onProfileChange={setProfileFiles}
             onSessionDurationMinutesChange={setSessionDurationMinutes}
             onTextbookChange={handleTextbookChange}
           />
@@ -640,8 +666,9 @@ export function DashboardPage() {
             <h2 className="text-base font-semibold text-ink/82">最近备课</h2>
             <p className="mt-2 text-sm text-ink/42">继续未完成的备课，或快速打开最近生成好的资源。</p>
           </div>
-          <Link className="shrink-0 text-sm font-semibold text-ink/58 transition hover:text-ink" to="/history">
+          <Link className="group inline-flex shrink-0 items-center gap-1.5 text-sm font-semibold text-ink/58 transition hover:text-ink" to="/history">
             查看更多
+            <ArrowRight className="transition group-hover:translate-x-0.5" size={14} />
           </Link>
         </div>
 
@@ -651,6 +678,8 @@ export function DashboardPage() {
               <Loader2 className="mr-2 animate-spin" size={17} />
               正在加载
             </div>
+          ) : projectsErrorNotice ? (
+            <div className="col-span-full">{projectsErrorNotice}</div>
           ) : visibleCases.length ? (
             visibleCases.map((item) => <CaseCard item={item} key={item.project.id} />)
           ) : (

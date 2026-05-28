@@ -11,11 +11,14 @@ import type {
   FileDownloadUrl,
   GenerationBatch,
   GenerationProcess,
+  GenerationRun,
+  GenerationRunCreatePayload,
   HomeworkQuestionListItem,
   HomeworkResult,
   HomeworkResultDetail,
   KnowledgeChapter,
   KnowledgePoint,
+  KnowledgePointDetail,
   KnowledgeVersion,
   LearnerProfileFile,
   LearnerProfileVersion,
@@ -184,14 +187,16 @@ export const api = {
   uploadLearnerProfile(
     projectId: number,
     payload: {
-      file: File;
+      files: File[];
       title?: string;
       auto_extract?: boolean;
       set_as_current?: boolean;
     },
   ) {
     const formData = new FormData();
-    formData.append("file", payload.file);
+    payload.files.forEach((file) => {
+      formData.append("files", file);
+    });
     if (payload.title) {
       formData.append("title", payload.title);
     }
@@ -242,6 +247,9 @@ export const api = {
       { page: 1, page_size: 20, ...query },
     );
   },
+  getKnowledgePoint(knowledgePointId: number) {
+    return request<KnowledgePointDetail>(`/api/v1/knowledge-points/${knowledgePointId}`);
+  },
   createGenerationBatch(payload: CreateGenerationBatchPayload) {
     return request<GenerationBatch>("/api/v1/generation-batches", {
       method: "POST",
@@ -260,6 +268,15 @@ export const api = {
   },
   getGenerationProcess(projectId: number) {
     return request<GenerationProcess>(`/api/v1/projects/${projectId}/generation-process`);
+  },
+  startGenerationRun(projectId: number, payload: GenerationRunCreatePayload) {
+    return request<GenerationRun>(`/api/v1/projects/${projectId}/generation-runs`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  getActiveGenerationRun(projectId: number) {
+    return request<GenerationRun | null>(`/api/v1/projects/${projectId}/generation-runs/active`);
   },
   listCurriculumPlans(query: { project_id: number; knowledge_version_id?: number; page?: number; page_size?: number }) {
     return request<PageResult<CurriculumPlan>>("/api/v1/curriculum-plans", {}, { page: 1, page_size: 20, ...query });
@@ -380,6 +397,11 @@ export const api = {
   },
   refreshCoursewareResult(coursewareResultId: number) {
     return request<CoursewareResult>(`/api/v1/courseware-results/${coursewareResultId}/refresh`, {
+      method: "POST",
+    });
+  },
+  regenerateCoursewareResult(coursewareResultId: number) {
+    return request<CoursewareResult>(`/api/v1/courseware-results/${coursewareResultId}/regenerate`, {
       method: "POST",
     });
   },

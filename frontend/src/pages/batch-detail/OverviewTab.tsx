@@ -93,8 +93,8 @@ export function OverviewTab({
           <div className="flex items-center gap-3 rounded-md border border-line bg-paper/60 p-4">
             <Layers3 className="text-leaf" size={22} />
             <div>
-              <div className="text-sm font-bold">完成时间</div>
-              <div className="text-sm text-ink/55">{formatDate(batch.finished_at)}</div>
+              <div className="text-sm font-bold">生成进度</div>
+              <div className="text-sm text-ink/55">{taskProgress}%</div>
             </div>
           </div>
         </div>

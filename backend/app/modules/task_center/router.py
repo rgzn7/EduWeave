@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-13
+@Date: 2026-05-28
 @Author: xisy
 @Discription: 任务中心模块路由
 """
@@ -78,3 +78,27 @@ def get_task_detail(
     """获取任务详情。"""
     detail = service.get_task_detail(owner_user_id=current_user.id, task_id=task_id)
     return ResponseFactory.success(detail.model_dump(mode="json"), "获取任务详情成功")
+
+
+@router.post(
+    "/tasks/{task_id}/retry",
+    summary="重试失败任务",
+    description=(
+        "重试当前教师可见的失败任务。当前版本仅支持 task_status=failure 且 "
+        "task_type=lesson_plan_generate 的多课时教案生成任务；无请求体。"
+        "成功后返回 202，任务会回到 pending、retry_count 归零、错误字段清空、步骤重置，"
+        "并复用原任务、生成批次和任务载荷重新派发。非本人任务返回 404，"
+        "非失败态或非教案任务返回 409。"
+    ),
+    operation_id="task_center_retry",
+    response_model=ApiResponse[TaskDetailResponse],
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_task(
+    task_id: int = Path(..., description="任务主键", examples=[1]),
+    service: Annotated[TaskCenterService, Depends(get_task_center_service)] = None,
+    current_user: Annotated[SysUser, Depends(get_current_user)] = None,
+):
+    """重试失败任务。"""
+    detail = service.retry_task(owner_user_id=current_user.id, task_id=task_id)
+    return ResponseFactory.success(detail.model_dump(mode="json"), "任务已重新派发")

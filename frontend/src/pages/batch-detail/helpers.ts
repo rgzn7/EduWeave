@@ -42,6 +42,18 @@ export function displayValue(value: unknown): string {
   return String(value);
 }
 
+export function formatLessonTitle(title?: string | null) {
+  const original = String(title ?? "").trim();
+  if (!original) {
+    return "未命名课程";
+  }
+  const cleaned = original
+    .replace(/^第\s*[一二三四五六七八九十百千万\d]+\s*(?:课次|课时|讲|课|节|次)\s*[：:、,，.\-\s]*/u, "")
+    .replace(/^(?:课次|课时|次)\s*[：:、,，.\-\s]+/u, "")
+    .trim();
+  return cleaned || original;
+}
+
 export function latestByUpdated<T extends { id: number; updated_at: string }>(items: T[]) {
   return [...items].sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime() || b.id - a.id)[0];
 }

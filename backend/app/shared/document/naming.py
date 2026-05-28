@@ -48,8 +48,11 @@ def safe_filename_stem(stem: str | None, *, fallback: str = "导出") -> str:
     return cleaned or fallback
 
 
-def build_docx_filename(*segments: str | None, fallback: str = "导出") -> str:
-    """以 `-` 拼接若干段并补 `.docx` 扩展名，空段自动跳过。"""
+def build_document_filename(*segments: str | None, ext: str, fallback: str = "导出") -> str:
+    """以 `-` 拼接若干段并补指定扩展名，空段自动跳过。
+
+    ext 需以 `.` 开头，如 `.docx`、`.pptx`。
+    """
     parts: list[str] = []
     for segment in segments:
         if not segment:
@@ -59,4 +62,14 @@ def build_docx_filename(*segments: str | None, fallback: str = "导出") -> str:
             parts.append(cleaned)
     if not parts:
         parts = [fallback]
-    return "-".join(parts) + ".docx"
+    return "-".join(parts) + ext
+
+
+def build_docx_filename(*segments: str | None, fallback: str = "导出") -> str:
+    """以 `-` 拼接若干段并补 `.docx` 扩展名，空段自动跳过。"""
+    return build_document_filename(*segments, ext=".docx", fallback=fallback)
+
+
+def build_pptx_filename(*segments: str | None, fallback: str = "导出") -> str:
+    """以 `-` 拼接若干段并补 `.pptx` 扩展名，空段自动跳过。"""
+    return build_document_filename(*segments, ext=".pptx", fallback=fallback)

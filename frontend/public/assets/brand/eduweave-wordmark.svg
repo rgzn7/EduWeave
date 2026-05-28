@@ -1,0 +1,14 @@
+<svg width="252" height="56" viewBox="0 0 252 56" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="EduWeave">
+  <title>EduWeave</title>
+  <style>
+    .wordmark {
+      font-family: "Avenir Next", "Inter", "SF Pro Display", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 36px;
+      font-weight: 700;
+      letter-spacing: -1.5px;
+    }
+  </style>
+  <text class="wordmark" x="4" y="39" fill="#111111">Edu</text>
+  <text class="wordmark" x="73" y="39" fill="#19796D">Weave</text>
+  <path d="M76 46C96 52 113 40 133 46C153 52 171 40 192 46" stroke="#D5A44A" stroke-width="3" stroke-linecap="round"/>
+</svg>

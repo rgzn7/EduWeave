@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-27
+@Date: 2026-05-28
 @Author: xisy
 @Discription: 生成过程展示模块业务服务，把内部任务聚合成 6 步产品化展示
 """
@@ -159,6 +159,9 @@ PUBLIC_PROGRESS_DETAIL_KEYS: set[str] = {
     "lesson_plan_count",
     "last_completed_chapter_path",
     "last_completed_class_session_no",
+    "failed_session_no",
+    "failed_session_title",
+    "session_retry_count",
     "parallel_limit",
     "cache_warmup_completed",
     "coverage_rate",

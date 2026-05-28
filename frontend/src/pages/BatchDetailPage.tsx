@@ -5,10 +5,10 @@ import {
   BookOpen,
   ClipboardCheck,
   Download,
-  ExternalLink,
   FileText,
   Loader2,
   Presentation,
+  RefreshCw,
   Sparkles,
 } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
@@ -16,7 +16,7 @@ import { isTaskActiveStatus } from "../hooks/useTaskPolling";
 import { api } from "../lib/api";
 import type { CoursewareResult, GenerationBatch, HomeworkResult, JsonRecord, LearnerProfileFile, LessonPlan, PaperResult, Task, TextbookVersion } from "../types";
 import { cn, toNumberId } from "../utils";
-import { asRecord, asRecordList, latestByUpdated, sortLessons } from "./batch-detail/helpers";
+import { asRecord, asRecordList, formatLessonTitle, latestByUpdated, sortLessons } from "./batch-detail/helpers";
 
 const assessmentScenes = [
   {
@@ -36,11 +36,6 @@ function isSuccessfulStatus(status?: string | null) {
 
 function isFailedStatus(status?: string | null) {
   return ["failed", "failure", "error"].includes(String(status ?? "").toLowerCase());
-}
-
-function formatLessonTitle(title?: string | null) {
-  const cleaned = String(title ?? "").trim();
-  return cleaned.replace(/^第\s*[一二三四五六七八九十百千万\d]+\s*[讲课节]\s*[：:、,，.\-\s]*/u, "").trim() || cleaned || "未命名课程";
 }
 
 function cleanText(value: unknown) {
@@ -656,6 +651,20 @@ export function BatchDetailPage() {
     },
   });
 
+  const retryCourseware = useMutation({
+    mutationFn: () => {
+      if (!selectedCoursewareResult) {
+        throw new Error("请选择需要重试的 PPT 结果");
+      }
+      return api.regenerateCoursewareResult(selectedCoursewareResult.id);
+    },
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({ queryKey: ["generation-batch", batchId] });
+      queryClient.invalidateQueries({ queryKey: ["courseware-results", batch?.id] });
+      queryClient.invalidateQueries({ queryKey: ["courseware-result", result.id] });
+    },
+  });
+
   const createHomework = useMutation({
     mutationFn: () => {
       if (!selectedLesson) {
@@ -809,12 +818,12 @@ export function BatchDetailPage() {
     .filter(Boolean)
     .join("，");
   const textbookFileObjectId = fileObjectIdFrom(textbookMaterial?.source_file);
-  const learnerProfileFileObjectId = fileObjectIdFrom(learnerProfileMaterial?.source_file, learnerProfileMaterial?.source_file_id);
   const textbookMaterialInfo = textbookInfo(textbookMaterial);
   const learnerProfileMaterialInfo = learnerProfileMaterial
     ? cleanText(learnerProfileMaterial.title) || fileNameFrom(learnerProfileMaterial.source_file, "学生学情记录")
     : "学情材料同步中";
-  const coursewareGenerating = coursewareActive || createCourseware.isPending;
+  const learnerProfileVersionId = batch.learner_profile_version_id;
+  const coursewareGenerating = coursewareActive || createCourseware.isPending || retryCourseware.isPending;
   const homeworkGenerating = homeworkActive || createHomework.isPending;
   const coursewareStatusLabel = canDownloadPpt ? "PPT 已生成" : coursewareGenerating ? "PPT 生成中" : coursewareFailed ? "PPT 需重试" : "PPT 待生成";
   const homeworkStatusLabel = hasHomework ? "作业已生成" : homeworkGenerating ? "作业生成中" : homeworkFailed ? "作业需重试" : "作业待生成";
@@ -908,10 +917,24 @@ export function BatchDetailPage() {
                       <Download size={16} />
                       {downloadPpt.isPending ? "准备下载" : "下载 PPT"}
                     </button>
-                  ) : hasCoursewareResult || coursewareGenerating ? (
+                  ) : coursewareGenerating ? (
                     <button className="btn btn-secondary mt-4 w-full rounded-full" disabled type="button">
-                      <Loader2 className={coursewareGenerating ? "animate-spin" : ""} size={16} />
+                      <Loader2 className="animate-spin" size={16} />
                       PPT 生成中
+                    </button>
+                  ) : coursewareFailed ? (
+                    <button
+                      className="btn btn-primary mt-4 w-full rounded-full"
+                      disabled={!selectedCoursewareResult || retryCourseware.isPending}
+                      onClick={() => retryCourseware.mutate()}
+                      type="button"
+                    >
+                      {retryCourseware.isPending ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />}
+                      重试 PPT
+                    </button>
+                  ) : hasCoursewareResult ? (
+                    <button className="btn btn-secondary mt-4 w-full rounded-full" disabled type="button">
+                      PPT 状态同步中
                     </button>
                   ) : (
                     <button
@@ -921,7 +944,7 @@ export function BatchDetailPage() {
                       type="button"
                     >
                       {createCourseware.isPending ? <Loader2 className="animate-spin" size={16} /> : <Sparkles size={16} />}
-                      {coursewareFailed ? "重新生成" : "生成这一课 PPT"}
+                      生成这一课 PPT
                     </button>
                   )}
                 </div>
@@ -968,7 +991,7 @@ export function BatchDetailPage() {
                 </div>
               </div>
 
-              {(downloadLesson.error || downloadPpt.error || createCourseware.error || createHomework.error || downloadHomework.error) ? (
+              {(downloadLesson.error || downloadPpt.error || createCourseware.error || retryCourseware.error || createHomework.error || downloadHomework.error) ? (
                 <div className="mt-5">
                   <FriendlyNotice title="操作暂时没有完成" description="请稍后再试，页面会继续同步资源状态。" />
                 </div>
@@ -1054,6 +1077,55 @@ export function BatchDetailPage() {
           <div className="grid gap-4 py-5 xl:grid-cols-[minmax(220px,1.05fr)_minmax(250px,1.25fr)_minmax(240px,1fr)_minmax(180px,auto)] xl:items-center xl:gap-6">
             <div className="flex min-w-0 items-center gap-4">
               <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#f3f3f3] text-ink">
+                <FileText size={21} />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-lg font-semibold text-ink">教材 PDF</h3>
+              </div>
+            </div>
+            <p className="text-sm leading-6 text-ink/58">本次备课使用的教材。</p>
+            <div className="min-w-0 truncate text-sm font-medium text-ink/58">{textbookMaterialInfo}</div>
+            <div className="flex xl:justify-center">
+              <button
+                className="btn btn-secondary min-w-[152px] rounded-full px-5"
+                disabled={!textbookFileObjectId || (openMaterialFile.isPending && openMaterialFile.variables?.kind === "textbook")}
+                onClick={() => textbookFileObjectId && openMaterialFile.mutate({ fileObjectId: textbookFileObjectId, kind: "textbook" })}
+                type="button"
+              >
+                {openMaterialFile.isPending && openMaterialFile.variables?.kind === "textbook" ? <Loader2 className="animate-spin" size={16} /> : <Download size={16} />}
+                下载教材
+              </button>
+            </div>
+          </div>
+
+          <div className="grid gap-4 py-5 xl:grid-cols-[minmax(220px,1.05fr)_minmax(250px,1.25fr)_minmax(240px,1fr)_minmax(180px,auto)] xl:items-center xl:gap-6">
+            <div className="flex min-w-0 items-center gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#f3f3f3] text-ink">
+                <ClipboardCheck size={21} />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-lg font-semibold text-ink">学情画像</h3>
+              </div>
+            </div>
+            <p className="text-sm leading-6 text-ink/58">本次备课使用的学情画像分析。</p>
+            <div className="min-w-0 truncate text-sm font-medium text-ink/58">{learnerProfileMaterialInfo}</div>
+            <div className="flex xl:justify-center">
+              {learnerProfileVersionId ? (
+                <Link className="btn btn-secondary min-w-[152px] rounded-full px-5" to={`/projects/${projectId}/batches/${batchId}/learner-profile/${learnerProfileVersionId}`}>
+                  <ClipboardCheck size={16} />
+                  查看画像
+                </Link>
+              ) : (
+                <button className="btn btn-secondary min-w-[152px] rounded-full px-5" disabled type="button">
+                  画像同步中
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="grid gap-4 py-5 xl:grid-cols-[minmax(220px,1.05fr)_minmax(250px,1.25fr)_minmax(240px,1fr)_minmax(180px,auto)] xl:items-center xl:gap-6">
+            <div className="flex min-w-0 items-center gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#f3f3f3] text-ink">
                 <BarChart3 size={21} />
               </div>
               <div className="min-w-0">
@@ -1075,54 +1147,6 @@ export function BatchDetailPage() {
                   覆盖报告同步中
                 </button>
               )}
-            </div>
-          </div>
-
-          <div className="grid gap-4 py-5 xl:grid-cols-[minmax(220px,1.05fr)_minmax(250px,1.25fr)_minmax(240px,1fr)_minmax(180px,auto)] xl:items-center xl:gap-6">
-            <div className="flex min-w-0 items-center gap-4">
-              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#f3f3f3] text-ink">
-                <FileText size={21} />
-              </div>
-              <div className="min-w-0">
-                <h3 className="text-lg font-semibold text-ink">教材 PDF</h3>
-              </div>
-            </div>
-            <p className="text-sm leading-6 text-ink/58">本次备课使用的教材。</p>
-            <div className="min-w-0 truncate text-sm font-medium text-ink/58">{textbookMaterialInfo}</div>
-            <div className="flex xl:justify-center">
-              <button
-                className="btn btn-secondary min-w-[152px] rounded-full px-5"
-                disabled={!textbookFileObjectId || (openMaterialFile.isPending && openMaterialFile.variables?.kind === "textbook")}
-                onClick={() => textbookFileObjectId && openMaterialFile.mutate({ fileObjectId: textbookFileObjectId, kind: "textbook" })}
-                type="button"
-              >
-                {openMaterialFile.isPending && openMaterialFile.variables?.kind === "textbook" ? <Loader2 className="animate-spin" size={16} /> : <ExternalLink size={16} />}
-                查看教材
-              </button>
-            </div>
-          </div>
-
-          <div className="grid gap-4 py-5 xl:grid-cols-[minmax(220px,1.05fr)_minmax(250px,1.25fr)_minmax(240px,1fr)_minmax(180px,auto)] xl:items-center xl:gap-6">
-            <div className="flex min-w-0 items-center gap-4">
-              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#f3f3f3] text-ink">
-                <ClipboardCheck size={21} />
-              </div>
-              <div className="min-w-0">
-                <h3 className="text-lg font-semibold text-ink">学情 DOCX</h3>
-              </div>
-            </div>
-            <p className="text-sm leading-6 text-ink/58">本次备课使用的学情分析。</p>
-            <div className="min-w-0 truncate text-sm font-medium text-ink/58">{learnerProfileMaterialInfo}</div>
-            <div className="flex xl:justify-center">
-              <button
-                className="btn btn-secondary min-w-[152px] rounded-full px-5"
-                disabled={!learnerProfileFileObjectId || (openMaterialFile.isPending && openMaterialFile.variables?.kind === "profile")}
-                onClick={() => learnerProfileFileObjectId && openMaterialFile.mutate({ fileObjectId: learnerProfileFileObjectId, kind: "profile" })}
-                type="button"
-              >
-                {openMaterialFile.isPending && openMaterialFile.variables?.kind === "profile" ? <Loader2 className="animate-spin" size={16} /> : <ExternalLink size={16} />}
-                查看学情
-              </button>
             </div>
           </div>
         </div>

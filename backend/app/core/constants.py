@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-03
+@Date: 2026-05-28
 @Author: xisy
 @Discription: 输入链路公共常量定义
 """
@@ -33,6 +33,11 @@ TASK_STATUS_SUCCESS = "success"
 TASK_STATUS_PARTIAL_SUCCESS = "partial_success"
 TASK_STATUS_FAILURE = "failure"
 TASK_STATUS_CANCELLED = "cancelled"
+
+LESSON_PLAN_ITEM_STATUS_PENDING = "pending"
+LESSON_PLAN_ITEM_STATUS_PROCESSING = "processing"
+LESSON_PLAN_ITEM_STATUS_SUCCESS = "success"
+LESSON_PLAN_ITEM_STATUS_FAILURE = "failure"
 
 PROFILE_EXTRACT_TASK_TYPE = "learner_profile_extract"
 TEXTBOOK_PARSE_TASK_TYPE = "textbook_parse"

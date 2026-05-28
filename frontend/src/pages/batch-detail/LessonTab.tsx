@@ -8,7 +8,7 @@ import { isTaskActiveStatus } from "../../hooks/useTaskPolling";
 import { api } from "../../lib/api";
 import type { GenerationBatch, LessonPlan, Task } from "../../types";
 import { cn, formatDate, getErrorMessage } from "../../utils";
-import { asNumberList, asRecord, asRecordList, asStringList, displayValue, type JsonObject } from "./helpers";
+import { asNumberList, asRecord, asRecordList, asStringList, displayValue, formatLessonTitle, type JsonObject } from "./helpers";
 import { KeyValueGrid, KnowledgeRefs, LoadingBlock, SectionBlock, StatCard, TaskSummaryCard, TextList } from "./shared";
 
 function TeachingSteps({ steps }: { steps: JsonObject[] }) {
@@ -153,7 +153,7 @@ export function LessonTab({
                   type="button"
                 >
                   <div className="min-w-0">
-                    <div className="truncate text-sm font-bold">{item.lesson_title}</div>
+                    <div className="truncate text-sm font-bold">{formatLessonTitle(item.lesson_title)}</div>
                     <div className="mt-1 text-xs text-ink/50">
                       第 {item.class_session_no ?? "-"} 课 / {formatDate(item.updated_at)}
                     </div>
@@ -172,7 +172,7 @@ export function LessonTab({
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="label">教案 #{lesson.id}</div>
-                      <h2 className="mt-1 break-words text-xl font-bold text-ink">{lesson.lesson_title}</h2>
+                      <h2 className="mt-1 break-words text-xl font-bold text-ink">{formatLessonTitle(lesson.lesson_title)}</h2>
                       <p className="mt-2 text-sm leading-6 text-ink/60">{lesson.summary_text ?? "暂无摘要"}</p>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center gap-2">

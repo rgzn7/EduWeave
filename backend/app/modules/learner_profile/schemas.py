@@ -15,9 +15,9 @@ from app.schemas.base import BaseSchema
 
 
 class LearnerProfileUploadRequest(BaseSchema):
-    """学情上传请求。"""
+    """班级学情上传请求（一次上传多份学生 docx）。"""
 
-    title: str | None = Field(default=None, description="文档标题", examples=["学生学情分析"])
+    title: str | None = Field(default=None, description="班级名称", examples=["三年级一班"])
     grade_code: str | None = Field(default=None, description="年级编码", examples=["grade_6"])
     subject_scope: str | None = Field(default=None, description="学科范围", examples=["english,math"])
     textbook_version_hint_id: int | None = Field(default=None, description="教材提示版本主键", examples=[1])
@@ -27,7 +27,7 @@ class LearnerProfileUploadRequest(BaseSchema):
     @classmethod
     def as_form(
         cls,
-        title: Annotated[str | None, Form(description="文档标题", examples=["学生学情分析"])] = None,
+        title: Annotated[str | None, Form(description="班级名称", examples=["三年级一班"])] = None,
         grade_code: Annotated[str | None, Form(description="年级编码", examples=["grade_6"])] = None,
         subject_scope: Annotated[str | None, Form(description="学科范围", examples=["english,math"])] = None,
         textbook_version_hint_id: Annotated[int | None, Form(description="教材提示版本主键", examples=[1])] = None,
@@ -147,7 +147,8 @@ class LearnerProfileVersionListItemResponse(BaseSchema):
     extract_status: str = Field(description="抽取状态", examples=["success"])
     review_status: str = Field(description="审核状态", examples=["pending"])
     version_status: str = Field(description="版本状态", examples=["ready"])
-    summary_text: str | None = Field(default=None, description="摘要文本")
+    summary_text: str | None = Field(default=None, description="摘要文本（班级整体学情摘要）")
+    class_profile: dict | None = Field(default=None, description="班级画像聚合结果（学科概览、共性强弱、分层建议等）")
     raw_result_json: dict | None = Field(default=None, description="抽取结果 JSON")
     source_snapshot_json: dict | None = Field(default=None, description="输入快照")
     created_by: int | None = Field(default=None, description="创建人")

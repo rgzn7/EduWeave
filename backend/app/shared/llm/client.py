@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-17
+@Date: 2026-05-28
 @Author: xisy
 @Discription: OpenAI 兼容接口底层客户端（含瞬时错误重试与 Chat/Responses 流式读取）
 """
@@ -15,6 +15,19 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import AppException, BusinessErrorCode
 
 _SSE_ERROR_EVENT_TYPES = {"error", "response.failed", "response.incomplete"}
+_NON_RETRYABLE_STREAM_ERROR_MARKERS = {
+    "authentication_error",
+    "billing_error",
+    "context_length_exceeded",
+    "insufficient_quota",
+    "invalid_api_key",
+    "invalid_request",
+    "invalid_request_error",
+    "invalid_schema",
+    "permission_denied",
+    "permission_error",
+    "schema_validation_error",
+}
 
 
 def _should_retry_http_error(exc: httpx.HTTPError, attempt: int, max_retries: int) -> bool:
@@ -25,6 +38,18 @@ def _should_retry_http_error(exc: httpx.HTTPError, attempt: int, max_retries: in
         status_code = exc.response.status_code
         return status_code == 429 or 500 <= status_code < 600
     return isinstance(exc, (httpx.TimeoutException, httpx.TransportError))
+
+
+def _should_retry_stream_app_error(exc: AppException, attempt: int, max_retries: int) -> bool:
+    """判断 HTTP 200 后流式错误事件是否应该按单次请求重试。"""
+    if attempt >= max_retries or exc.code != BusinessErrorCode.LLM_REQUEST_FAILED:
+        return False
+    details = exc.details if isinstance(exc.details, dict) else {}
+    if details.get("transport") != "stream":
+        return False
+    if details.get("event_type") not in _SSE_ERROR_EVENT_TYPES:
+        return False
+    return details.get("retryable") is not False
 
 
 def _sleep_before_retry(attempt: int, base_seconds: int) -> None:
@@ -50,6 +75,118 @@ def _build_http_error_details(exc: httpx.HTTPError) -> dict[str, Any]:
     else:
         payload = None
     return {"status_code": response.status_code, "payload": payload}
+
+
+def _resolve_error_event_type(event_type: str | None, data: dict[str, Any]) -> str | None:
+    """从标准事件、data.type 与最终 response.status 中归一化错误事件类型。"""
+    if event_type in _SSE_ERROR_EVENT_TYPES:
+        return event_type
+    inferred_event_type = data.get("type")
+    if isinstance(inferred_event_type, str) and inferred_event_type in _SSE_ERROR_EVENT_TYPES:
+        return inferred_event_type
+    response_data = data.get("response")
+    if isinstance(response_data, dict):
+        status = response_data.get("status")
+        if status == "failed":
+            return "response.failed"
+        if status == "incomplete":
+            return "response.incomplete"
+    return event_type
+
+
+def _build_safe_sse_error_details(
+    *,
+    api_format: str,
+    event_type: str | None,
+    data: dict[str, Any],
+    max_chars: int,
+) -> dict[str, Any]:
+    """构造可落库展示的流式错误详情，只保留安全字段。"""
+    response_data = data.get("response")
+    response = response_data if isinstance(response_data, dict) else {}
+    error_data = data.get("error")
+    if error_data is None:
+        error_data = response.get("error")
+    incomplete_details = data.get("incomplete_details")
+    if incomplete_details is None:
+        incomplete_details = response.get("incomplete_details")
+
+    safe_error = _build_safe_error_object(error_data, max_chars=max_chars)
+    safe_incomplete_details = _build_safe_incomplete_details(incomplete_details, max_chars=max_chars)
+    details: dict[str, Any] = {
+        "api_format": api_format,
+        "transport": "stream",
+        "event_type": event_type,
+        "retryable": _is_retryable_stream_error(
+            event_type=event_type,
+            error=safe_error,
+            incomplete_details=safe_incomplete_details,
+        ),
+    }
+    response_summary = {
+        key: _truncate_string(response.get(key), max_chars=max_chars)
+        for key in ("id", "status")
+        if response.get(key) is not None
+    }
+    if response_summary:
+        details["response"] = response_summary
+    if safe_error is not None:
+        details["error"] = safe_error
+    if safe_incomplete_details is not None:
+        details["incomplete_details"] = safe_incomplete_details
+    return details
+
+
+def _build_safe_error_object(error_data: Any, *, max_chars: int) -> dict[str, Any] | None:
+    """白名单化上游 error 对象，避免泄露 prompt 或过长响应。"""
+    if error_data is None:
+        return None
+    if not isinstance(error_data, dict):
+        return {"message": _truncate_string(error_data, max_chars=max_chars)}
+    safe: dict[str, Any] = {}
+    for key in ("code", "message", "type", "param"):
+        value = error_data.get(key)
+        if value is not None:
+            safe[key] = _truncate_string(value, max_chars=max_chars)
+    return safe or None
+
+
+def _build_safe_incomplete_details(incomplete_details: Any, *, max_chars: int) -> dict[str, Any] | None:
+    """白名单化 response.incomplete_details。"""
+    if incomplete_details is None:
+        return None
+    if not isinstance(incomplete_details, dict):
+        return {"reason": _truncate_string(incomplete_details, max_chars=max_chars)}
+    reason = incomplete_details.get("reason")
+    if reason is None:
+        return None
+    return {"reason": _truncate_string(reason, max_chars=max_chars)}
+
+
+def _is_retryable_stream_error(
+    *,
+    event_type: str | None,
+    error: dict[str, Any] | None,
+    incomplete_details: dict[str, Any] | None,
+) -> bool:
+    """根据安全字段判断流式错误是否值得单次请求层重试。"""
+    if event_type not in _SSE_ERROR_EVENT_TYPES:
+        return False
+    marker_values: list[str] = []
+    if isinstance(error, dict):
+        marker_values.extend(str(error.get(key, "")) for key in ("code", "type", "message"))
+    if isinstance(incomplete_details, dict):
+        marker_values.append(str(incomplete_details.get("reason", "")))
+    normalized_markers = " ".join(marker_values).lower()
+    if any(marker in normalized_markers for marker in _NON_RETRYABLE_STREAM_ERROR_MARKERS):
+        return False
+    return True
+
+
+def _truncate_string(value: Any, *, max_chars: int) -> str:
+    """把安全 detail 中的值转成字符串并限制长度。"""
+    text = str(value)
+    return text if len(text) <= max_chars else text[:max_chars]
 
 
 class OpenAICompatibleLlmClient:
@@ -98,6 +235,10 @@ class OpenAICompatibleLlmClient:
         for attempt in range(max_retries + 1):
             try:
                 return self._read_chat_completion_stream(url, headers, stream_payload)
+            except AppException as exc:
+                if not _should_retry_stream_app_error(exc, attempt, max_retries):
+                    raise
+                _sleep_before_retry(attempt, self.settings.llm_retry_base_seconds)
             except httpx.HTTPError as exc:
                 if not _should_retry_http_error(exc, attempt, max_retries):
                     raise AppException(
@@ -122,6 +263,10 @@ class OpenAICompatibleLlmClient:
         for attempt in range(max_retries + 1):
             try:
                 return self._read_responses_stream(url, headers, stream_payload)
+            except AppException as exc:
+                if not _should_retry_stream_app_error(exc, attempt, max_retries):
+                    raise
+                _sleep_before_retry(attempt, self.settings.llm_retry_base_seconds)
             except httpx.HTTPError as exc:
                 if not _should_retry_http_error(exc, attempt, max_retries):
                     raise AppException(
@@ -153,7 +298,11 @@ class OpenAICompatibleLlmClient:
                     break
                 data = self._parse_sse_json_data(data_text, event_type, api_format="responses")
                 resolved_event_type = event_type or self._get_sse_event_type(data)
-                self._raise_for_sse_error(resolved_event_type, data)
+                self._raise_for_sse_error(
+                    resolved_event_type,
+                    data,
+                    max_chars=self.settings.llm_stream_error_detail_max_chars,
+                )
 
                 if resolved_event_type == "response.output_text.delta" and isinstance(data.get("delta"), str):
                     text_parts.append(data["delta"])
@@ -203,7 +352,10 @@ class OpenAICompatibleLlmClient:
                 if data_text == "[DONE]":
                     break
                 data = self._parse_sse_json_data(data_text, event_type, api_format="chat")
-                self._raise_for_chat_stream_error(data)
+                self._raise_for_chat_stream_error(
+                    data,
+                    max_chars=self.settings.llm_stream_error_detail_max_chars,
+                )
 
                 piece = self._extract_chat_chunk_text(data)
                 if piece:
@@ -247,7 +399,7 @@ class OpenAICompatibleLlmClient:
         return None
 
     @staticmethod
-    def _raise_for_chat_stream_error(data: dict[str, Any]) -> None:
+    def _raise_for_chat_stream_error(data: dict[str, Any], *, max_chars: int) -> None:
         """把 Chat Completions 流式 200+error 体转换为业务异常。"""
         error_data = data.get("error")
         if error_data is None:
@@ -255,7 +407,12 @@ class OpenAICompatibleLlmClient:
         raise AppException(
             BusinessErrorCode.LLM_REQUEST_FAILED,
             "LLM 流式调用失败",
-            {"api_format": "chat", "transport": "stream", "error": error_data},
+            _build_safe_sse_error_details(
+                api_format="chat",
+                event_type="error",
+                data={"error": error_data},
+                max_chars=max_chars,
+            ),
         )
 
     @staticmethod
@@ -343,18 +500,20 @@ class OpenAICompatibleLlmClient:
         return event_type if isinstance(event_type, str) else None
 
     @staticmethod
-    def _raise_for_sse_error(event_type: str | None, data: dict[str, Any]) -> None:
+    def _raise_for_sse_error(event_type: str | None, data: dict[str, Any], *, max_chars: int) -> None:
         """把 Responses 流式错误事件转换为业务异常。"""
-        if event_type not in _SSE_ERROR_EVENT_TYPES:
+        resolved_event_type = _resolve_error_event_type(event_type, data)
+        if resolved_event_type not in _SSE_ERROR_EVENT_TYPES:
             return
-        response_data = data.get("response")
-        error_data = data.get("error")
-        if isinstance(response_data, dict) and error_data is None:
-            error_data = response_data.get("error") or response_data.get("incomplete_details")
         raise AppException(
             BusinessErrorCode.LLM_REQUEST_FAILED,
             "LLM 流式调用失败",
-            {"api_format": "responses", "transport": "stream", "event_type": event_type, "error": error_data},
+            _build_safe_sse_error_details(
+                api_format="responses",
+                event_type=resolved_event_type,
+                data=data,
+                max_chars=max_chars,
+            ),
         )
 
     @staticmethod

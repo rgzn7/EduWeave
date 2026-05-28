@@ -28,7 +28,13 @@ from app.modules.learner_profile.schemas import (
     LearnerProfileVersionListItemResponse,
     LearnerProfileVersionResponse,
 )
-from app.modules.p0_models import FileObject, LearnerProfileFile, LearnerProfileRecord, LearnerProfileVersion
+from app.modules.p0_models import (
+    FileObject,
+    LearnerProfileFile,
+    LearnerProfileRecord,
+    LearnerProfileSource,
+    LearnerProfileVersion,
+)
 from app.modules.task_center.heartbeat import dispatch_with_attempt
 from app.modules.task_center.repository import TaskCenterRepository
 from app.modules.task_center.schemas import TaskListItemResponse
@@ -57,9 +63,7 @@ class LearnerProfileService:
         *,
         owner_user_id: int,
         project_id: int,
-        filename: str,
-        content: bytes,
-        content_type: str | None,
+        files: list[tuple[str, bytes, str | None]],
         title: str | None,
         grade_code: str | None,
         subject_scope: str | None,
@@ -67,53 +71,78 @@ class LearnerProfileService:
         auto_extract: bool,
         set_as_current: bool,
     ) -> LearnerProfileFileDetailResponse:
-        """上传学情文件并按需创建抽取任务。"""
+        """上传一个班级的多份学生学情 docx 并按需创建抽取任务。"""
         project = self.repository.get_project_by_id_for_owner(project_id, owner_user_id)
         if project is None:
             raise AppException(BusinessErrorCode.PROJECT_NOT_FOUND, "项目不存在")
 
-        file_ext = Path(filename).suffix.lower()
-        if file_ext != ".docx":
-            raise AppException(BusinessErrorCode.INVALID_FILE_TYPE, "学情文件仅支持 docx")
-        if not content:
-            raise AppException(BusinessErrorCode.INVALID_FILE_TYPE, "学情文件不能为空")
+        if not files:
+            raise AppException(BusinessErrorCode.INVALID_FILE_TYPE, "至少需要上传一份学情文件")
+        for filename, content, _ in files:
+            if Path(filename).suffix.lower() != ".docx":
+                raise AppException(BusinessErrorCode.INVALID_FILE_TYPE, "学情文件仅支持 docx")
+            if not content:
+                raise AppException(BusinessErrorCode.INVALID_FILE_TYPE, "学情文件不能为空")
         if textbook_version_hint_id is not None:
             textbook_hint = self.repository.get_textbook_version_in_project(project.id, textbook_version_hint_id)
             if textbook_hint is None:
                 raise AppException(BusinessErrorCode.PROJECT_REFERENCE_INVALID, "教材提示版本不属于当前项目")
 
-        file_hash = hashlib.sha256(content).hexdigest()
-        object_key = self.storage_client.build_object_key(str(project.id), "learner_profiles", filename=filename)
-        try:
-            self.storage_client.upload_bytes(object_key, content, content_type=content_type)
-        except Exception as exc:  # noqa: BLE001
-            raise AppException(BusinessErrorCode.FILE_UPLOAD_FAILED, "学情文件上传失败", {"error": str(exc)}) from exc
+        first_filename = files[0][0]
+        # 班级名称：优先用上传方传入的 title，否则用首份文件名兜底
+        class_title = title or f"{Path(first_filename).stem}等{len(files)}名学生"
 
-        profile_file = LearnerProfileFile(
-            project_id=project.id,
-            source_file_id=0,
-            title=title or Path(filename).stem,
-            file_status="processing" if auto_extract else "uploaded",
-            uploaded_by=owner_user_id,
-        )
+        uploaded_object_keys: list[str] = []
         try:
-            file_object = FileObject(
+            # 先上传 OBS 并建文件对象（learner_profile_file.source_file_id 外键依赖 file_object）
+            file_objects: list[tuple[str, FileObject]] = []
+            for filename, content, content_type in files:
+                object_key = self.storage_client.build_object_key(str(project.id), "learner_profiles", filename=filename)
+                try:
+                    self.storage_client.upload_bytes(object_key, content, content_type=content_type)
+                except Exception as exc:  # noqa: BLE001
+                    raise AppException(BusinessErrorCode.FILE_UPLOAD_FAILED, "学情文件上传失败", {"error": str(exc)}) from exc
+                uploaded_object_keys.append(object_key)
+                file_object = FileObject(
+                    project_id=project.id,
+                    biz_type=LEARNER_PROFILE_SOURCE_BIZ_TYPE,
+                    bucket_name=self.storage_client.settings.obs_bucket,
+                    object_key=object_key,
+                    original_filename=filename,
+                    file_ext=Path(filename).suffix.lower(),
+                    mime_type=content_type,
+                    file_size=len(content),
+                    content_hash=hashlib.sha256(content).hexdigest(),
+                    source_type="user_upload",
+                    upload_status="uploaded",
+                    uploaded_by=owner_user_id,
+                )
+                self.repository.create_file_object(file_object)
+                file_objects.append((filename, file_object))
+
+            # 建班级学情文件（source_file_id 指向首份 docx 作为主源）
+            profile_file = LearnerProfileFile(
                 project_id=project.id,
-                biz_type=LEARNER_PROFILE_SOURCE_BIZ_TYPE,
-                bucket_name=self.storage_client.settings.obs_bucket,
-                object_key=object_key,
-                original_filename=filename,
-                file_ext=file_ext,
-                mime_type=content_type,
-                file_size=len(content),
-                content_hash=file_hash,
-                source_type="user_upload",
-                upload_status="uploaded",
+                source_file_id=file_objects[0][1].id,
+                title=class_title,
+                file_status="processing" if auto_extract else "uploaded",
                 uploaded_by=owner_user_id,
             )
-            self.repository.create_file_object(file_object)
-            profile_file.source_file_id = file_object.id
             self.repository.create_profile_file(profile_file)
+
+            # 建每个学生的班级源文件记录
+            for student_seq, (filename, file_object) in enumerate(file_objects, start=1):
+                self.repository.create_profile_source(
+                    LearnerProfileSource(
+                        project_id=project.id,
+                        profile_file_id=profile_file.id,
+                        file_object_id=file_object.id,
+                        student_seq=student_seq,
+                        original_filename=filename,
+                        student_name=None,
+                    )
+                )
+
             project.last_activity_at = DateTimeUtil.now_utc()
             self.repository.save(project)
 
@@ -142,6 +171,7 @@ class LearnerProfileService:
                     ("prepare_source", "准备源文件"),
                     ("extract_local", "本地解析 docx"),
                     ("build_profile_version", "构建学情版本"),
+                    ("aggregate_class_profile", "LLM 聚合班级画像"),
                 ]
                 for step_order, (step_code, step_name) in enumerate(step_names, start=1):
                     self.task_repository.create_task_step(
@@ -155,7 +185,8 @@ class LearnerProfileService:
             self.session.commit()
         except Exception:  # noqa: BLE001
             self.session.rollback()
-            self.storage_client.delete_object(object_key)
+            for object_key in uploaded_object_keys:
+                self.storage_client.delete_object(object_key)
             raise
 
         if auto_extract and task is not None:
@@ -344,6 +375,8 @@ class LearnerProfileService:
 
     def build_profile_version_list_item(self, profile_version: LearnerProfileVersion) -> LearnerProfileVersionListItemResponse:
         """构造学情版本列表项响应。"""
+        raw_result_json = profile_version.raw_result_json or {}
+        class_profile = raw_result_json.get("class_profile") if isinstance(raw_result_json, dict) else None
         return LearnerProfileVersionListItemResponse(
             id=profile_version.id,
             project_id=profile_version.project_id,
@@ -357,6 +390,7 @@ class LearnerProfileService:
             review_status=profile_version.review_status,
             version_status=profile_version.version_status,
             summary_text=profile_version.summary_text,
+            class_profile=class_profile,
             raw_result_json=profile_version.raw_result_json,
             source_snapshot_json=profile_version.source_snapshot_json,
             created_by=profile_version.created_by,

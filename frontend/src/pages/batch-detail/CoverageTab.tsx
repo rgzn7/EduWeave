@@ -5,8 +5,8 @@ import { JsonViewer } from "../../components/JsonViewer";
 import { StatusBadge } from "../../components/StatusBadge";
 import { isTaskActiveStatus } from "../../hooks/useTaskPolling";
 import type { CoverageReport, Task } from "../../types";
-import { cn, formatDate, getErrorMessage } from "../../utils";
-import { asNumberList, asRecord, asRecordList, displayValue, type JsonObject } from "./helpers";
+import { cn, getErrorMessage } from "../../utils";
+import { asNumberList, asRecord, asRecordList, displayValue, formatLessonTitle, type JsonObject } from "./helpers";
 import { KeyValueGrid, KnowledgeRefs, LoadingBlock, SectionBlock, StatCard, TaskSummaryCard } from "./shared";
 
 const ARTIFACT_BUCKETS = [
@@ -159,7 +159,7 @@ function getArtifactTitle(artifactType: string, item: JsonObject, index: number)
   }
   if (artifactType === "lesson_plan") {
     const session = textValue(item.class_session_no);
-    const title = textValue(item.title);
+    const title = formatLessonTitle(textValue(item.title));
     return `${session ? `第 ${session} 课` : "教案"}${title ? ` · ${title}` : ""}`;
   }
   if (artifactType === "question_item") {
@@ -479,9 +479,7 @@ export function CoverageTab({
                 >
                   <div className="min-w-0">
                     <div className="truncate text-sm font-bold">覆盖报告 #{item.id}</div>
-                    <div className="mt-1 text-xs text-ink/50">
-                      {item.coverage_rate ?? "-"}% / {formatDate(item.updated_at)}
-                    </div>
+                    <div className="mt-1 text-xs text-ink/50">覆盖率 {item.coverage_rate ?? "-"}%</div>
                   </div>
                   <StatusBadge status={item.report_status} />
                 </button>
@@ -501,13 +499,12 @@ export function CoverageTab({
                     </div>
                     <StatusBadge status={report.report_status} />
                   </div>
-                  <div className="mt-4 grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+                  <div className="mt-4 grid gap-3 md:grid-cols-3 xl:grid-cols-5">
                     <StatCard label="覆盖率" value={report.coverage_rate != null ? `${report.coverage_rate}%` : "-"} />
                     <StatCard label="已覆盖" value={coveredIds.length || displayValue(summary?.covered_count)} />
                     <StatCard label="未覆盖" value={uncoveredIds.length || displayValue(summary?.uncovered_count)} />
                     <StatCard label="重点覆盖" value={summary?.important_coverage_rate != null ? `${displayValue(summary.important_coverage_rate)}%` : "-"} />
                     <StatCard label="告警数" value={report.warning_count} />
-                    <StatCard label="更新时间" value={formatDate(report.updated_at)} />
                   </div>
                 </section>
 

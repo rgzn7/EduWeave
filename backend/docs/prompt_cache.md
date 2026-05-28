@@ -41,7 +41,7 @@ EduWeave 教案场景命中比例约 89%（剩 11% 是变量段 `target_lesson_s
 - `user` —— 稳定上下文 JSON（`project / generation_batch / curriculum_plan / knowledge_points / learner_profile_version` + 同批次共享的 evidence images），循环外构造一次。
 - `user` —— 变量段（仅 `target_lesson_session`），循环内每课次重新构造，包含"JSON 对象"字样以避免 Chat 端追加兜底消息。
 
-教案任务每批次结束会把 `cached_tokens / prompt_tokens / completion_tokens / total_tokens / call_count` 聚合写入任务步骤记录的 `task_step_records.detail_json.llm_usage`（已有 JSON 字段，无表结构变更），便于在前端任务详情页观测命中率。
+教案任务会把单课次 `cached_tokens / prompt_tokens / completion_tokens / total_tokens / call_count` 写入 `lesson_plan_generation_item.llm_usage_json`，全部课次成功后再聚合到任务步骤记录的 `task_step_records.detail_json.llm_usage`，便于在前端任务详情页观测命中率。
 
 其他 6 个 LLM 调用点（课程大纲、测评、课件、知识抽取、作业、修复路径）保持原状未接入，新参数全部默认值确保零破坏。后续接入按以下顺序优先级最高：
 
