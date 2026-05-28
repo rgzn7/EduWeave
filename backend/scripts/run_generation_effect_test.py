@@ -467,7 +467,7 @@ def _patch_embedding_and_vector_noop() -> None:
 def _patch_llm_gateway_retry() -> None:
     """为真实效果验证增加 LLM 网关错误重试。"""
     original_create_chat_completion = OpenAICompatibleLlmClient.create_chat_completion
-    original_create_response = OpenAICompatibleLlmClient.create_response
+    original_create_response_stream = OpenAICompatibleLlmClient.create_response_stream
 
     def retrying_create_chat_completion(self, payload: dict[str, Any]) -> dict[str, Any]:  # noqa: ANN001
         return _retry_llm_call(
@@ -475,17 +475,17 @@ def _patch_llm_gateway_retry() -> None:
             call_func=lambda: original_create_chat_completion(self, payload),
         )
 
-    def retrying_create_response(self, payload: dict[str, Any]) -> dict[str, Any]:  # noqa: ANN001
+    def retrying_create_response_stream(self, payload: dict[str, Any]):  # noqa: ANN001
         return _retry_llm_call(
-            call_name="Responses",
-            call_func=lambda: original_create_response(self, payload),
+            call_name="Responses Stream",
+            call_func=lambda: original_create_response_stream(self, payload),
         )
 
     OpenAICompatibleLlmClient.create_chat_completion = retrying_create_chat_completion
-    OpenAICompatibleLlmClient.create_response = retrying_create_response
+    OpenAICompatibleLlmClient.create_response_stream = retrying_create_response_stream
 
 
-def _retry_llm_call(*, call_name: str, call_func) -> dict[str, Any]:  # noqa: ANN001
+def _retry_llm_call(*, call_name: str, call_func):  # noqa: ANN001
     """重试 LLM 网关可恢复错误。"""
     last_exception: AppException | None = None
     for attempt in range(1, 4):

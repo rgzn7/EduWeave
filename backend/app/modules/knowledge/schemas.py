@@ -269,7 +269,7 @@ class KnowledgeVersionDetailResponse(KnowledgeVersionListItemResponse):
 
 
 class KnowledgeExtractionEvidenceDraft(BaseSchema):
-    """LLM 知识抽取证据草稿。"""
+    """知识抽取证据落库草稿。"""
 
     page_no: int = Field(description="页码", ge=1)
     block_no: int | None = Field(default=None, description="块序号", ge=1)
@@ -300,7 +300,7 @@ class KnowledgeExtractionChapterDraft(BaseSchema):
 
 
 class KnowledgeExtractionPointDraft(BaseSchema):
-    """LLM 知识点草稿。"""
+    """知识点落库草稿。"""
 
     chapter_path: str | None = Field(default=None, description="所属章节路径编码")
     point_code: str | None = Field(default=None, description="知识点编码")
@@ -313,6 +313,45 @@ class KnowledgeExtractionPointDraft(BaseSchema):
     summary_text: str | None = Field(default=None, description="摘要")
     sort_order: int = Field(default=0, description="排序号", ge=0)
     evidences: list[KnowledgeExtractionEvidenceDraft] = Field(default_factory=list, description="证据列表")
+
+
+class KnowledgeChapterSummaryDraft(BaseSchema):
+    """LLM 章节知识摘要草稿。"""
+
+    overview: str = Field(description="章节概览")
+    key_terms: list[str] = Field(description="关键术语列表")
+
+
+class KnowledgePointTagsDraft(BaseSchema):
+    """LLM 知识点标签草稿。"""
+
+    tags: list[str] = Field(description="标签列表")
+
+
+class KnowledgeEvidenceLlmDraft(BaseSchema):
+    """LLM 知识点证据草稿。"""
+
+    page_no: int = Field(description="页码", ge=1)
+    block_no: int | None = Field(default=None, description="块序号", ge=1)
+    evidence_type: str = Field(default="parse_block", description="证据类型", min_length=1, max_length=32)
+    excerpt_text: str | None = Field(default=None, description="证据片段")
+    score_value: float | None = Field(default=None, description="证据分数", ge=0, le=1)
+
+
+class KnowledgePointLlmDraft(BaseSchema):
+    """LLM 知识点抽取草稿。"""
+
+    chapter_path: str | None = Field(default=None, description="所属章节路径编码")
+    point_code: str | None = Field(default=None, description="知识点编码")
+    point_name: str = Field(description="知识点名称", min_length=1, max_length=255)
+    point_type: str = Field(default="knowledge", description="知识点类型", min_length=1, max_length=32)
+    importance_level: int | None = Field(default=None, description="重要度", ge=1, le=5)
+    difficulty_level: int | None = Field(default=None, description="难度", ge=1, le=5)
+    mastery_level_hint: str | None = Field(default=None, description="掌握建议")
+    tags_json: KnowledgePointTagsDraft | None = Field(default=None, description="标签 JSON")
+    summary_text: str | None = Field(default=None, description="摘要")
+    sort_order: int = Field(default=0, description="排序号", ge=0)
+    evidences: list[KnowledgeEvidenceLlmDraft] = Field(default_factory=list, description="证据列表")
 
 
 class KnowledgeChapterBoundaryItem(BaseSchema):
@@ -333,8 +372,8 @@ class KnowledgeChapterBoundaryResult(BaseSchema):
 class KnowledgeChapterPointExtractionResult(BaseSchema):
     """单章节知识点抽取结果。"""
 
-    summary_json: dict[str, Any] | None = Field(default=None, description="章节知识摘要 JSON")
-    knowledge_points: list[KnowledgeExtractionPointDraft] = Field(default_factory=list, description="知识点列表")
+    summary_json: KnowledgeChapterSummaryDraft | None = Field(default=None, description="章节知识摘要 JSON")
+    knowledge_points: list[KnowledgePointLlmDraft] = Field(default_factory=list, description="知识点列表")
 
 
 class KnowledgeExtractionResult(BaseSchema):

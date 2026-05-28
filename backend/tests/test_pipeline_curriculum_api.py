@@ -25,9 +25,11 @@ from app.modules.curriculum.tasks import _validate_curriculum_result
 from app.modules.knowledge.schemas import (
     KnowledgeChapterBoundaryItem,
     KnowledgeChapterBoundaryResult,
+    KnowledgeChapterSummaryDraft,
     KnowledgeChapterPointExtractionResult,
-    KnowledgeExtractionEvidenceDraft,
-    KnowledgeExtractionPointDraft,
+    KnowledgeEvidenceLlmDraft,
+    KnowledgePointLlmDraft,
+    KnowledgePointTagsDraft,
 )
 from app.modules.lesson_plan.schemas import LessonPlanGenerationResult
 from app.modules.p0_models import (
@@ -262,6 +264,7 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
         user_payload 通过扫描所有 user 消息中的 JSON 块合并得到，兼容旧 2 条与新 4 条消息布局。"""
         _ = (self, temperature, _extra_kwargs)
         if response_model is KnowledgeChapterBoundaryResult:
+            assert _extra_kwargs.get("strict_schema") is True
             return KnowledgeChapterBoundaryResult(
                 items=[
                     KnowledgeChapterBoundaryItem(
@@ -274,25 +277,26 @@ def generation_test_stubs(monkeypatch: pytest.MonkeyPatch):
             )
 
         if response_model is KnowledgeChapterPointExtractionResult:
+            assert _extra_kwargs.get("strict_schema") is True
             return KnowledgeChapterPointExtractionResult(
-                summary_json={
-                    "teaching_objectives": ["掌握乘法口诀", "理解乘法应用"],
-                    "key_points": ["乘法口诀"],
-                    "difficult_points": ["应用题分析"],
-                },
+                summary_json=KnowledgeChapterSummaryDraft(
+                    overview="掌握乘法口诀并理解乘法应用。",
+                    key_terms=["乘法口诀", "应用题分析"],
+                ),
                 knowledge_points=[
-                    KnowledgeExtractionPointDraft(
+                    KnowledgePointLlmDraft(
+                        chapter_path=None,
                         point_code="kp_multiplication_table",
                         point_name="乘法口诀",
                         point_type="knowledge",
                         importance_level=5,
                         difficulty_level=3,
                         mastery_level_hint="understand",
-                        tags_json={"tags": ["重点", "基础"]},
+                        tags_json=KnowledgePointTagsDraft(tags=["重点", "基础"]),
                         summary_text="要求熟练背诵并灵活应用乘法口诀。",
                         sort_order=0,
                         evidences=[
-                            KnowledgeExtractionEvidenceDraft(
+                            KnowledgeEvidenceLlmDraft(
                                 page_no=2,
                                 block_no=2,
                                 evidence_type="parse_block",

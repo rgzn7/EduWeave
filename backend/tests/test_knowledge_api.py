@@ -20,9 +20,11 @@ from app.modules.knowledge.domain import SemanticChunkDraft
 from app.modules.knowledge.schemas import (
     KnowledgeChapterBoundaryItem,
     KnowledgeChapterBoundaryResult,
+    KnowledgeChapterSummaryDraft,
     KnowledgeChapterPointExtractionResult,
-    KnowledgeExtractionEvidenceDraft,
-    KnowledgeExtractionPointDraft,
+    KnowledgeEvidenceLlmDraft,
+    KnowledgePointLlmDraft,
+    KnowledgePointTagsDraft,
 )
 from app.modules.p0_models import ChapterNode, KnowledgeEvidence, Project, SemanticChunk, TaskRecord
 from app.modules.task_center.repository import TaskCenterRepository
@@ -85,6 +87,7 @@ def knowledge_test_stubs(monkeypatch: pytest.MonkeyPatch):
         """额外 kwargs（cache_biz_key / stable_prefix_message_count / cache_user_id / on_usage 等）一律忽略。"""
         _ = (self, messages, response_model, temperature, _extra_kwargs)
         if response_model is KnowledgeChapterBoundaryResult:
+            assert _extra_kwargs.get("strict_schema") is True
             return KnowledgeChapterBoundaryResult(
                 items=[
                     KnowledgeChapterBoundaryItem(
@@ -95,25 +98,26 @@ def knowledge_test_stubs(monkeypatch: pytest.MonkeyPatch):
                     )
                 ]
             )
+        assert _extra_kwargs.get("strict_schema") is True
         return KnowledgeChapterPointExtractionResult(
-            summary_json={
-                "teaching_objectives": ["掌握乘法口诀", "理解乘法含义"],
-                "key_points": ["乘法口诀"],
-                "difficult_points": ["乘法应用题"],
-            },
+            summary_json=KnowledgeChapterSummaryDraft(
+                overview="掌握乘法口诀并理解乘法含义。",
+                key_terms=["乘法口诀", "乘法应用题"],
+            ),
             knowledge_points=[
-                KnowledgeExtractionPointDraft(
+                KnowledgePointLlmDraft(
+                    chapter_path=None,
                     point_code="kp_multiplication_table",
                     point_name="乘法口诀",
                     point_type="knowledge",
                     importance_level=5,
                     difficulty_level=3,
                     mastery_level_hint="understand",
-                    tags_json={"tags": ["重点", "基础"]},
+                    tags_json=KnowledgePointTagsDraft(tags=["重点", "基础"]),
                     summary_text="要求熟练背诵并灵活应用乘法口诀。",
                     sort_order=0,
                     evidences=[
-                        KnowledgeExtractionEvidenceDraft(
+                        KnowledgeEvidenceLlmDraft(
                             page_no=2,
                             block_no=2,
                             evidence_type="parse_block",
@@ -303,6 +307,7 @@ def test_knowledge_task_should_extract_chunks_in_parallel(client, monkeypatch: p
     def fake_generate_structured_output(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
         _ = (self, temperature, _extra_kwargs)
         if response_model is KnowledgeChapterBoundaryResult:
+            assert _extra_kwargs.get("strict_schema") is True
             return KnowledgeChapterBoundaryResult(
                 items=[
                     KnowledgeChapterBoundaryItem(
@@ -314,6 +319,7 @@ def test_knowledge_task_should_extract_chunks_in_parallel(client, monkeypatch: p
                 ]
             )
 
+        assert _extra_kwargs.get("strict_schema") is True
         payload = json.loads(messages[-1].content)
         chunk_index = int(str(payload["markdown"]).split()[-1])
         with state_lock:
@@ -325,20 +331,24 @@ def test_knowledge_task_should_extract_chunks_in_parallel(client, monkeypatch: p
             with state_lock:
                 concurrency_state["active"] -= 1
         return KnowledgeChapterPointExtractionResult(
-            summary_json={"overview": f"片段{chunk_index}摘要"},
+            summary_json=KnowledgeChapterSummaryDraft(
+                overview=f"片段{chunk_index}摘要",
+                key_terms=[f"并行术语{chunk_index}"],
+            ),
             knowledge_points=[
-                KnowledgeExtractionPointDraft(
+                KnowledgePointLlmDraft(
+                    chapter_path=None,
                     point_code=f"kp_parallel_{chunk_index}",
                     point_name=f"并行知识点{chunk_index}",
                     point_type="knowledge",
                     importance_level=5,
                     difficulty_level=3,
                     mastery_level_hint="理解",
-                    tags_json={"tags": ["并行"]},
+                    tags_json=KnowledgePointTagsDraft(tags=["并行"]),
                     summary_text=f"第{chunk_index}个并行知识点。",
                     sort_order=0,
                     evidences=[
-                        KnowledgeExtractionEvidenceDraft(
+                        KnowledgeEvidenceLlmDraft(
                             page_no=2,
                             block_no=2,
                             evidence_type="parse_block",
@@ -504,8 +514,8 @@ def test_run_extract_task_should_mark_failure_when_llm_invalid(client, seeded_se
     parse_version_id = upload_and_parse_textbook(client, headers, project_id)
     client.post(f"/api/v1/parse-versions/{parse_version_id}/confirm", headers=headers)
 
-    def raise_invalid_result(self, *, messages, response_model, temperature=0.2):  # noqa: ANN001
-        _ = (self, messages, response_model, temperature)
+    def raise_invalid_result(self, *, messages, response_model, temperature=0.2, **_extra_kwargs):  # noqa: ANN001
+        _ = (self, messages, response_model, temperature, _extra_kwargs)
         raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "LLM 返回结果非法")
 
     monkeypatch.setattr(OpenAICompatibleLlmService, "generate_structured_output", raise_invalid_result)

@@ -26,6 +26,8 @@ from app.modules.knowledge.repository import KnowledgeRepository
 from app.modules.knowledge.schemas import (
     KnowledgeChapterBoundaryResult,
     KnowledgeChapterPointExtractionResult,
+    KnowledgeExtractionEvidenceDraft,
+    KnowledgeExtractionPointDraft,
 )
 from app.modules.knowledge.service import _build_knowledge_version_model, upsert_vectors_for_knowledge_version
 from app.modules.task_center.heartbeat import (
@@ -117,6 +119,7 @@ def run_extract_task(payload: dict) -> dict[str, int]:
             boundary_result = llm_service.generate_structured_output(
                 messages=_build_chapter_boundary_messages(parse_version=parse_version, line_index=line_index),
                 response_model=KnowledgeChapterBoundaryResult,
+                strict_schema=True,
             )
         heartbeat.touch()
         try:
@@ -171,6 +174,7 @@ def run_extract_task(payload: dict) -> dict[str, int]:
             chapter_draft = chunk_extraction_result["chapter_draft"]
             semantic_chunk_draft = chunk_extraction_result["semantic_chunk_draft"]
             point_result = chunk_extraction_result["point_result"]
+            extracted_point_drafts = _build_point_drafts_from_llm_result(point_result)
             point_drafts.extend(
                 build_point_drafts_for_chapter(
                     parse_version=parse_version,
@@ -179,7 +183,7 @@ def run_extract_task(payload: dict) -> dict[str, int]:
                     semantic_chunk_ref_id=semantic_chunk_draft.draft_id,
                     parse_pages=parse_pages,
                     parse_blocks=parse_blocks,
-                    point_drafts=point_result.knowledge_points,
+                    point_drafts=extracted_point_drafts,
                     start_sort_order=len(point_drafts),
                 )
             )
@@ -187,7 +191,7 @@ def run_extract_task(payload: dict) -> dict[str, int]:
                 {
                     "chapter_path": chapter_draft.node_path,
                     "chapter_title": chapter_draft.title,
-                    "summary_json": point_result.summary_json,
+                    "summary_json": _dump_optional_schema(point_result.summary_json),
                 }
             )
         if not point_drafts:
@@ -388,6 +392,7 @@ def _extract_single_chunk_points(
             semantic_chunk_draft=semantic_chunk_draft,
         ),
         response_model=KnowledgeChapterPointExtractionResult,
+        strict_schema=True,
     )
     _validate_point_extraction_result(point_result, parse_pages=parse_pages, parse_blocks=parse_blocks)
     return {
@@ -396,6 +401,46 @@ def _extract_single_chunk_points(
         "semantic_chunk_draft": semantic_chunk_draft,
         "point_result": point_result,
     }
+
+
+def _dump_optional_schema(value) -> dict | None:  # noqa: ANN001
+    """将可选 Pydantic 子模型转成普通 JSON 字典。"""
+    if value is None:
+        return None
+    return value.model_dump()
+
+
+def _build_point_drafts_from_llm_result(result: KnowledgeChapterPointExtractionResult) -> list[KnowledgeExtractionPointDraft]:
+    """将 strict LLM 草稿转换为现有落库草稿。"""
+    point_drafts: list[KnowledgeExtractionPointDraft] = []
+    for point in result.knowledge_points:
+        evidences = [
+            KnowledgeExtractionEvidenceDraft(
+                page_no=evidence.page_no,
+                block_no=evidence.block_no,
+                evidence_type=evidence.evidence_type,
+                excerpt_text=evidence.excerpt_text,
+                bbox_json=None,
+                score_value=evidence.score_value,
+            )
+            for evidence in point.evidences
+        ]
+        point_drafts.append(
+            KnowledgeExtractionPointDraft(
+                chapter_path=point.chapter_path,
+                point_code=point.point_code,
+                point_name=point.point_name,
+                point_type=point.point_type,
+                importance_level=point.importance_level,
+                difficulty_level=point.difficulty_level,
+                mastery_level_hint=point.mastery_level_hint,
+                tags_json=_dump_optional_schema(point.tags_json),
+                summary_text=point.summary_text,
+                sort_order=point.sort_order,
+                evidences=evidences,
+            )
+        )
+    return point_drafts
 
 
 def _build_chapter_boundary_messages(*, parse_version, line_index) -> list[ChatMessage]:
@@ -426,16 +471,17 @@ def _build_chapter_point_extraction_messages(*, parse_version_id: int, chapter_d
         "你是教材知识点抽取助手。"
         "用户会提供一个一级章节的 Markdown 正文。"
         "请只基于该章节内容抽取知识点，严格输出 JSON 对象，字段只包含 summary_json、knowledge_points。"
-        "summary_json 是对象，可包含 overview、key_terms 等字段；不要使用数组。"
-        "knowledge_points 每项提供 point_code（字符串，不超过 64 字符）、point_name（字符串，不超过 64 字符）、point_type（字符串，例如 vocabulary/grammar/dialogue，不超过 32 字符）、"
-        "importance_level（1-5 之间的整数，5 最重要）、difficulty_level（1-5 之间的整数，5 最难）、"
+        "summary_json 必须且只能包含 overview（字符串）、key_terms（字符串数组）两个字段，示例：{\"overview\":\"本章介绍核心概念与基础应用。\",\"key_terms\":[\"术语1\",\"术语2\"]}。"
+        "knowledge_points 每项必须提供 chapter_path（本次使用 null）、point_code（字符串，不超过 64 字符，可为 null）、"
+        "point_name（字符串，不超过 64 字符）、point_type（字符串，例如 vocabulary/grammar/dialogue，不超过 32 字符）、"
+        "importance_level（1-5 之间的整数，5 最重要，可为 null）、difficulty_level（1-5 之间的整数，5 最难，可为 null）、"
         "mastery_level_hint（字符串，仅 12 字以内的极简标签，例如 \"识记\"/\"理解\"/\"应用\"，禁止整句描述）、"
-        "tags_json（对象，固定形如 {\"tags\":[\"重点\",\"易错\"]}，不要直接返回数组）、"
-        "summary_text（字符串）、sort_order（从 0 开始的整数）、evidences（数组）。"
-        "evidences 每项必须至少包含 page_no（整数）和 excerpt_text（字符串）；如果能判断解析块序号，可以补充 block_no（整数）。"
+        "tags_json（必须且只能包含 tags 字符串数组，示例：{\"tags\":[\"重点\",\"易错\"]}，可为 null）、"
+        "summary_text（字符串，可为 null）、sort_order（从 0 开始的整数）、evidences（数组）。"
+        "evidences 每项字段只包含 page_no（整数）、block_no（整数或 null）、evidence_type（字符串，通常为 parse_block）、excerpt_text（字符串或 null）、score_value（0-1 小数或 null）。"
         "page_no 必须严格落在用户提供的 chapter.page_start 与 chapter.page_end 闭区间内（含两端），不允许使用区间外、章节外或自行推算的页码。"
         "excerpt_text 必须从用户提供的 markdown 字段中原样摘录，不要改写或翻译。"
-        "不要输出 chapters，不要输出额外说明，不要编造章节外内容。"
+        "只输出满足上述字段的 JSON，不输出 chapters、额外说明或章节外内容。"
     )
     user_payload = {
         "parse_version_id": parse_version_id,
