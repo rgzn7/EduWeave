@@ -1,0 +1,16 @@
+<svg width="144" height="144" viewBox="0 0 144 144" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(72 72) rotate(90) scale(64)">
+      <stop stop-color="#FF795E" stop-opacity="0.8"/>
+      <stop offset="0.55" stop-color="#F45D45" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#F45D45" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur" x="0" y="0" width="144" height="144" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="6"/>
+    </filter>
+  </defs>
+  <circle cx="72" cy="72" r="61" fill="url(#glow)" filter="url(#blur)"/>
+  <circle cx="72" cy="72" r="46" fill="#101418" fill-opacity="0.82" stroke="#FF795E" stroke-width="2.4"/>
+  <circle cx="72" cy="72" r="53" stroke="#FF795E" stroke-opacity="0.36" stroke-width="2"/>
+  <circle cx="72" cy="72" r="39" stroke="#FFFFFF" stroke-opacity="0.16"/>
+</svg>

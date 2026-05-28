@@ -1,0 +1,280 @@
+<svg width="1600" height="1040" viewBox="0 0 1600 1040" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="EduWeave 开始备课产品演示">
+  <defs>
+    <linearGradient id="brandGreen" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#0F8777"/>
+      <stop offset="1" stop-color="#006B60"/>
+    </linearGradient>
+    <linearGradient id="warmGold" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#E8C06D"/>
+      <stop offset="1" stop-color="#C88725"/>
+    </linearGradient>
+    <linearGradient id="coralRed" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#FF7A4A"/>
+      <stop offset="1" stop-color="#F04E2F"/>
+    </linearGradient>
+    <filter id="softShadow" x="-8%" y="-8%" width="116%" height="124%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="22" stdDeviation="30" flood-color="#111111" flood-opacity=".13"/>
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#111111" flood-opacity=".05"/>
+    </filter>
+    <filter id="cardShadow" x="-16%" y="-16%" width="132%" height="150%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#111111" flood-opacity=".08"/>
+    </filter>
+    <style>
+      .ui { font-family: "Inter", "PingFang SC", "Microsoft YaHei", Arial, sans-serif; }
+      .serif { font-family: "STSong", "Songti SC", "Noto Serif CJK SC", serif; }
+      .small { font-size: 16px; fill: rgba(17,17,17,.44); }
+      .body { font-size: 18px; fill: rgba(17,17,17,.62); }
+      .label { font-size: 20px; font-weight: 700; fill: #111111; }
+      .muted-line { stroke: #DCDCD8; stroke-width: 7; stroke-linecap: round; }
+      .green-line { stroke: #0B7A6E; stroke-width: 5; stroke-linecap: round; }
+      .gold-dot { fill: #D9A249; }
+    </style>
+  </defs>
+
+  <path d="M44 762C244 714 406 829 568 774C690 733 743 616 877 611C1014 607 1086 730 1212 675C1311 631 1371 516 1559 564" stroke="#0F8777" stroke-width="1.4" opacity=".32"/>
+  <path d="M33 802C256 742 405 867 585 806C714 762 768 667 892 653C1034 637 1086 775 1225 709C1338 655 1382 571 1569 617" stroke="#DBA546" stroke-width="1.5" opacity=".42"/>
+  <path d="M72 842C290 790 437 890 604 837C739 794 783 712 912 693C1051 672 1125 806 1255 746C1362 696 1410 625 1548 657" stroke="#DBA546" stroke-width="1" opacity=".22"/>
+  <circle cx="822" cy="648" r="9" fill="#E2B256"/>
+
+  <g filter="url(#softShadow)">
+    <rect x="34" y="54" width="1532" height="912" rx="26" fill="#FFFDF9"/>
+    <rect x="35.5" y="55.5" width="1529" height="909" rx="24.5" stroke="#DDDAD4" stroke-width="3"/>
+    <rect x="36" y="54" width="286" height="912" rx="26" fill="#FBFAF7"/>
+    <path d="M322 55V965" stroke="#E6E1DA" stroke-width="2"/>
+  </g>
+
+  <g class="ui">
+    <text x="82" y="122" font-size="29" font-weight="800" fill="#111111">Edu</text>
+    <text x="133" y="122" font-size="29" font-weight="800" fill="#14796E">Weave</text>
+    <path d="M134 132C153 137 171 128 191 132C210 136 226 128 247 132" stroke="#D5A44A" stroke-width="3" stroke-linecap="round"/>
+
+    <rect x="76" y="194" width="194" height="58" rx="10" fill="url(#brandGreen)"/>
+    <path d="M107 222L119 210L127 218L115 230L104 233L107 222Z" stroke="#FFFFFF" stroke-width="3" stroke-linejoin="round"/>
+    <text x="143" y="230" font-size="20" font-weight="750" fill="#FFFFFF">开始备课</text>
+
+    <path d="M111 314A12 12 0 1 0 122 306" stroke="#111111" stroke-width="2.4" stroke-linecap="round"/>
+    <path d="M111 306V319H99" stroke="#111111" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="143" y="321" font-size="20" font-weight="700" fill="#111111">备课记录</text>
+
+    <circle cx="90" cy="876" r="24" fill="#FFFFFF" stroke="#E4E0D9" stroke-width="2"/>
+    <path d="M96 863L83 876L96 889" stroke="#6F6C66" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <text x="374" y="122" font-size="28" font-weight="800" fill="#111111">开始备课</text>
+
+    <g filter="url(#cardShadow)">
+      <rect x="366" y="180" width="270" height="650" rx="16" fill="#FFFFFF" stroke="#E6E1DA" stroke-width="2"/>
+      <text x="392" y="230" class="label">材料输入</text>
+
+      <rect x="392" y="276" width="218" height="250" rx="14" fill="#FFFDFB" stroke="#E8E2DC" stroke-width="2"/>
+      <rect x="414" y="303" width="44" height="50" rx="8" fill="url(#coralRed)"/>
+      <path d="M447 303V317H459" stroke="#FFE3D6" stroke-width="2" stroke-linejoin="round"/>
+      <text x="425" y="333" font-size="13" font-weight="800" fill="#FFFFFF">PDF</text>
+      <text x="479" y="332" font-size="19" font-weight="750" fill="#111111">教材 PDF</text>
+      <path d="M415 378H558" class="muted-line" opacity=".75"/>
+      <path d="M415 397H532" class="muted-line" opacity=".55"/>
+      <path d="M414 428H586" stroke="#EEEAE5" stroke-width="1.4"/>
+      <text x="416" y="449" class="small">高中数学必修一（人教版）.pdf</text>
+      <text x="416" y="475" class="small">32.4 MB</text>
+      <rect x="415" y="486" width="170" height="32" rx="7" fill="#FFFFFF" stroke="#0B7A6E" stroke-width="2"/>
+      <path d="M465 507V497M465 497L458 504M465 497L472 504" stroke="#0B7A6E" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M455 510H475" stroke="#0B7A6E" stroke-width="2.4" stroke-linecap="round"/>
+      <text x="493" y="508" font-size="16" font-weight="760" fill="#0B6B61">选择教材</text>
+
+      <rect x="392" y="544" width="218" height="250" rx="14" fill="#FFFDFB" stroke="#E8E2DC" stroke-width="2"/>
+      <rect x="414" y="571" width="44" height="50" rx="8" fill="#1D75D8"/>
+      <path d="M447 571V585H459" stroke="#D9ECFF" stroke-width="2" stroke-linejoin="round"/>
+      <text x="421" y="601" font-size="13" font-weight="800" fill="#FFFFFF">DOCX</text>
+      <text x="479" y="600" font-size="19" font-weight="750" fill="#111111">学情 DOCX</text>
+      <path d="M415 646H558" class="muted-line" opacity=".75"/>
+      <path d="M415 665H532" class="muted-line" opacity=".55"/>
+      <path d="M414 686H586" stroke="#EEEAE5" stroke-width="1.4"/>
+      <text x="416" y="715" class="small">高一（3）班_学情分析.docx</text>
+      <text x="416" y="741" class="small">18.7 MB</text>
+      <rect x="415" y="754" width="170" height="32" rx="7" fill="#FFFFFF" stroke="#0B7A6E" stroke-width="2"/>
+      <path d="M465 775V765M465 765L458 772M465 765L472 772" stroke="#0B7A6E" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M455 778H475" stroke="#0B7A6E" stroke-width="2.4" stroke-linecap="round"/>
+      <text x="493" y="776" font-size="16" font-weight="760" fill="#0B6B61">选择学情</text>
+
+      <path d="M366 800H636" stroke="#E9E4DE" stroke-width="2"/>
+      <circle cx="407" cy="815" r="5" fill="#0B7A6E"/>
+      <text x="434" y="821" class="small">已就绪，等待开始生成</text>
+    </g>
+
+    <g filter="url(#cardShadow)">
+      <rect x="684" y="180" width="278" height="650" rx="16" fill="#FFFFFF" stroke="#E6E1DA" stroke-width="2"/>
+      <text x="710" y="230" class="label">内容理解</text>
+
+      <path d="M660 323C638 335 632 365 632 413C632 501 650 528 680 542" stroke="#0B7A6E" stroke-width="2.4" opacity=".72"/>
+      <path d="M659 481C640 493 629 517 629 565C629 643 652 663 681 672" stroke="#0B7A6E" stroke-width="2.4" opacity=".72"/>
+      <path d="M641 477C627 488 616 512 610 548" stroke="#D8A24B" stroke-width="2" opacity=".75"/>
+      <path d="M641 409C623 426 612 453 606 485" stroke="#D8A24B" stroke-width="2" opacity=".75"/>
+
+      <g transform="translate(732 284)">
+        <circle cx="47" cy="47" r="40" fill="#EEF8F6" stroke="#0B7A6E" stroke-width="6"/>
+        <path d="M47 20A27 27 0 0 1 74 47" stroke="#C8E9E2" stroke-width="6" stroke-linecap="round"/>
+        <text x="31" y="53" font-size="25" font-weight="800" fill="#0B7A6E">1%</text>
+      </g>
+      <text x="837" y="316" font-size="20" font-weight="800" fill="#111111">MinerU解析</text>
+      <text x="837" y="345" class="small">文档解析与版式识别</text>
+      <text x="837" y="385" class="body">100%</text>
+      <circle cx="917" cy="379" r="10" fill="#F5FBF9" stroke="#B8D9D2" stroke-width="2"/>
+      <path d="M912 379L916 383L924 373" stroke="#0B7A6E" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <path d="M779 380V417" stroke="#0B7A6E" stroke-width="2" stroke-linecap="round"/>
+      <path d="M779 417L770 407M779 417L788 407" stroke="#0B7A6E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <g transform="translate(732 421)">
+        <circle cx="47" cy="47" r="40" fill="#EEF8F6" stroke="#0B7A6E" stroke-width="6"/>
+        <path d="M47 20A27 27 0 0 1 74 47" stroke="#C8E9E2" stroke-width="6" stroke-linecap="round"/>
+        <text x="31" y="53" font-size="25" font-weight="800" fill="#0B7A6E">1%</text>
+      </g>
+      <text x="837" y="453" font-size="20" font-weight="800" fill="#111111">知识抽取</text>
+      <text x="837" y="482" class="small">知识点与关系抽取</text>
+      <text x="837" y="522" class="body">100%</text>
+      <circle cx="917" cy="516" r="10" fill="#F5FBF9" stroke="#B8D9D2" stroke-width="2"/>
+      <path d="M912 516L916 520L924 510" stroke="#0B7A6E" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <path d="M779 517V554" stroke="#0B7A6E" stroke-width="2" stroke-linecap="round"/>
+      <path d="M779 554L770 544M779 554L788 544" stroke="#0B7A6E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <g transform="translate(732 558)">
+        <circle cx="47" cy="47" r="40" fill="#EEF8F6" stroke="#0B7A6E" stroke-width="6"/>
+        <path d="M47 20A27 27 0 0 1 74 47" stroke="#C8E9E2" stroke-width="6" stroke-linecap="round"/>
+        <text x="31" y="53" font-size="25" font-weight="800" fill="#0B7A6E">1%</text>
+      </g>
+      <text x="837" y="590" font-size="20" font-weight="800" fill="#111111">章节结构</text>
+      <text x="837" y="619" class="small">构建章节与知识结构</text>
+      <text x="837" y="659" class="body">100%</text>
+      <circle cx="917" cy="653" r="10" fill="#F5FBF9" stroke="#B8D9D2" stroke-width="2"/>
+      <path d="M912 653L916 657L924 647" stroke="#0B7A6E" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <path d="M779 654V691" stroke="#0B7A6E" stroke-width="2" stroke-linecap="round"/>
+      <path d="M779 691L770 681M779 691L788 681" stroke="#0B7A6E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <g transform="translate(732 695)">
+        <circle cx="47" cy="47" r="40" fill="#E9FBFF" stroke="#BEEBF0" stroke-width="6" stroke-dasharray="45 18"/>
+        <text x="31" y="748" font-size="0" fill="transparent"> </text>
+        <text x="31" y="53" font-size="25" font-weight="800" fill="#0B7A6E">1%</text>
+      </g>
+      <text x="837" y="727" font-size="20" font-weight="800" fill="#111111">学情匹配</text>
+      <text x="837" y="756" class="small">薄弱点与教学建议</text>
+      <text x="837" y="796" class="body">80%</text>
+      <circle cx="917" cy="790" r="10" fill="none" stroke="#2FBBD2" stroke-width="3" stroke-dasharray="3 8"/>
+
+      <path d="M684 800H962" stroke="#E9E4DE" stroke-width="2"/>
+      <path d="M721 818L727 808L733 818L743 824L733 830L727 840L721 830L711 824L721 818Z" fill="#D8A24B" opacity=".9"/>
+      <text x="765" y="820" class="small">内容理解进行中，完成后将</text>
+      <text x="765" y="846" class="small">自动生成资源</text>
+    </g>
+
+    <path d="M963 426C1000 441 1018 482 1055 497" stroke="#D8A24B" stroke-width="2" opacity=".72"/>
+    <path d="M963 500C999 518 1013 547 1055 555" stroke="#0B7A6E" stroke-width="2" opacity=".55"/>
+    <path d="M963 579C999 591 1018 635 1055 646" stroke="#D8A24B" stroke-width="2" opacity=".72"/>
+    <path d="M963 646C1005 657 1017 695 1055 704" stroke="#D8A24B" stroke-width="2" opacity=".45"/>
+
+    <g filter="url(#cardShadow)">
+      <rect x="1004" y="180" width="486" height="650" rx="16" fill="#FFFFFF" stroke="#E6E1DA" stroke-width="2"/>
+      <text x="1030" y="230" class="label">资源生成</text>
+
+      <g>
+        <rect x="1031" y="276" width="194" height="154" rx="13" fill="#FFFDFB" stroke="#E8E2DC" stroke-width="2"/>
+        <rect x="1052" y="304" width="42" height="42" rx="8" fill="url(#brandGreen)"/>
+        <rect x="1064" y="314" width="18" height="4" rx="2" fill="#FFFFFF"/>
+        <rect x="1064" y="324" width="18" height="4" rx="2" fill="#FFFFFF"/>
+        <rect x="1064" y="334" width="18" height="4" rx="2" fill="#FFFFFF"/>
+        <text x="1110" y="330" font-size="18" font-weight="800" fill="#111111">课程大纲</text>
+        <path d="M1052 374H1132" class="muted-line" opacity=".64"/>
+        <path d="M1052 395H1190" class="muted-line" opacity=".42"/>
+        <path d="M1052 418H1113" class="green-line"/>
+        <circle cx="1195" cy="417" r="10" fill="#F5FBF9" stroke="#0B7A6E" stroke-width="2"/>
+        <path d="M1195 411V418L1200 421" stroke="#0B7A6E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+
+      <g>
+        <rect x="1252" y="276" width="194" height="154" rx="13" fill="#FFFDFB" stroke="#E8E2DC" stroke-width="2"/>
+        <rect x="1273" y="304" width="42" height="42" rx="8" fill="url(#warmGold)"/>
+        <path d="M1285 315H1302L1308 321V337H1285V315Z" stroke="#FFFFFF" stroke-width="2.4" stroke-linejoin="round"/>
+        <path d="M1302 315V322H1308" stroke="#FFFFFF" stroke-width="2.4" stroke-linejoin="round"/>
+        <text x="1331" y="330" font-size="18" font-weight="800" fill="#111111">教案</text>
+        <path d="M1273 374H1360" class="muted-line" opacity=".64"/>
+        <path d="M1273 395H1400" class="muted-line" opacity=".42"/>
+        <path d="M1273 418H1327" class="green-line"/>
+        <circle cx="1416" cy="417" r="10" fill="#F5FBF9" stroke="#0B7A6E" stroke-width="2"/>
+        <path d="M1416 411V418L1421 421" stroke="#0B7A6E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+
+      <g>
+        <rect x="1031" y="454" width="194" height="154" rx="13" fill="#FFFDFB" stroke="#E8E2DC" stroke-width="2"/>
+        <rect x="1052" y="482" width="42" height="42" rx="8" fill="url(#brandGreen)"/>
+        <path d="M1063 501L1070 509L1084 491" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M1064 516H1083" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round"/>
+        <text x="1110" y="508" font-size="18" font-weight="800" fill="#111111">测练</text>
+        <path d="M1052 552H1132" class="muted-line" opacity=".64"/>
+        <path d="M1052 573H1190" class="muted-line" opacity=".42"/>
+        <path d="M1052 596H1104" class="green-line"/>
+        <circle cx="1195" cy="595" r="10" fill="#F5FBF9" stroke="#0B7A6E" stroke-width="2"/>
+        <path d="M1195 589V596L1200 599" stroke="#0B7A6E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+
+      <g>
+        <rect x="1252" y="454" width="194" height="154" rx="13" fill="#FFFDFB" stroke="#E8E2DC" stroke-width="2"/>
+        <rect x="1273" y="482" width="42" height="42" rx="8" fill="url(#coralRed)"/>
+        <path d="M1295 491V513H1309" stroke="#FFFFFF" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M1295 491A22 22 0 1 1 1278 528" stroke="#FFFFFF" stroke-width="2.6" stroke-linecap="round"/>
+        <text x="1331" y="508" font-size="18" font-weight="800" fill="#111111">PPT课件</text>
+        <path d="M1273 552H1360" class="muted-line" opacity=".64"/>
+        <path d="M1273 573H1400" class="muted-line" opacity=".42"/>
+        <path d="M1273 596H1327" class="green-line"/>
+        <circle cx="1416" cy="595" r="10" fill="#F5FBF9" stroke="#0B7A6E" stroke-width="2"/>
+        <path d="M1416 589V596L1421 599" stroke="#0B7A6E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+
+      <g>
+        <rect x="1031" y="632" width="194" height="154" rx="13" fill="#FFFDFB" stroke="#E8E2DC" stroke-width="2"/>
+        <rect x="1052" y="660" width="42" height="42" rx="8" fill="url(#warmGold)"/>
+        <rect x="1064" y="671" width="18" height="20" rx="3" stroke="#FFFFFF" stroke-width="2.4"/>
+        <path d="M1068 681L1072 685L1080 676" stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="1110" y="686" font-size="18" font-weight="800" fill="#111111">作业</text>
+        <path d="M1052 730H1132" class="muted-line" opacity=".64"/>
+        <path d="M1052 751H1190" class="muted-line" opacity=".42"/>
+        <path d="M1052 774H1098" class="green-line"/>
+        <circle cx="1195" cy="773" r="10" fill="#F5FBF9" stroke="#0B7A6E" stroke-width="2"/>
+        <path d="M1195 767V774L1200 777" stroke="#0B7A6E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </g>
+
+      <g>
+        <rect x="1252" y="632" width="194" height="154" rx="13" fill="#FFFDFB" stroke="#E8E2DC" stroke-width="2"/>
+        <rect x="1273" y="660" width="42" height="42" rx="8" fill="url(#brandGreen)"/>
+        <rect x="1284" y="671" width="8" height="8" rx="1.5" stroke="#FFFFFF" stroke-width="2"/>
+        <rect x="1297" y="671" width="8" height="8" rx="1.5" stroke="#FFFFFF" stroke-width="2"/>
+        <rect x="1284" y="684" width="8" height="8" rx="1.5" stroke="#FFFFFF" stroke-width="2"/>
+        <rect x="1297" y="684" width="8" height="8" rx="1.5" stroke="#FFFFFF" stroke-width="2"/>
+        <text x="1331" y="686" font-size="18" font-weight="800" fill="#111111">覆盖报告</text>
+        <g opacity=".9">
+          <rect x="1273" y="724" width="24" height="24" fill="#A2CBC3"/>
+          <rect x="1300" y="724" width="24" height="24" fill="#C7DED9"/>
+          <rect x="1327" y="724" width="24" height="24" fill="#E5E5DD"/>
+          <rect x="1354" y="724" width="24" height="24" fill="#D0CFC7"/>
+          <rect x="1381" y="724" width="24" height="24" fill="#F0C78B"/>
+          <rect x="1273" y="751" width="24" height="24" fill="#E4D3BB"/>
+          <rect x="1300" y="751" width="24" height="24" fill="#A9CAC1"/>
+          <rect x="1327" y="751" width="24" height="24" fill="#7DB4AB"/>
+          <rect x="1354" y="751" width="24" height="24" fill="#1A7F72"/>
+          <rect x="1381" y="751" width="24" height="24" fill="#D8A24B"/>
+        </g>
+      </g>
+
+      <path d="M1004 800H1490" stroke="#E9E4DE" stroke-width="2"/>
+      <circle cx="1042" cy="815" r="5" fill="#D9A249"/>
+      <text x="1068" y="821" class="small">待生成</text>
+    </g>
+
+    <g filter="url(#cardShadow)">
+      <rect x="365" y="874" width="1126" height="74" rx="14" fill="#FFFFFF" stroke="#E6E1DA" stroke-width="2"/>
+      <path d="M398 911L405 899L412 911L424 918L412 925L405 937L398 925L386 918L398 911Z" fill="#D9A249" opacity=".9"/>
+      <text x="451" y="923" font-size="18" fill="#6E6A62">预计剩余时间 2-4 分钟，生成完成将通过备课记录通知</text>
+      <rect x="1356" y="892" width="126" height="38" rx="8" fill="#FFFFFF" stroke="#E6E1DA" stroke-width="2"/>
+      <text x="1391" y="917" font-size="16" font-weight="700" fill="#6E6A62">稍后查看</text>
+    </g>
+  </g>
+</svg>

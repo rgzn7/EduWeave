@@ -1,0 +1,115 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #111111;
+  background: #ffffff;
+  font-family:
+    Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif,
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+}
+
+.process-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 1.5rem;
+}
+
+.process-reveal {
+  animation: process-reveal 360ms ease-out both;
+}
+
+@keyframes process-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (min-width: 1536px) {
+  .process-layout {
+    grid-template-columns: minmax(0, 1fr) 360px;
+  }
+}
+
+@media (max-width: 760px) {
+  .process-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.landing-title {
+  font-family: "Songti SC", STSong, "Noto Serif CJK SC", "Source Han Serif SC", SimSun, serif;
+}
+
+.landing-copy {
+  font-family:
+    Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", ui-sans-serif,
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex h-10 items-center justify-center gap-2 rounded-md border border-transparent px-4 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-accent/35;
+  }
+
+  .btn-primary {
+    @apply bg-ink text-white hover:bg-ink/90;
+  }
+
+  .btn-secondary {
+    @apply border-line bg-white text-ink hover:border-ink/30 hover:bg-paper;
+  }
+
+  .btn-ghost {
+    @apply text-ink hover:bg-white/70;
+  }
+
+  .field {
+    @apply h-10 w-full rounded-md border border-line bg-white px-3 text-sm text-ink outline-none transition placeholder:text-ink/35 focus:border-accent focus:ring-2 focus:ring-accent/20;
+  }
+
+  .file-field {
+    @apply block h-10 w-full rounded-md border border-line bg-white text-sm text-ink file:mr-3 file:h-full file:border-0 file:bg-ink file:px-3 file:text-sm file:font-semibold file:text-white focus:outline-none focus:ring-2 focus:ring-accent/20;
+  }
+
+  .panel {
+    @apply rounded-lg border border-line bg-white shadow-panel;
+  }
+
+  .panel-header {
+    @apply flex items-center justify-between gap-3 border-b border-line px-5 py-4;
+  }
+
+  .label {
+    @apply text-xs font-semibold uppercase tracking-wide text-ink/55;
+  }
+}
