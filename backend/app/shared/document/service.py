@@ -5,7 +5,6 @@
 """
 
 import hashlib
-import json
 from io import BytesIO
 from typing import Any
 
@@ -23,6 +22,7 @@ from app.shared.document.labels import (
     DIFFICULTY_LEVEL_LABELS,
     LESSON_AFTER_CLASS_LABELS,
     LESSON_COURSE_OVERVIEW_LABELS,
+    NESTED_FIELD_LABELS,
     QUESTION_TYPE_LABELS,
     SCENE_TYPE_LABELS,
     iter_known_fields,
@@ -279,14 +279,37 @@ def _ensure_dict(value: Any) -> dict[str, Any]:
 
 
 def _safe_text(value: Any, fallback: str = "暂无") -> str:
-    """转换安全展示文本。"""
+    """转换安全展示文本；dict/list 递归展开为可读多行文本，避免直接抛出原始 JSON。"""
     if value is None:
         return fallback
     if isinstance(value, str):
         return value.strip() or fallback
-    if isinstance(value, (dict, list)):
-        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, dict):
+        return _flatten_mapping(value) or fallback
+    if isinstance(value, list):
+        flattened = "\n".join(text for text in (_safe_text(item, "") for item in value) if text)
+        return flattened or fallback
     return str(value)
+
+
+def _flatten_mapping(value: dict[str, Any]) -> str:
+    """把嵌套字典展开为「键：值」多行文本，子值仍是 dict/list 时递归展开并缩进。
+
+    旧版 after_class_plan 等字段曾以自由 dict 落库（如 review={"focus":...,"method":...}），
+    直接 json.dumps 会在 Word 里露出原始 JSON，这里统一降级为可读文本。
+    """
+    lines: list[str] = []
+    for key, sub in value.items():
+        text = _safe_text(sub, "")
+        if not text:
+            continue
+        label = NESTED_FIELD_LABELS.get(str(key), str(key))
+        if "\n" in text:
+            indented = "\n".join(f"  {line}" for line in text.splitlines())
+            lines.append(f"{label}：\n{indented}")
+        else:
+            lines.append(f"{label}：{text}")
+    return "\n".join(lines)
 
 
 def _join_list(value: Any) -> str:

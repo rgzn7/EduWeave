@@ -44,6 +44,19 @@ LESSON_AFTER_CLASS_LABELS: dict[str, str] = {
     "parent_communication": "家校沟通",
 }
 
+# 旧版自由 dict 字段（如 after_class_plan 子项曾以 {"focus":..,"method":..} 落库）的
+# 遗留英文键到中文展示，DOCX 渲染降级嵌套结构时用它翻译键名，未收录的键保留原样。
+NESTED_FIELD_LABELS: dict[str, str] = {
+    "focus": "重点",
+    "method": "方法",
+    "task1": "任务一",
+    "task2": "任务二",
+    "task3": "任务三",
+    "check_point": "检查重点",
+    "message": "沟通内容",
+    "suggestion": "建议",
+}
+
 
 def labelize(value: Any, mapping: dict[Any, str], *, default: str | None = None) -> str:
     """按映射把内部值转为中文展示，缺省时回退到 default 或原值字符串。"""
