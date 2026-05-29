@@ -10,6 +10,7 @@ from typing import Any
 
 from docx import Document
 from docx.enum.text import WD_BREAK
+from docx.oxml.ns import qn
 from docx.shared import Inches
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -33,6 +34,11 @@ from app.shared.storage import ObsStorageClient
 from app.shared.utils import DateTimeUtil
 
 DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+# 导出字体：中文统一宋体，英文/数字统一 Times New Roman；字色统一黑色
+DOCX_CN_FONT = "宋体"
+DOCX_EN_FONT = "Times New Roman"
+DOCX_FONT_COLOR = "000000"
 
 # 模板版本号：DOCX 渲染规则发生破坏性变化时 +1，object_key 会嵌入 tv{N} 段，
 # 旧 export_file_id 自然失效，前端再次触发 /export-docx 后会落到新 key。
@@ -258,12 +264,78 @@ class DocumentExportService:
 def _create_document() -> Document:
     """创建基础 DOCX 文档。"""
     document = Document()
+    _apply_default_fonts(document)
     section = document.sections[0]
     section.top_margin = Inches(0.7)
     section.bottom_margin = Inches(0.7)
     section.left_margin = Inches(0.8)
     section.right_margin = Inches(0.8)
     return document
+
+
+def _get_or_add_doc_default_rpr(document: Document):
+    """获取（或创建）styles.xml 中 docDefaults/rPrDefault/rPr 节点。
+
+    CT_Styles 未生成 docDefaults 的链式 get_or_add 方法，这里按 OOXML schema 顺序手动补齐。
+    """
+    from docx.oxml import OxmlElement
+
+    styles_element = document.styles.element
+    doc_defaults = styles_element.find(qn("w:docDefaults"))
+    if doc_defaults is None:
+        doc_defaults = OxmlElement("w:docDefaults")
+        styles_element.insert(0, doc_defaults)
+    rpr_default = doc_defaults.find(qn("w:rPrDefault"))
+    if rpr_default is None:
+        rpr_default = OxmlElement("w:rPrDefault")
+        doc_defaults.append(rpr_default)
+    rpr = rpr_default.find(qn("w:rPr"))
+    if rpr is None:
+        rpr = OxmlElement("w:rPr")
+        rpr_default.append(rpr)
+    return rpr
+
+
+def _normalize_rfonts(rfonts) -> None:
+    """把 rFonts 节点归一化为：西文/数字 Times New Roman，中文宋体。
+
+    主题字体属性若与显式字体并存，部分 Word 版本会优先用主题字体，先清除避免被覆盖。
+    """
+    for theme_attr in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme"):
+        if rfonts.get(qn(theme_attr)) is not None:
+            del rfonts.attrib[qn(theme_attr)]
+    rfonts.set(qn("w:ascii"), DOCX_EN_FONT)
+    rfonts.set(qn("w:hAnsi"), DOCX_EN_FONT)
+    rfonts.set(qn("w:cs"), DOCX_EN_FONT)
+    rfonts.set(qn("w:eastAsia"), DOCX_CN_FONT)
+
+
+def _normalize_color(color) -> None:
+    """把字色节点归一化为黑色：标题等样式默认带主题色，需清除主题色属性再写显式黑色。"""
+    for theme_attr in ("w:themeColor", "w:themeTint", "w:themeShade"):
+        if color.get(qn(theme_attr)) is not None:
+            del color.attrib[qn(theme_attr)]
+    color.set(qn("w:val"), DOCX_FONT_COLOR)
+
+
+def _apply_default_fonts(document: Document) -> None:
+    """统一全文档字体与字色：中文宋体、英文/数字 Times New Roman、字色黑色。
+
+    Word 的西文与东亚字体是分轨的，python-docx 的 font.name 只能改西文轨，东亚字体需直接写
+    rFonts 的 w:eastAsia 属性；标题等内置样式还自带主题色。这里先把 docDefaults 设成兜底默认，
+    再遍历 styles.xml 内所有 rFonts / color 节点（含标题、表格条件格式等嵌套 rPr）逐一归一化，
+    避免主题字体回退到默认黑体/Calibri，也确保不会残留蓝色标题。
+    """
+    styles_element = document.styles.element
+    # 文档级默认，兜住所有未显式指定字体/字色的内容
+    rpr_default = _get_or_add_doc_default_rpr(document)
+    _normalize_rfonts(rpr_default.get_or_add_rFonts())
+    _normalize_color(rpr_default.get_or_add_color())
+    # 归一化 styles.xml 中所有已存在的字体/字色定义
+    for rfonts in styles_element.iter(qn("w:rFonts")):
+        _normalize_rfonts(rfonts)
+    for color in styles_element.iter(qn("w:color")):
+        _normalize_color(color)
 
 
 def _dump_document(document: Document) -> bytes:
