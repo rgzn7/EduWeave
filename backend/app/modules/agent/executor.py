@@ -100,10 +100,18 @@ class AgentRunExecutor:
                         message="模型在调用工具前输出了一段说明",
                         payload={"text": inline_text},
                     )
-                conversation.append(
-                    {"role": "assistant", "content": result.content or "", "tool_calls": result.tool_calls}
-                )
+                    # 工具调用前的说明文字回灌为 assistant 消息，保持 Responses 会话连续性
+                    conversation.append({"role": "assistant", "content": inline_text})
                 for tool_call in result.tool_calls:
+                    # 先回灌 function_call 项，再回灌对应的 function_call_output，二者 call_id 必须配对
+                    conversation.append(
+                        {
+                            "type": "function_call",
+                            "call_id": tool_call.get("call_id") or "",
+                            "name": tool_call.get("name") or "",
+                            "arguments": tool_call.get("arguments") or "{}",
+                        }
+                    )
                     conversation.append(self._execute_tool_call(tool_call))
                 continue
 
@@ -136,10 +144,9 @@ class AgentRunExecutor:
     # 工具调用
     # ------------------------------------------------------------------ #
     def _execute_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
-        """执行单个工具调用并返回 tool 角色消息。"""
-        function_payload = tool_call.get("function") or {}
-        tool_name = str(function_payload.get("name") or "")
-        arguments = AgentLLMRunner.parse_tool_arguments(function_payload.get("arguments"))
+        """执行单个工具调用并返回 function_call_output 项。"""
+        tool_name = str(tool_call.get("name") or "")
+        arguments = AgentLLMRunner.parse_tool_arguments(tool_call.get("arguments"))
         self.tool_call_count += 1
 
         self.run_service.emit_event(
@@ -175,9 +182,9 @@ class AgentRunExecutor:
             self._handle_write_supersede(tool_name, result)
 
         return {
-            "role": "tool",
-            "tool_call_id": str(tool_call.get("id") or ""),
-            "content": json.dumps(model_result, ensure_ascii=False, default=str),
+            "type": "function_call_output",
+            "call_id": str(tool_call.get("call_id") or ""),
+            "output": json.dumps(model_result, ensure_ascii=False, default=str),
         }
 
     def _maybe_persist_artifact(self, tool_name: str, arguments: dict[str, Any], result: dict[str, Any]):
