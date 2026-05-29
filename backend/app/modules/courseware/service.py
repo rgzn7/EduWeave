@@ -59,6 +59,9 @@ RACCOON_PROMPT_BULLET_PREVIEW_MAX_CHARS = 40
 RACCOON_PROMPT_EXAMPLE_MAX_ITEMS = 5
 RACCOON_PROMPT_EXAMPLE_STEM_MAX_CHARS = 120
 RACCOON_PROMPT_SUMMARY_MAX_CHARS = 400
+# 上游 Raccoon 触发模型追问(waiting_user_input)时存在缺陷，会异常失败并返回 plan result not found，
+# 故在 prompt 中显式要求不要追问、按现有信息直接生成，规避该上游问题（2026-05-28 xisy）
+RACCOON_NO_FOLLOWUP_HINT = "请不要向我提出任何追问或补充确认，按现有信息一次性直接生成完整 PPT。"
 
 logger = get_logger(__name__)
 
@@ -671,13 +674,17 @@ class CoursewareService:
 
     @staticmethod
     def build_raccoon_prompt(context: dict[str, Any], deck: SlideDeckGenerationResult) -> str:
-        """构造 Raccoon PPT 自然语言需求提示词，控制在 ≤2000 字以内。"""
+        """构造 Raccoon PPT 自然语言需求提示词，控制在 ≤2000 字以内。
+
+        提示词开头固定追加“不要追问、直接生成”的约束，规避上游 Raccoon 触发模型追问时异常失败的缺陷；
+        该约束置于头部以保证超长裁剪场景下仍然保留。
+        """
         project = context["project"]
         generation_batch = context["generation_batch"]
         lesson_plan = context["lesson_plan"]
 
-        # 基础信息段：标题、学科年级、适用对象、课时与页数
-        header_lines: list[str] = ["请生成一份中文课堂教学 PPT。", ""]
+        # 基础信息段：开头固定追加不追问约束（规避上游缺陷），随后是标题、学科年级、适用对象、课时与页数
+        header_lines: list[str] = ["请生成一份中文课堂教学 PPT。", RACCOON_NO_FOLLOWUP_HINT, ""]
         header_lines.append(f"主题：{deck.deck_title}")
         subject_grade = " ".join(part for part in (project.subject_code, project.grade_code) if part)
         if subject_grade:

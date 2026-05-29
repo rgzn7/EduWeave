@@ -12,6 +12,7 @@ from app.modules.courseware.schemas import (
     SlideExampleBlock,
 )
 from app.modules.courseware.service import (
+    RACCOON_NO_FOLLOWUP_HINT,
     RACCOON_PROMPT_MAX_CHARS,
     CoursewareService,
 )
@@ -94,6 +95,8 @@ def test_build_raccoon_prompt_emits_natural_language_summary() -> None:
     prompt = CoursewareService.build_raccoon_prompt(context, deck)
 
     assert prompt.startswith("请生成一份中文课堂教学 PPT。")
+    # 头部应固定追加不追问约束，规避上游 Raccoon 触发模型追问时异常失败
+    assert RACCOON_NO_FOLLOWUP_HINT in prompt
     assert "主题：乘法分配律" in prompt
     assert "学科年级：数学 三年级" in prompt
     assert "适用对象：三年级学生" in prompt
@@ -128,3 +131,5 @@ def test_build_raccoon_prompt_respects_max_chars() -> None:
 
     assert len(prompt) <= RACCOON_PROMPT_MAX_CHARS
     assert "请生成一份中文课堂教学 PPT。" in prompt
+    # 不追问约束位于头部，超长裁剪后仍应保留
+    assert RACCOON_NO_FOLLOWUP_HINT in prompt
