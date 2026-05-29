@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any
 
@@ -35,14 +36,44 @@ WRITE_SUPERSEDE_RULES: dict[str, list[str]] = {
 }
 
 
+def _inline_json_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
+    """将 pydantic 生成的 $ref/$defs 内联展开为自包含嵌套结构（去除 $ref 与 $defs）。
+
+    pydantic 的 $ref 形如 '#/$defs/X'（相对文档根）。本工具 schema 会被嵌入
+    parameters.properties.content_json，'#/$defs/X' 相对请求根失配，导致 course_overview、
+    teaching_flow、session_plans 等嵌套对象的结构丢失；上游网关对 $ref 支持也不稳。
+    故在此解引用，使每个字段都带完整结构。教案/大纲 schema 无环，内联安全。
+    """
+    defs: dict[str, Any] = schema.get("$defs", {})
+
+    def resolve(node: Any) -> Any:
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/$defs/"):
+                target = resolve(copy.deepcopy(defs.get(ref.rsplit("/", 1)[-1], {})))
+                # 合并 $ref 同级的其他键（如 description），$ref 本身丢弃
+                siblings = {key: value for key, value in node.items() if key != "$ref"}
+                if isinstance(target, dict):
+                    target.update(siblings)
+                return target
+            return {key: resolve(value) for key, value in node.items()}
+        if isinstance(node, list):
+            return [resolve(item) for item in node]
+        return node
+
+    return resolve({key: value for key, value in schema.items() if key != "$defs"})
+
+
 def _build_content_schema(model: type[BaseSchema], description: str) -> dict[str, Any]:
     """从 pydantic 结果模型派生 content_json 的 JSON Schema，直接注入工具定义。
 
     与服务端 model_validate 同源，模型据此即可在首轮产出结构正确的 content_json，
     无需靠校验报错试错；schema 随 pydantic 模型自动演进，避免手写结构与校验脱节。
     BaseSchema 无 alias，输出字段名为 snake_case，与库内存储及前端读取一致。
+    先内联 $ref/$defs，避免嵌套对象结构在工具定义中丢失。
     """
-    schema = model.model_json_schema()
+    schema = _inline_json_schema_refs(model.model_json_schema())
+    schema.pop("title", None)
     schema["description"] = description
     return schema
 
