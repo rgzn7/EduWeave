@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   BarChart3,
@@ -184,12 +184,28 @@ function buildLessonSections(lesson?: LessonPlan): TextSection[] {
   const afterClassPlan = asRecord(content?.after_class_plan);
   const sessionPlans = asRecordList(content?.session_plans);
 
+  // 教案 schema 的教学目标位于 session_plans[].objectives，顶层无 objectives；保留顶层兼容键与 summary 兜底
   const directObjectives = pickText(content, ["teaching_objectives", "objectives", "lesson_objectives", "learning_objectives"], 5);
-  const objectives = directObjectives.length ? directObjectives : collectText(courseOverview?.objectives, 5);
-  const focus = [
-    ...pickText(content, ["key_points", "teaching_focus", "core_knowledge", "important_points"], 4),
-    ...pickText(content, ["difficult_points", "learning_difficulties"], 3),
-  ];
+  const sessionObjectives = collectText(
+    sessionPlans.flatMap((session) => collectText(session.objectives, 5)),
+    5,
+  );
+  const objectives = directObjectives.length
+    ? directObjectives
+    : sessionObjectives.length
+      ? sessionObjectives
+      : collectText(courseOverview?.objectives, 5);
+  // 重点难点：顶层 core_knowledge + 各课次 teaching_focus + 难点，去重后展示
+  const focus = Array.from(
+    new Set([
+      ...pickText(content, ["key_points", "teaching_focus", "core_knowledge", "important_points"], 4),
+      ...collectText(
+        sessionPlans.flatMap((session) => collectText(session.teaching_focus, 3)),
+        3,
+      ),
+      ...pickText(content, ["difficult_points", "learning_difficulties"], 3),
+    ]),
+  );
   const homework = [
     ...collectText(afterClassPlan, 5),
     ...collectText(sessionPlans.flatMap((session) => collectText(session.homework, 3)), 5),
@@ -449,6 +465,8 @@ export function BatchDetailPage() {
   const batchId = toNumberId(useParams().batchId);
   const queryClient = useQueryClient();
   const [selectedLessonId, setSelectedLessonId] = useState<number | null>(null);
+  // 记住最后一次有效选中的课次序号；列表刷新（如 Agent 新建版本换了 id）后据此按课次保持选中
+  const lastSelectedSessionRef = useRef<number | null>(null);
   const [lessonDownloadId, setLessonDownloadId] = useState<number | null>(null);
   const [homeworkDownloadId, setHomeworkDownloadId] = useState<number | null>(null);
   const [paperDownloadId, setPaperDownloadId] = useState<number | null>(null);
@@ -545,19 +563,34 @@ export function BatchDetailPage() {
       setSelectedLessonId(null);
       return;
     }
+    // 当前选中仍有效则保持不动
+    if (selectedLessonId && lessonPlans.some((lesson) => lesson.id === selectedLessonId)) {
+      return;
+    }
+    // 选中失效（如 Agent 新建版本换了 id）：优先按上次课次序号找回对应的新版本，避免回退到第一课
+    const bySession =
+      lastSelectedSessionRef.current != null
+        ? lessonPlans.find((lesson) => lesson.class_session_no === lastSelectedSessionRef.current)
+        : undefined;
     const preferred =
+      bySession ??
       lessonPlans.find((lesson) => lesson.id === batch?.lesson_plan_id) ??
       lessonPlans.find((lesson) => lesson.class_session_no === 1) ??
       lessonPlans[0];
-    if (!selectedLessonId || !lessonPlans.some((lesson) => lesson.id === selectedLessonId)) {
-      setSelectedLessonId(preferred.id);
-    }
+    setSelectedLessonId(preferred.id);
   }, [batch?.lesson_plan_id, lessonPlans, selectedLessonId]);
 
   const selectedLesson = useMemo(
     () => lessonPlans.find((lesson) => lesson.id === selectedLessonId),
     [lessonPlans, selectedLessonId],
   );
+
+  // 选中有效时持续记录课次序号；失效后不更新，从而保留失效前的课次用于按课次找回
+  useEffect(() => {
+    if (selectedLesson?.class_session_no != null) {
+      lastSelectedSessionRef.current = selectedLesson.class_session_no;
+    }
+  }, [selectedLesson?.class_session_no]);
 
   // 向智能助手发布「所在课次教案」上下文，贯穿本页 run；离开本页时清空回到单页形态
   const setAssistantContext = useAssistantStore((state) => state.setContext);
