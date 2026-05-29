@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Bot, Loader2, Plus, Send, Sparkles, Wrench, X } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { api, streamAgentRunEvents, type AgentContext, type AgentRunEvent } from "../lib/api";
 import { useAssistantStore } from "../stores/assistant";
+import { MarkdownContent } from "./Markdown";
 import { cn } from "../utils";
 
 // 事件类型 -> 中文展示标签
@@ -253,9 +252,7 @@ export function AssistantPanel() {
                     </div>
                     <div className="max-w-[82%] rounded-2xl border border-line bg-white px-3 py-2 text-sm text-ink">
                       {message.content ? (
-                        <div className="markdown-body prose prose-sm max-w-none break-words text-ink">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
-                        </div>
+                        <MarkdownContent content={message.content} />
                       ) : message.status === "pending" ? (
                         <div className="flex items-center gap-2 text-ink/55">
                           <Loader2 size={14} className="animate-spin" />
