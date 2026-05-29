@@ -343,7 +343,7 @@ export function AssistantPage() {
         </header>
 
         {/* 聊天区：内容居中限宽，底部留出悬浮输入框的空间 */}
-        <div ref={bodyRef} className="flex-1 overflow-y-auto px-5 pt-5 pb-32">
+        <div ref={bodyRef} className="flex-1 overflow-y-auto px-5 pt-5 pb-36">
           <div className="mx-auto w-full max-w-3xl space-y-4">
             {historyLoading ? (
               <div className="flex items-center justify-center gap-2 py-12 text-sm text-ink/45">

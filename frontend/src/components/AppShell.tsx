@@ -1,4 +1,5 @@
-import { ArrowLeft, History, LogOut, Menu, PenLine, Sparkles } from "lucide-react";
+import { ArrowLeft, History, LogOut, Menu, PanelLeftClose, PanelLeftOpen, PenLine, Sparkles, X } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, Link, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
@@ -21,6 +22,16 @@ export function AppShell() {
   const location = useLocation();
   const navigate = useNavigate();
   const clearSession = useAuthStore((state) => state.clearSession);
+  // 侧栏收起状态，持久化到 localStorage，刷新后保持
+  const [collapsed, setCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("eduweave.sidebar.collapsed") === "1";
+  });
+  useEffect(() => {
+    localStorage.setItem("eduweave.sidebar.collapsed", collapsed ? "1" : "0");
+  }, [collapsed]);
+  // 窄屏抽屉开关，仅在 lg 以下生效；路由切换后自动关闭
+  const [mobileOpen, setMobileOpen] = useState(false);
   const locationState = location.state as { backTo?: unknown } | null;
   const normalizedPathname = normalizePathname(location.pathname);
   const isStartPage = normalizedPathname === "/";
@@ -36,6 +47,22 @@ export function AppShell() {
   const resourceDetailId = Number(batchResourceMatch?.[4] ?? standaloneLearnerProfileMatch?.[2] ?? 0);
   const hasContextHeader = isProcessPage || Boolean(batchResourceMatch || standaloneLearnerProfileMatch);
   const useQuietHeader = isMenuPage;
+
+  const navItems = [
+    { to: "/", icon: PenLine, label: "开始备课", active: isStartPage },
+    { to: "/history", icon: History, label: "备课记录", active: isHistoryPage },
+    { to: "/assistant", icon: Sparkles, label: "小助手", active: isAssistantPage },
+  ] as const;
+
+  // 路由切换后自动收起窄屏抽屉
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [location.pathname]);
+
+  const handleLogout = () => {
+    clearSession();
+    navigate("/login", { replace: true });
+  };
 
   const resourceProjectQuery = useQuery({
     queryKey: ["project", resourceProjectId],
@@ -85,61 +112,71 @@ export function AppShell() {
 
   return (
     <div className="min-h-screen bg-paper text-ink">
-      <aside className="fixed inset-y-0 left-0 hidden w-64 flex-col border-r border-line bg-[#f2f2f2] lg:flex">
-        <div className="flex h-16 items-center gap-3 px-5">
-          <BrandWordmark className="text-[36px]" />
+      <aside
+        className={cn(
+          "fixed inset-y-0 left-0 hidden flex-col border-r border-line bg-[#f2f2f2] transition-[width] duration-200 lg:flex",
+          collapsed ? "w-[68px]" : "w-64",
+        )}
+      >
+        <div className={cn("flex h-16 items-center", collapsed ? "justify-center px-0" : "gap-3 px-5")}>
+          {collapsed ? (
+            <button
+              type="button"
+              title="展开菜单"
+              onClick={() => setCollapsed(false)}
+              className="flex h-10 w-10 items-center justify-center rounded-xl text-ink/55 transition hover:bg-white hover:text-ink"
+            >
+              <PanelLeftOpen size={18} />
+            </button>
+          ) : (
+            <>
+              <BrandWordmark className="text-[36px]" />
+              <button
+                type="button"
+                title="收起菜单"
+                onClick={() => setCollapsed(true)}
+                className="ml-auto flex h-9 w-9 items-center justify-center rounded-xl text-ink/45 transition hover:bg-white hover:text-ink"
+              >
+                <PanelLeftClose size={18} />
+              </button>
+            </>
+          )}
         </div>
-        <nav className="space-y-1 px-3 py-4">
-          <Link
-            aria-current={isStartPage ? "page" : undefined}
-            className={cn(
-              "flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold text-ink/58 transition hover:bg-white hover:text-ink",
-              isStartPage && "bg-white text-ink shadow-panel",
-            )}
-            to="/"
-          >
-            <PenLine size={18} />
-            开始备课
-          </Link>
-          <Link
-            aria-current={isHistoryPage ? "page" : undefined}
-            className={cn(
-              "flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold text-ink/58 transition hover:bg-white hover:text-ink",
-              isHistoryPage && "bg-white text-ink shadow-panel",
-            )}
-            to="/history"
-          >
-            <History size={18} />
-            备课记录
-          </Link>
-          <Link
-            aria-current={isAssistantPage ? "page" : undefined}
-            className={cn(
-              "flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold text-ink/58 transition hover:bg-white hover:text-ink",
-              isAssistantPage && "bg-white text-ink shadow-panel",
-            )}
-            to="/assistant"
-          >
-            <Sparkles size={18} />
-            小助手
-          </Link>
+        <nav className={cn("space-y-1 py-4", collapsed ? "px-2" : "px-3")}>
+          {navItems.map(({ to, icon: Icon, label, active }) => (
+            <Link
+              key={to}
+              aria-current={active ? "page" : undefined}
+              title={collapsed ? label : undefined}
+              className={cn(
+                "flex h-11 items-center rounded-xl text-sm font-semibold text-ink/58 transition hover:bg-white hover:text-ink",
+                collapsed ? "justify-center px-0" : "gap-3 px-3",
+                active && "bg-white text-ink shadow-panel",
+              )}
+              to={to}
+            >
+              <Icon size={18} className="shrink-0" />
+              {collapsed ? null : label}
+            </Link>
+          ))}
         </nav>
-        <div className="mt-auto px-3 pb-4">
+        <div className={cn("mt-auto pb-4", collapsed ? "px-2" : "px-3")}>
           <button
-            className="flex h-11 w-full items-center gap-3 rounded-xl px-3 text-sm font-semibold text-ink/50 transition hover:bg-white hover:text-ink"
+            className={cn(
+              "flex h-11 w-full items-center rounded-xl text-sm font-semibold text-ink/50 transition hover:bg-white hover:text-ink",
+              collapsed ? "justify-center px-0" : "gap-3 px-3",
+            )}
             type="button"
-            onClick={() => {
-              clearSession();
-              navigate("/login", { replace: true });
-            }}
+            title={collapsed ? "退出登录" : undefined}
+            onClick={handleLogout}
           >
-            <LogOut size={18} />
-            退出登录
+            <LogOut size={18} className="shrink-0" />
+            {collapsed ? null : "退出登录"}
           </button>
         </div>
       </aside>
 
-      <div className="lg:pl-64">
+      <div className={cn(collapsed ? "lg:pl-[68px]" : "lg:pl-64")}>
         <header
           className={cn(
             "sticky top-0 z-10 flex h-14 items-center bg-paper/88 px-4 backdrop-blur lg:px-8",
@@ -173,11 +210,16 @@ export function AppShell() {
             </div>
           ) : (
             <div className="flex items-center gap-3">
-              <button className="btn btn-ghost h-9 w-9 px-0 lg:hidden" type="button" title="菜单">
+              <button
+                className="btn btn-ghost h-9 w-9 px-0 lg:hidden"
+                type="button"
+                title="菜单"
+                onClick={() => setMobileOpen(true)}
+              >
                 <Menu size={18} />
               </button>
-              <div className="lg:hidden">
-                <BrandWordmark className="text-[24px]" />
+              <div className="flex items-center lg:hidden">
+                <BrandWordmark className="text-[30px]" />
               </div>
             </div>
           )}
@@ -186,6 +228,56 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
+
+      {/* 窄屏抽屉：遮罩 + 左侧滑出菜单，仅 lg 以下出现 */}
+      {mobileOpen ? (
+        <div className="fixed inset-0 z-40 lg:hidden">
+          <div
+            className="absolute inset-0 bg-ink/40 backdrop-blur-sm"
+            onClick={() => setMobileOpen(false)}
+            aria-hidden
+          />
+          <div className="absolute inset-y-0 left-0 flex w-64 flex-col border-r border-line bg-[#f2f2f2] shadow-panel">
+            <div className="flex h-16 items-center gap-3 px-5">
+              <BrandWordmark className="text-[36px]" />
+              <button
+                type="button"
+                title="关闭菜单"
+                onClick={() => setMobileOpen(false)}
+                className="ml-auto flex h-9 w-9 items-center justify-center rounded-xl text-ink/45 transition hover:bg-white hover:text-ink"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <nav className="space-y-1 px-3 py-4">
+              {navItems.map(({ to, icon: Icon, label, active }) => (
+                <Link
+                  key={to}
+                  aria-current={active ? "page" : undefined}
+                  className={cn(
+                    "flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold text-ink/58 transition hover:bg-white hover:text-ink",
+                    active && "bg-white text-ink shadow-panel",
+                  )}
+                  to={to}
+                >
+                  <Icon size={18} className="shrink-0" />
+                  {label}
+                </Link>
+              ))}
+            </nav>
+            <div className="mt-auto px-3 pb-4">
+              <button
+                className="flex h-11 w-full items-center gap-3 rounded-xl px-3 text-sm font-semibold text-ink/50 transition hover:bg-white hover:text-ink"
+                type="button"
+                onClick={handleLogout}
+              >
+                <LogOut size={18} className="shrink-0" />
+                退出登录
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* 教案页智能助手：悬浮入口 + 右侧抽屉，仅在教案（批次详情）页常驻 */}
       {batchResourceMatch && !resourceKind ? <AssistantPanel /> : null}
