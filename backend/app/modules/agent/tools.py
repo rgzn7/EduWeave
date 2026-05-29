@@ -17,7 +17,10 @@ from app.modules.agent.repository import AgentRepository
 from app.modules.agent.writers import CurriculumWriteService, LessonPlanWriteService
 from app.modules.auth.models import SysUser
 from app.modules.curriculum.repository import CurriculumRepository
+from app.modules.curriculum.schemas import CurriculumGenerationResult
 from app.modules.lesson_plan.repository import LessonPlanRepository
+from app.modules.lesson_plan.schemas import LessonPlanGenerationResult
+from app.schemas.base import BaseSchema
 from app.shared.llm.service import OpenAICompatibleEmbeddingService
 from app.shared.vector import MilvusVectorService
 
@@ -30,6 +33,19 @@ WRITE_SUPERSEDE_RULES: dict[str, list[str]] = {
     "write_lesson_plan": ["read_lesson_plan", "list_lessons"],
     "write_outline": ["read_outline"],
 }
+
+
+def _build_content_schema(model: type[BaseSchema], description: str) -> dict[str, Any]:
+    """从 pydantic 结果模型派生 content_json 的 JSON Schema，直接注入工具定义。
+
+    与服务端 model_validate 同源，模型据此即可在首轮产出结构正确的 content_json，
+    无需靠校验报错试错；schema 随 pydantic 模型自动演进，避免手写结构与校验脱节。
+    BaseSchema 无 alias，输出字段名为 snake_case，与库内存储及前端读取一致。
+    """
+    schema = model.model_json_schema()
+    schema["description"] = description
+    return schema
+
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
@@ -93,7 +109,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "properties": {
                     "curriculum_plan_id": {"type": "integer", "description": "课程大纲主键；缺省为当前所在大纲"},
                     "class_session_no": {"type": "integer", "description": "课次序号；缺省为当前所在课次"},
-                    "content_json": {"type": "object", "description": "完整教案结构化内容"},
+                    "content_json": _build_content_schema(
+                        LessonPlanGenerationResult,
+                        "完整教案结构化内容，必须严格符合本 schema 的字段层级与必填项；"
+                        "建议在 read_lesson_plan 取得的内容基础上做局部修改后整体回填，不要省略必填字段。",
+                    ),
                     "edit_summary": {"type": "string", "description": "本次修改的简要说明"},
                 },
                 "required": ["content_json"],
@@ -131,7 +151,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "type": "object",
                 "properties": {
                     "curriculum_plan_id": {"type": "integer", "description": "课程大纲主键；缺省为当前所在大纲"},
-                    "content_json": {"type": "object", "description": "完整大纲结构化内容"},
+                    "content_json": _build_content_schema(
+                        CurriculumGenerationResult,
+                        "完整课程大纲结构化内容，必须严格符合本 schema 的字段层级与必填项；"
+                        "建议在 read_outline 取得的内容基础上做局部修改后整体回填，不要省略必填字段。",
+                    ),
                     "edit_summary": {"type": "string", "description": "本次修改的简要说明"},
                 },
                 "required": ["content_json"],
@@ -247,7 +271,7 @@ class AgentToolService:
         except AppException as exc:
             # 业务校验类错误一律可恢复（模型可据 message 修正参数后重试），不强制收尾；
             # 同时保留 error 字段向后兼容，新增 error_code/should_finalize 供模型与执行器自纠偏。
-            return {
+            result: dict[str, Any] = {
                 "ok": False,
                 "error": exc.code.value,
                 "error_code": exc.code.value,
@@ -255,6 +279,13 @@ class AgentToolService:
                 "message": exc.message,
                 "details": exc.details,
             }
+            # 写工具结构校验失败时附自然语言纠偏指令，引导模型对照 schema 整体重写而非反复试错
+            if exc.code == BusinessErrorCode.LLM_RESULT_INVALID and tool_name in WRITE_SUPERSEDE_RULES:
+                result["llm_instruction"] = (
+                    "content_json 未通过结构校验。请对照本工具参数中 content_json 的 JSON Schema 补齐全部必填字段后整体重写，"
+                    "不要省略字段；可依据 details.errors 定位具体出错位置，再在已 read 的完整内容基础上修正。"
+                )
+            return result
         except Exception as exc:  # noqa: BLE001
             return {
                 "ok": False,
@@ -281,6 +312,18 @@ class AgentToolService:
             except AppException:
                 return None
             if (curriculum_plan_id, session_no) in self.read_lesson_targets:
+                return None
+            # 该课次尚无存量 ready 教案时属「首次新建」，无基线可读，直接放行；
+            # 否则会与 read_lesson_plan 的 NOT_FOUND 形成死锁。归属异常时也放行交由真实工具报错。
+            try:
+                existing = self.lesson_writer.get_lesson_plan_by_session(
+                    curriculum_plan_id=curriculum_plan_id,
+                    class_session_no=session_no,
+                    owner_user_id=self.current_user.id,
+                )
+            except AppException:
+                return None
+            if existing is None:
                 return None
             return {
                 "ok": False,

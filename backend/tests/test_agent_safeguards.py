@@ -123,18 +123,48 @@ def test_read_before_write_block_does_not_consume_quota() -> None:
     assert executor.tool_quota_exhausted_reason is None
 
 
-def _make_tool_service(*, curriculum_plan_id: int, session_no: int) -> AgentToolService:
-    """绕过 __init__ 构造工具服务，仅注入 read-before-write 校验所需状态。"""
+class _StubLessonWriter:
+    """仅提供 get_lesson_plan_by_session 的教案写服务桩，模拟课次是否已有存量教案。"""
+
+    def __init__(self, existing: Any) -> None:
+        self._existing = existing
+
+    def get_lesson_plan_by_session(self, **_kwargs: Any) -> Any:
+        return self._existing
+
+
+class _StubUser:
+    """最小用户桩，仅提供 id。"""
+
+    id = 1
+
+
+# 表示「该课次已有存量 ready 教案」的非 None 哨兵，便于默认走「需先读」分支
+_EXISTING_LESSON = object()
+
+
+def _make_tool_service(
+    *,
+    curriculum_plan_id: int,
+    session_no: int,
+    existing_lesson: Any = _EXISTING_LESSON,
+) -> AgentToolService:
+    """绕过 __init__ 构造工具服务，仅注入 read-before-write 校验所需状态。
+
+    existing_lesson 默认非 None（已有存量教案），传 None 模拟首次新建场景。
+    """
     service = object.__new__(AgentToolService)
     service.curriculum_plan_id = curriculum_plan_id
     service.default_session_no = session_no
     service.read_lesson_targets = set()
     service.read_outline_targets = set()
+    service.lesson_writer = _StubLessonWriter(existing_lesson)
+    service.current_user = _StubUser()
     return service
 
 
 def test_check_write_precondition_lesson_plan() -> None:
-    """write_lesson_plan 前置依赖：未读则拒、已读则放行。"""
+    """write_lesson_plan 前置依赖：存量教案未读则拒、已读则放行。"""
     service = _make_tool_service(curriculum_plan_id=10, session_no=2)
 
     # 未读：拒绝并附自然语言指令
@@ -146,6 +176,12 @@ def test_check_write_precondition_lesson_plan() -> None:
 
     # 标记已读同目标后放行
     service.read_lesson_targets.add((10, 2))
+    assert service.check_write_precondition("write_lesson_plan", {"content_json": {}}) is None
+
+
+def test_check_write_precondition_lesson_plan_first_create_passthrough() -> None:
+    """首次新建（该课次尚无存量教案）时无基线可读，应直接放行，避免与 read 的 NOT_FOUND 死锁。"""
+    service = _make_tool_service(curriculum_plan_id=10, session_no=2, existing_lesson=None)
     assert service.check_write_precondition("write_lesson_plan", {"content_json": {}}) is None
 
 
