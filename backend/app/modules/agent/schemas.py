@@ -23,7 +23,7 @@ class AgentContextSchema(BaseSchema):
 class CreateSessionRequest(BaseSchema):
     """创建会话请求。"""
 
-    project_id: int | None = Field(default=None, description="所属项目主键")
+    project_id: int = Field(description="所属项目主键")
     title: str | None = Field(default=None, description="会话标题", max_length=255)
 
 

@@ -94,6 +94,13 @@ export function AssistantPage() {
   });
   const projects = useMemo<Project[]>(() => projectsQuery.data?.items ?? [], [projectsQuery.data?.items]);
 
+  // 移除「全部项目」模式：项目加载后自动选中首个，保证始终锁定具体项目
+  useEffect(() => {
+    if (activeProjectId == null && projects.length > 0) {
+      setActiveProjectId(projects[0].id);
+    }
+  }, [activeProjectId, projects]);
+
   // 会话列表随所选项目范围刷新（未选项目时拉取全部会话）
   const sessionsQuery = useQuery({
     queryKey: ["agent-sessions", activeProjectId],
@@ -124,7 +131,7 @@ export function AssistantPage() {
   }
 
   // 切换项目范围：重置当前会话选择
-  function selectProject(projectId: number | null) {
+  function selectProject(projectId: number) {
     if (projectId === activeProjectId) return;
     abortRef.current?.abort();
     setBusy(false);
@@ -178,6 +185,7 @@ export function AssistantPage() {
   async function handleSend() {
     const text = input.trim();
     if (!text || busy) return;
+    if (activeProjectId == null) return;
     setInput("");
     setBusy(true);
 
@@ -205,8 +213,8 @@ export function AssistantPage() {
       }
       const run = await api.agentSubmitRun(currentSessionId, {
         content: text,
-        // 单页模式仅锁定项目范围，不携带具体课次上下文
-        context: activeProjectId != null ? { project_id: activeProjectId } : null,
+        // 独立页锁定项目范围，不携带具体课次上下文
+        context: { project_id: activeProjectId },
       });
 
       abortRef.current?.abort();
@@ -252,16 +260,6 @@ export function AssistantPage() {
             项目
           </div>
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
-            <button
-              type="button"
-              onClick={() => selectProject(null)}
-              className={cn(
-                "flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm text-ink/65 transition hover:bg-[#f2f2f2] hover:text-ink",
-                activeProjectId == null && "bg-ink text-white hover:bg-ink hover:text-white",
-              )}
-            >
-              <span className="truncate">全部项目</span>
-            </button>
             {projects.map((project) => (
               <button
                 type="button"
@@ -338,8 +336,8 @@ export function AssistantPage() {
             </div>
             <div className="truncate text-xs text-ink/45">
               {activeProjectId == null
-                ? "单页模式 · 全部项目"
-                : `单页模式 · ${projects.find((p) => p.id === activeProjectId)?.name ?? `项目 #${activeProjectId}`}`}
+                ? "请选择左侧项目"
+                : projects.find((p) => p.id === activeProjectId)?.name ?? `项目 #${activeProjectId}`}
             </div>
           </div>
         </header>
@@ -360,7 +358,7 @@ export function AssistantPage() {
                 <p className="max-w-sm text-sm text-ink/45">
                   我可以基于教材与学情，帮你修改大纲、教案、作业与测评，或回答备课相关问题。
                 </p>
-                <p className="text-xs text-ink/35">选择左侧项目可锁定范围，直接提问即可开始</p>
+                <p className="text-xs text-ink/35">已锁定左侧选中项目，直接提问即可开始</p>
               </div>
             ) : (
               messages.map((message) =>

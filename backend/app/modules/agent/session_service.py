@@ -38,10 +38,9 @@ class AgentSessionService:
         if project is None:
             raise AppException(BusinessErrorCode.PROJECT_NOT_FOUND, "项目不存在或无权访问")
 
-    def create_session(self, *, user: SysUser, project_id: int | None, title: str | None) -> AgentSession:
-        """创建会话。"""
-        if project_id is not None:
-            self._ensure_project_owned(project_id, user.id)
+    def create_session(self, *, user: SysUser, project_id: int, title: str | None) -> AgentSession:
+        """创建会话（强制绑定项目）。"""
+        self._ensure_project_owned(project_id, user.id)
         session = self.repository.create_session(user_id=user.id, project_id=project_id, title=title)
         self.db.commit()
         return session
@@ -83,17 +82,12 @@ class AgentSessionService:
         session = self.get_session(user=user, session_id=session_id)
         normalized_context = self._normalize_context(context)
 
-        project_id = None
+        # 会话创建时已强制绑定项目；context.project_id 仅作显式覆盖，仍需校验归属
+        project_id = session.project_id
         if normalized_context is not None and normalized_context.get("project_id") is not None:
             project_id = int(normalized_context["project_id"])
-        elif session.project_id is not None:
-            project_id = session.project_id
         if project_id is not None:
             self._ensure_project_owned(project_id, user.id)
-            # 回填会话项目，便于后续单页会话沿用
-            if session.project_id is None:
-                session.project_id = project_id
-                self.db.add(session)
 
         message = self.repository.create_message(
             session_id=session_id,

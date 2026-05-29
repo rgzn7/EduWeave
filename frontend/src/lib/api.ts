@@ -430,7 +430,7 @@ export const api = {
     return request<FileDownloadUrl>(`/api/v1/files/${fileObjectId}/download-url`);
   },
   // ---- 智能助手 ----
-  agentCreateSession(payload: { project_id?: number | null; title?: string | null }) {
+  agentCreateSession(payload: { project_id: number; title?: string | null }) {
     return request<AgentSession>("/api/v1/agent/sessions", {
       method: "POST",
       body: JSON.stringify(payload),

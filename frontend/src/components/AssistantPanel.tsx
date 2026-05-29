@@ -84,7 +84,7 @@ export function AssistantPanel() {
     if (context?.curriculum_plan_id != null) {
       return `当前：大纲${context.labels?.curriculumTitle ? `《${context.labels.curriculumTitle}》` : ""}`;
     }
-    return "单页模式（未锁定具体课次）";
+    return "已锁定项目（未锁定具体课次）";
   }, [context]);
 
   function invalidateResourceQueries() {
@@ -97,6 +97,18 @@ export function AssistantPanel() {
   async function handleSend() {
     const text = input.trim();
     if (!text || busy) return;
+    const projectId = context?.project_id;
+    if (projectId == null) {
+      addMessage({ id: `u-${Date.now()}`, role: "user", content: text, status: "done" });
+      addMessage({
+        id: `a-${Date.now()}`,
+        role: "assistant",
+        content: "当前未锁定项目，无法发起助手会话，请在具体项目的教案页打开小助手。",
+        status: "error",
+      });
+      setInput("");
+      return;
+    }
     setInput("");
     setBusy(true);
 
@@ -109,7 +121,7 @@ export function AssistantPanel() {
       let currentSessionId = sessionId;
       if (!currentSessionId) {
         const session = await api.agentCreateSession({
-          project_id: context?.project_id ?? null,
+          project_id: projectId,
           title: text.slice(0, 20),
         });
         currentSessionId = session.id;

@@ -42,7 +42,7 @@ def get_session_service(session: Annotated[Session, Depends(get_db_session)]) ->
 @router.post(
     "/sessions",
     summary="创建助手会话",
-    description="创建一个项目级智能助手会话；project_id 可空（单页全局会话）。",
+    description="创建一个项目级智能助手会话；必须绑定 project_id。",
     operation_id="agent_create_session",
     response_model=ApiResponse[AgentSessionResponse],
     status_code=status.HTTP_200_OK,
@@ -86,7 +86,7 @@ def list_sessions(
     summary="提交助手运行",
     description=(
         "向指定会话提交一条用户消息并创建待执行运行。context 携带「所在课次教案」上下文，"
-        "贯穿整个运行；单页形态可不传 context。运行异步执行，通过 SSE 事件流获取过程与结果。"
+        "贯穿整个运行；项目范围由会话绑定，独立页可仅传 project_id。运行异步执行，通过 SSE 事件流获取过程与结果。"
     ),
     operation_id="agent_create_run",
     response_model=ApiResponse[AgentRunResponse],
