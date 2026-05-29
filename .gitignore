@@ -59,3 +59,7 @@ ENV/
 
 # 业务资料目录
 /教育赛题/
+
+# Raccoon PPT 官方测试脚本运行产物
+backend/output/
+backend/tests/output/
