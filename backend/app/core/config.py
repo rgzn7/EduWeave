@@ -110,6 +110,8 @@ class Settings(BaseSettings):
     agent_max_tool_rounds: int = 24
     # 单次运行允许的最大工具调用次数（软上限）。
     agent_max_tool_calls: int = 40
+    # 同一工具用完全相同参数的最大重复调用次数，超过即熔断本次调用（不终结整轮，模型可换参或收尾）。
+    agent_repeated_tool_call_limit: int = 3
     # 注入 LLM 的会话历史消息条数上限。
     agent_history_max_messages: int = 40
     # 工具结果超过该字符数则落工件并以描述符回灌 LLM。

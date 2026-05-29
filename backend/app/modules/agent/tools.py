@@ -204,6 +204,10 @@ class AgentToolService:
         self.lesson_plan_id = self.context.get("lesson_plan_id")
         self.project_id = self.context.get("project_id")
         self.knowledge_version_id: int | None = None
+        # read-before-write 追踪：本次运行内已 read 过的写目标（解析默认值后的真实 id）。
+        # 键为解析后的 (curriculum_plan_id, class_session_no) / curriculum_plan_id。
+        self.read_lesson_targets: set[tuple[int, int]] = set()
+        self.read_outline_targets: set[int] = set()
         # 加载所在大纲以补全 project_id 与 knowledge_version_id（用于教材检索范围）
         if self.curriculum_plan_id is not None:
             curriculum_plan = self.curriculum_repository.get_curriculum_plan_for_owner(
@@ -231,13 +235,87 @@ class AgentToolService:
         }
         handler = handlers.get(tool_name)
         if handler is None:
-            return {"ok": False, "error": "unknown_tool", "message": f"未知工具：{tool_name}"}
+            return {
+                "ok": False,
+                "error": "unknown_tool",
+                "error_code": "unknown_tool",
+                "should_finalize": False,
+                "message": f"未知工具：{tool_name}",
+            }
         try:
             return handler(arguments)
         except AppException as exc:
-            return {"ok": False, "error": exc.code.value, "message": exc.message, "details": exc.details}
+            # 业务校验类错误一律可恢复（模型可据 message 修正参数后重试），不强制收尾；
+            # 同时保留 error 字段向后兼容，新增 error_code/should_finalize 供模型与执行器自纠偏。
+            return {
+                "ok": False,
+                "error": exc.code.value,
+                "error_code": exc.code.value,
+                "should_finalize": False,
+                "message": exc.message,
+                "details": exc.details,
+            }
         except Exception as exc:  # noqa: BLE001
-            return {"ok": False, "error": "tool_error", "message": str(exc)}
+            return {
+                "ok": False,
+                "error": "tool_error",
+                "error_code": "tool_error",
+                "should_finalize": False,
+                "message": str(exc),
+            }
+
+    # ------------------------------------------------------------------ #
+    # read-before-write 前置依赖校验
+    # ------------------------------------------------------------------ #
+    def check_write_precondition(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        """写工具的 read-before-write 硬约束：写入前必须在本次运行内 read 过同一目标。
+
+        命中拒绝时返回结构化拒绝 dict（由执行器透传给前端与 LLM，不消耗工具配额）；
+        放行返回 None。目标 id 解析失败（如大纲不存在/越权）时返回 None，交由真实工具执行
+        触发对应业务错误，避免在前置校验里吞掉错误语义。
+        """
+        if tool_name == "write_lesson_plan":
+            try:
+                curriculum_plan_id = self._resolve_curriculum_plan_id(arguments)
+                session_no = self._resolve_session_no(arguments)
+            except AppException:
+                return None
+            if (curriculum_plan_id, session_no) in self.read_lesson_targets:
+                return None
+            return {
+                "ok": False,
+                "error_code": "read_before_write_required",
+                "should_finalize": False,
+                "message": (
+                    f"写入第 {session_no} 课次教案前，必须先在本次会话内调用 read_lesson_plan 取得该课次完整内容作为基线，"
+                    "本次拒绝不消耗工具配额。"
+                ),
+                "llm_instruction": (
+                    f"请先调用 read_lesson_plan(curriculum_plan_id={curriculum_plan_id}, class_session_no={session_no})，"
+                    "在其完整 content_json 基础上做局部修改后整体写回，不要凭空构造教案结构。"
+                ),
+            }
+        if tool_name == "write_outline":
+            try:
+                curriculum_plan_id = self._resolve_curriculum_plan_id(arguments)
+            except AppException:
+                return None
+            if curriculum_plan_id in self.read_outline_targets:
+                return None
+            return {
+                "ok": False,
+                "error_code": "read_before_write_required",
+                "should_finalize": False,
+                "message": (
+                    f"写入课程大纲（curriculum_plan_id={curriculum_plan_id}）前，必须先在本次会话内调用 read_outline 取得完整内容作为基线，"
+                    "本次拒绝不消耗工具配额。"
+                ),
+                "llm_instruction": (
+                    f"请先调用 read_outline(curriculum_plan_id={curriculum_plan_id})，"
+                    "在其完整 content_json 基础上做局部修改后整体写回，不要凭空构造大纲结构。"
+                ),
+            }
+        return None
 
     # ------------------------------------------------------------------ #
     # 上下文解析
@@ -345,9 +423,12 @@ class AgentToolService:
         )
         if lesson_plan is None:
             raise AppException(BusinessErrorCode.LESSON_PLAN_NOT_FOUND, f"第 {session_no} 课次暂无教案")
+        # 记录已读目标，供 write_lesson_plan 的 read-before-write 前置校验放行
+        self.read_lesson_targets.add((curriculum_plan_id, session_no))
         return {
             "ok": True,
             "lesson_plan_id": lesson_plan.id,
+            "curriculum_plan_id": curriculum_plan_id,
             "class_session_no": lesson_plan.class_session_no,
             "version_no": lesson_plan.version_no,
             "lesson_title": lesson_plan.lesson_title,
@@ -390,6 +471,8 @@ class AgentToolService:
         )
         if curriculum_plan is None:
             raise AppException(BusinessErrorCode.CURRICULUM_PLAN_NOT_FOUND, "课程大纲不存在或无权访问")
+        # 记录已读目标，供 write_outline 的 read-before-write 前置校验放行
+        self.read_outline_targets.add(curriculum_plan_id)
         return {
             "ok": True,
             "curriculum_plan_id": curriculum_plan.id,

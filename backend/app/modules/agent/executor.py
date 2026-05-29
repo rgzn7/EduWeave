@@ -52,6 +52,12 @@ class AgentRunExecutor:
         self.query_terms: list[str] = []
         self.current_round = 0
         self.tool_call_count = 0
+        # 同 (工具名+参数) 调用计数，用于同参重复熔断
+        self.tool_signature_counts: dict[str, int] = {}
+        # 非空时表示已进入「禁止工具、必须出最终回答」的终结态；下一轮强制 tool_choice=none。
+        self.tool_quota_exhausted_reason: str | None = None
+        # 终结态收尾通知是否已注入，避免每轮重复追加 system 消息。
+        self._quota_notice_emitted = False
         self.cache_biz_key = f"agent-{run.session_id}"
 
     # ------------------------------------------------------------------ #
@@ -76,12 +82,19 @@ class AgentRunExecutor:
         while True:
             self.current_round += 1
             self._assert_not_cancelled()
-            forced_final = (
-                self.current_round > self.settings.agent_max_tool_rounds
-                or self.tool_call_count >= self.settings.agent_max_tool_calls
-            )
+            # 软上限：轮次超限即进入终结态；硬上限再加 3 轮缓冲兜底防死循环。
+            if self.current_round > self.settings.agent_max_tool_rounds:
+                self._trigger_final_round("已达到本次运行最大工具循环轮数")
+            if self.current_round > self.settings.agent_max_tool_rounds + 3:
+                return "（本次未能在限定轮数内生成回答，请补充说明后重试）"
+            forced_final = self.tool_quota_exhausted_reason is not None
             tool_choice = "none" if forced_final else "auto"
-            messages = [*static_messages, *self._render_context_pack_messages(), *conversation]
+            messages = [
+                *static_messages,
+                *self._render_context_pack_messages(),
+                *conversation,
+                *self._build_quota_notice_messages(forced_final),
+            ]
             result = self.llm_runner.run_chat(
                 messages=messages,
                 tools=tools,
@@ -141,13 +154,132 @@ class AgentRunExecutor:
         return ""
 
     # ------------------------------------------------------------------ #
+    # 运行守护：终结态、配额熔断、收尾通知
+    # ------------------------------------------------------------------ #
+    def _trigger_final_round(self, reason: str) -> None:
+        """标记本次运行进入「禁止工具、必须出最终回答」的终结态（仅首次生效）。"""
+        if self.tool_quota_exhausted_reason is None:
+            self.tool_quota_exhausted_reason = reason
+
+    def _record_tool_call(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        """记录工具调用并执行配额/重复/前置依赖检查。
+
+        返回 None 表示放行；返回 dict 表示拒绝，调用方应原样作为 tool_result 透传给 LLM。
+        - tool_quota_exhausted：已处于终结态，后续所有工具一律拒（should_finalize=True）。
+        - read_before_write_required：写前未读同目标，仅本次拒、不消耗配额（should_finalize=False）。
+        - max_tool_calls_reached：总次数超限，触发终结态并拒（should_finalize=True）。
+        - repeated_tool_call_blocked：同参累计超限，仅本次拒、不终结（should_finalize=False，可换参或收尾）。
+        """
+        if self.tool_quota_exhausted_reason is not None:
+            return {
+                "ok": False,
+                "error_code": "tool_quota_exhausted",
+                "should_finalize": True,
+                "message": (
+                    f"本次运行工具配额已用尽（{self.tool_quota_exhausted_reason}），"
+                    "请立刻基于现有上下文给出对教师最有用的最终中文回答，不要再尝试调用任何工具。"
+                ),
+            }
+
+        # read-before-write 硬约束：不消耗配额、不计入重复签名，避免合理 retry 被惩罚。
+        precondition_block = self.tool_service.check_write_precondition(tool_name, arguments)
+        if precondition_block is not None:
+            return precondition_block
+
+        next_total = self.tool_call_count + 1
+        if next_total > self.settings.agent_max_tool_calls:
+            self._trigger_final_round("已达到本次运行最大工具调用次数")
+            return {
+                "ok": False,
+                "error_code": "max_tool_calls_reached",
+                "should_finalize": True,
+                "message": (
+                    f"已累计调用工具 {self.tool_call_count} 次，达到本次运行上限 "
+                    f"{self.settings.agent_max_tool_calls} 次。请立刻基于现有上下文给出最终中文回答，"
+                    "不要再尝试调用任何工具。"
+                ),
+            }
+
+        signature = json.dumps(
+            {"tool_name": tool_name, "arguments": arguments},
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+        next_sig_count = self.tool_signature_counts.get(signature, 0) + 1
+        if next_sig_count > self.settings.agent_repeated_tool_call_limit:
+            # 仅本次同参调用被拒，不进入终结态；LLM 可换参继续，或直接给最终回答。
+            return {
+                "ok": False,
+                "error_code": "repeated_tool_call_blocked",
+                "should_finalize": False,
+                "message": (
+                    f"已对 {tool_name} 用完全相同的参数调用 "
+                    f"{self.settings.agent_repeated_tool_call_limit} 次。请改用不同参数继续，"
+                    "或直接基于现有上下文给出最终中文回答，不要再用相同参数重试。"
+                ),
+            }
+
+        self.tool_call_count = next_total
+        self.tool_signature_counts[signature] = next_sig_count
+        return None
+
+    def _build_quota_notice_messages(self, forced_final: bool) -> list[dict[str, Any]]:
+        """终结态首轮注入一次性 system 收尾通知，告知 LLM 立即给出最终回答。"""
+        if not forced_final or self.tool_quota_exhausted_reason is None or self._quota_notice_emitted:
+            return []
+        self._quota_notice_emitted = True
+        return [
+            {
+                "role": "system",
+                "content": (
+                    f"[系统通知] 本次运行已进入收尾阶段（{self.tool_quota_exhausted_reason}），"
+                    "工具调用已禁用。请立刻基于以上全部上下文，用简体中文 Markdown 给出对教师最有用的最终回答。"
+                ),
+            }
+        ]
+
+    # ------------------------------------------------------------------ #
     # 工具调用
     # ------------------------------------------------------------------ #
     def _execute_tool_call(self, tool_call: dict[str, Any]) -> dict[str, Any]:
         """执行单个工具调用并返回 function_call_output 项。"""
         tool_name = str(tool_call.get("name") or "")
         arguments = AgentLLMRunner.parse_tool_arguments(tool_call.get("arguments"))
-        self.tool_call_count += 1
+
+        # 配额/重复/前置依赖守护：命中即拒绝，不执行真实工具、不落工件、不失效同源工件。
+        blocked = self._record_tool_call(tool_name, arguments)
+        if blocked is not None:
+            argument_summary = AgentToolService.summarize_arguments(tool_name, arguments)
+            self.run_service.emit_event(
+                self.run,
+                event_type="tool_call",
+                title=f"工具调用被拒：{tool_name}",
+                message=str(blocked.get("message") or "工具调用被守护规则拒绝"),
+                payload={
+                    "tool_name": tool_name,
+                    "arguments": argument_summary,
+                    "blocked_reason": blocked.get("error_code"),
+                },
+            )
+            self.run_service.emit_event(
+                self.run,
+                event_type="tool_result",
+                title=f"工具拒绝返回：{tool_name}",
+                message=str(blocked.get("message") or "工具调用被守护规则拒绝"),
+                payload={
+                    "tool_name": tool_name,
+                    "arguments": argument_summary,
+                    "summary": str(blocked.get("message") or ""),
+                    "ok": False,
+                    "blocked_reason": blocked.get("error_code"),
+                },
+            )
+            return {
+                "type": "function_call_output",
+                "call_id": str(tool_call.get("call_id") or ""),
+                "output": json.dumps(blocked, ensure_ascii=False, default=str),
+            }
 
         self.run_service.emit_event(
             self.run,
