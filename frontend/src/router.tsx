@@ -1,6 +1,7 @@
 import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { AssessmentDetailPage } from "./pages/AssessmentDetailPage";
+import { AssistantPage } from "./pages/AssistantPage";
 import { BatchDetailPage } from "./pages/BatchDetailPage";
 import { CoverageReportPage } from "./pages/CoverageReportPage";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -34,6 +35,10 @@ export const router = createBrowserRouter([
       {
         path: "history",
         element: <DashboardPage />,
+      },
+      {
+        path: "assistant",
+        element: <AssistantPage />,
       },
       {
         path: "projects/:projectId",

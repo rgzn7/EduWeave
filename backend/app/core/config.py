@@ -97,6 +97,42 @@ class Settings(BaseSettings):
     embedding_model: str | None = None
     embedding_timeout_seconds: int = 60
 
+    # ---- 智能助手（Agent）相关配置 ----
+    # 是否在应用启动时拉起后台 Agent 运行 worker。
+    agent_run_worker_enabled: bool = True
+    # 后台 worker 并发数量（每个 worker 为一个守护线程）。
+    agent_run_worker_count: int = 1
+    # 单次运行的租约时长（秒），worker 持锁执行期间需周期续租。
+    agent_run_lease_seconds: int = 600
+    # worker 空闲轮询间隔（秒）。
+    agent_run_poll_interval_seconds: float = 1.0
+    # 单次运行允许的最大 LLM 轮次（防止无限循环）。
+    agent_max_tool_rounds: int = 24
+    # 单次运行允许的最大工具调用次数（软上限）。
+    agent_max_tool_calls: int = 40
+    # 注入 LLM 的会话历史消息条数上限。
+    agent_history_max_messages: int = 40
+    # 工具结果超过该字符数则落工件并以描述符回灌 LLM。
+    agent_artifact_inline_threshold: int = 2000
+    # 工件描述符回灌给 LLM 的预览字符数。
+    agent_artifact_preview_chars: int = 800
+    # 是否启用运行上下文包（大段工件结构化摘要）。
+    agent_context_pack_enabled: bool = True
+    # 上下文包最大条目数。
+    agent_context_pack_max_entries: int = 8
+    # 上下文包渲染到单条 system 消息的字符预算。
+    agent_context_pack_budget_chars: int = 8000
+    # 单个工件提取的关键命中段落数上限。
+    agent_context_pack_max_passages: int = 4
+    # 单个关键命中段落的字符窗口。
+    agent_context_pack_passage_chars: int = 600
+    # 章节摘要片段字符数。
+    agent_context_pack_chapter_digest_chars: int = 200
+    # 教材知识混合检索默认返回条数。
+    agent_textbook_top_k: int = 6
+    # Agent 对话温度（reasoning 模型忽略，仅注入 reasoning_effort）。
+    agent_temperature: float = 0.3
+
     raccoon_api_host: str = "https://xiaohuanxiong.com"
     raccoon_api_token: str | None = None
     raccoon_request_timeout_seconds: int = 180

@@ -196,6 +196,45 @@ class MilvusVectorService:
             )
 
         results = self.client.search(collection_name, query_vector, limit, filter_expression)
+        return self._build_hits(collection_name, results)
+
+    def hybrid_search_vectors(
+        self,
+        collection_name: str,
+        *,
+        query_vector: list[float],
+        query_text: str,
+        limit: int = 5,
+        filter_expression: str | None = None,
+        rrf_k: int = 60,
+    ) -> list[VectorSearchHit]:
+        """稠密向量 + BM25 全文双路混合检索（RRF 重排），统一输出搜索结果。"""
+        self._ensure_supported_collection(collection_name)
+        if len(query_vector) != self.settings.milvus_embedding_dim:
+            raise AppException(
+                BusinessErrorCode.EXTERNAL_SERVICE_ERROR,
+                "查询向量维度与配置不一致",
+                {"expected_dim": self.settings.milvus_embedding_dim, "actual_dim": len(query_vector)},
+            )
+        normalized_text = (query_text or "").strip()
+        if not normalized_text:
+            raise AppException(BusinessErrorCode.EXTERNAL_SERVICE_ERROR, "混合检索的查询文本不能为空")
+        results = self.client.hybrid_search(
+            collection_name,
+            query_vector=query_vector,
+            query_text=normalized_text,
+            limit=limit,
+            filter_expression=filter_expression,
+            rrf_k=rrf_k,
+        )
+        return self._build_hits(collection_name, results)
+
+    def _build_hits(
+        self,
+        collection_name: str,
+        results: list[list[dict[str, Any]]],
+    ) -> list[VectorSearchHit]:
+        """把 pymilvus 返回的命中结果统一归一为 VectorSearchHit 列表。"""
         hits: list[VectorSearchHit] = []
         for item in results[0] if results else []:
             entity = item.get("entity", item)

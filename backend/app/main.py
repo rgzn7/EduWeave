@@ -13,6 +13,8 @@ from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import AccessLogMiddleware, RequestIdMiddleware
+from app.modules.agent.router import router as agent_router
+from app.modules.agent.worker import AgentWorkerPool
 from app.modules.assessment.router import router as assessment_router
 from app.modules.auth.router import router as auth_router
 from app.modules.courseware.router import router as courseware_router
@@ -40,8 +42,16 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """统一管理应用生命周期。"""
-    logger.info("应用启动完成", app_name=settings.app_name, app_env=settings.app_env)
+    agent_worker_pool = AgentWorkerPool()
+    agent_worker_pool.start()
+    logger.info(
+        "应用启动完成",
+        app_name=settings.app_name,
+        app_env=settings.app_env,
+        agent_worker_enabled=settings.agent_run_worker_enabled,
+    )
     yield
+    agent_worker_pool.stop()
     logger.info("应用关闭完成", app_name=settings.app_name, app_env=settings.app_env)
 
 
@@ -85,3 +95,4 @@ app.include_router(homework_router, prefix=settings.api_v1_prefix)
 app.include_router(courseware_router, prefix=settings.api_v1_prefix)
 app.include_router(coverage_router, prefix=settings.api_v1_prefix)
 app.include_router(task_center_router, prefix=settings.api_v1_prefix)
+app.include_router(agent_router, prefix=settings.api_v1_prefix)

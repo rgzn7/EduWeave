@@ -1,10 +1,11 @@
-import { ArrowLeft, History, LogOut, Menu, PenLine } from "lucide-react";
+import { ArrowLeft, History, LogOut, Menu, PenLine, Sparkles } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, Link, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import { getResourcePackageTitle } from "../lib/resourceTitle";
 import { useAuthStore } from "../stores/auth";
 import { cn } from "../utils";
+import { AssistantPanel } from "./AssistantPanel";
 import { BrandWordmark } from "./BrandWordmark";
 
 const sceneLabels: Record<string, string> = {
@@ -24,7 +25,8 @@ export function AppShell() {
   const normalizedPathname = normalizePathname(location.pathname);
   const isStartPage = normalizedPathname === "/";
   const isHistoryPage = normalizedPathname === "/history";
-  const isMenuPage = isStartPage || isHistoryPage;
+  const isAssistantPage = normalizedPathname === "/assistant";
+  const isMenuPage = isStartPage || isHistoryPage || isAssistantPage;
   const isProcessPage = /^\/projects\/[^/]+$/.test(location.pathname);
   const batchResourceMatch = location.pathname.match(/^\/projects\/([^/]+)\/batches\/([^/]+)(?:\/(assessments|homework|coverage|learner-profile)\/([^/]+))?\/?$/);
   const standaloneLearnerProfileMatch = location.pathname.match(/^\/projects\/([^/]+)\/learner-profile\/([^/]+)\/?$/);
@@ -110,6 +112,17 @@ export function AppShell() {
             <History size={18} />
             备课记录
           </Link>
+          <Link
+            aria-current={isAssistantPage ? "page" : undefined}
+            className={cn(
+              "flex h-11 items-center gap-3 rounded-xl px-3 text-sm font-semibold text-ink/58 transition hover:bg-white hover:text-ink",
+              isAssistantPage && "bg-white text-ink shadow-panel",
+            )}
+            to="/assistant"
+          >
+            <Sparkles size={18} />
+            小助手
+          </Link>
         </nav>
         <div className="mt-auto px-3 pb-4">
           <button
@@ -173,6 +186,9 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
+
+      {/* 教案页智能助手：悬浮入口 + 右侧抽屉，仅在教案（批次详情）页常驻 */}
+      {batchResourceMatch && !resourceKind ? <AssistantPanel /> : null}
     </div>
   );
 }

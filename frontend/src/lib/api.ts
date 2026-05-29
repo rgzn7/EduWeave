@@ -429,4 +429,141 @@ export const api = {
   getFileDownloadUrl(fileObjectId: number) {
     return request<FileDownloadUrl>(`/api/v1/files/${fileObjectId}/download-url`);
   },
+  // ---- 智能助手 ----
+  agentCreateSession(payload: { project_id?: number | null; title?: string | null }) {
+    return request<AgentSession>("/api/v1/agent/sessions", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  agentListSessions(query?: { project_id?: number | null; page?: number; page_size?: number }) {
+    return request<PageResult<AgentSession>>("/api/v1/agent/sessions", {}, query);
+  },
+  agentListRunEvents(runId: number, afterSeq = 0) {
+    return request<AgentRunEvent[]>(`/api/v1/agent/runs/${runId}/events/list`, {}, { after_seq: afterSeq });
+  },
+  agentSubmitRun(sessionId: number, payload: { content: string; context?: AgentContext | null }) {
+    return request<AgentRun>(`/api/v1/agent/sessions/${sessionId}/runs`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  },
+  agentGetRun(runId: number) {
+    return request<AgentRun>(`/api/v1/agent/runs/${runId}`);
+  },
+  agentListMessages(sessionId: number, limit = 50) {
+    return request<AgentMessage[]>(`/api/v1/agent/sessions/${sessionId}/messages`, {}, { limit });
+  },
+  agentCancelRun(runId: number) {
+    return request<AgentRun>(`/api/v1/agent/runs/${runId}/cancel`, { method: "POST" });
+  },
 };
+
+// ---- 智能助手类型与 SSE 事件流 ----
+export type AgentContext = {
+  project_id?: number;
+  curriculum_plan_id?: number;
+  class_session_no?: number;
+  lesson_plan_id?: number;
+};
+
+export type AgentSession = {
+  id: number;
+  project_id: number | null;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AgentRun = {
+  id: number;
+  session_id: number;
+  status: string;
+  final_response: string | null;
+  last_error_code: string | null;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+};
+
+export type AgentMessage = {
+  id: number;
+  role: string;
+  content: string | null;
+  run_id: number | null;
+  created_at: string;
+};
+
+export type AgentRunEvent = {
+  id?: number;
+  run_id?: number;
+  seq?: number;
+  event_type: string;
+  title?: string | null;
+  message?: string | null;
+  payload?: Record<string, unknown> | null;
+  created_at?: string | null;
+};
+
+type AgentStreamHandlers = {
+  onEvent?: (event: AgentRunEvent) => void;
+  onDone?: () => void;
+  onError?: (error: Error) => void;
+};
+
+/**
+ * 以 fetch + ReadableStream 消费运行 SSE 事件流（EventSource 无法携带鉴权头，故自行解析）。
+ * 返回 AbortController，调用 abort() 可断开。
+ */
+export function streamAgentRunEvents(runId: number, afterSeq: number, handlers: AgentStreamHandlers): AbortController {
+  const controller = new AbortController();
+  const token = useAuthStore.getState().token;
+  (async () => {
+    try {
+      const response = await fetch(buildUrl(`/api/v1/agent/runs/${runId}/events`, { after_seq: afterSeq }), {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        handlers.onError?.(new EduWeaveApiError("事件流连接失败", response.status));
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split("\n\n");
+        buffer = blocks.pop() ?? "";
+        for (const block of blocks) {
+          let dataStr = "";
+          let isDone = false;
+          for (const line of block.split("\n")) {
+            if (line.startsWith("event:") && line.slice(6).trim() === "done") isDone = true;
+            else if (line.startsWith("data:")) dataStr += line.slice(5).trimStart();
+          }
+          if (isDone) {
+            handlers.onDone?.();
+            continue;
+          }
+          if (dataStr) {
+            try {
+              handlers.onEvent?.(JSON.parse(dataStr) as AgentRunEvent);
+            } catch {
+              /* 忽略无法解析的片段 */
+            }
+          }
+        }
+      }
+      handlers.onDone?.();
+    } catch (error) {
+      if ((error as { name?: string })?.name !== "AbortError") {
+        handlers.onError?.(error as Error);
+      }
+    }
+  })();
+  return controller;
+}

@@ -14,6 +14,7 @@ import {
 import { Link, useParams } from "react-router-dom";
 import { isTaskActiveStatus } from "../hooks/useTaskPolling";
 import { api } from "../lib/api";
+import { useAssistantStore } from "../stores/assistant";
 import type { CoursewareResult, GenerationBatch, HomeworkResult, JsonRecord, LearnerProfileFile, LessonPlan, PaperResult, Task, TextbookVersion } from "../types";
 import { cn, toNumberId } from "../utils";
 import { asRecord, asRecordList, formatLessonTitle, latestByUpdated, sortLessons } from "./batch-detail/helpers";
@@ -514,7 +515,29 @@ export function BatchDetailPage() {
 
   const lessonPlans = useMemo(() => {
     const items = lessonPlansQuery.data?.items ?? [];
-    return sortLessons(items.filter((lesson) => lesson.generation_batch_id === batch?.id));
+    // 纳入本批次教案与 Agent 新建版本（脱离批次，generation_batch_id 为空）；每课次取最新 ready 版本
+    const relevant = items.filter(
+      (lesson) => lesson.generation_batch_id === batch?.id || lesson.generation_batch_id == null,
+    );
+    const latestBySession = new Map<number, LessonPlan>();
+    for (const lesson of relevant) {
+      const key = lesson.class_session_no ?? -1;
+      const existing = latestBySession.get(key);
+      if (!existing) {
+        latestBySession.set(key, lesson);
+        continue;
+      }
+      const lessonReady = lesson.version_status === "ready";
+      const existingReady = existing.version_status === "ready";
+      if (lessonReady !== existingReady) {
+        if (lessonReady) latestBySession.set(key, lesson);
+        continue;
+      }
+      if ((lesson.version_no ?? 0) > (existing.version_no ?? 0)) {
+        latestBySession.set(key, lesson);
+      }
+    }
+    return sortLessons(Array.from(latestBySession.values()));
   }, [batch?.id, lessonPlansQuery.data?.items]);
 
   useEffect(() => {
@@ -535,6 +558,34 @@ export function BatchDetailPage() {
     () => lessonPlans.find((lesson) => lesson.id === selectedLessonId),
     [lessonPlans, selectedLessonId],
   );
+
+  // 向智能助手发布「所在课次教案」上下文，贯穿本页 run；离开本页时清空回到单页形态
+  const setAssistantContext = useAssistantStore((state) => state.setContext);
+  const clearAssistantContext = useAssistantStore((state) => state.clearContext);
+  useEffect(() => {
+    if (!batch?.curriculum_plan_id) return;
+    setAssistantContext({
+      project_id: projectId || undefined,
+      curriculum_plan_id: batch.curriculum_plan_id ?? undefined,
+      class_session_no: selectedLesson?.class_session_no ?? undefined,
+      lesson_plan_id: selectedLesson?.id ?? undefined,
+      labels: {
+        projectName: projectQuery.data?.name,
+        curriculumTitle: curriculumQuery.data?.plan_title,
+        lessonTitle: selectedLesson?.lesson_title,
+      },
+    });
+  }, [
+    projectId,
+    batch?.curriculum_plan_id,
+    selectedLesson?.id,
+    selectedLesson?.class_session_no,
+    selectedLesson?.lesson_title,
+    projectQuery.data?.name,
+    curriculumQuery.data?.plan_title,
+    setAssistantContext,
+  ]);
+  useEffect(() => () => clearAssistantContext(), [clearAssistantContext]);
 
   const lessonDetailQuery = useQuery({
     queryKey: ["lesson-plan", selectedLessonId],
