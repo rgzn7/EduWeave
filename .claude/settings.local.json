@@ -25,7 +25,11 @@
       "Bash(sed -n '1,32p' app/modules/lesson_plan/tasks.py)",
       "Bash(python -c ' *)",
       "Bash(mysql -uroot -pboss1114 eduweave -N -e ' *)",
-      "Bash(python -c \"import PIL; print\\('PIL', PIL.__version__\\)\")"
+      "Bash(python -c \"import PIL; print\\('PIL', PIL.__version__\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('app/modules/agent/tools.py'\\).read\\(\\)\\); print\\('tools.py OK'\\)\")",
+      "Bash(mysql -uroot -pboss1114 eduweave -e \"DESCRIBE task_record;\")",
+      "Bash(mysql *)",
+      "Bash(grep -vE \"NumPy|rebuild|pybind|crash|support both|versions of|^$|may need|Traceback|AttributeError: _ARRAY_API|^\\\\s+import|If you are|to the |Otherwise|^ *File|^ *self|^ *return|^ *raise\")"
     ]
   }
 }
