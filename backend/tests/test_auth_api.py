@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-14
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 认证接口测试
 """
@@ -8,8 +8,10 @@ from datetime import timedelta
 import json
 
 import jwt
+from sqlalchemy import text
 
 from app.core.config import get_settings
+from app.modules.auth.models import SysUser
 from app.shared.utils.datetime_util import DateTimeUtil
 
 
@@ -26,6 +28,33 @@ def test_teacher_login_success(client) -> None:
     assert payload["data"]["user"]["username"] == "teacher_demo"
     assert payload["data"]["token_type"] == "Bearer"
     assert payload["data"]["access_token"]
+
+
+def test_demo_session_should_create_teacher_without_password(client, seeded_session_factory) -> None:
+    """演示会话接口应免账号密码创建可用教师会话。"""
+    session = seeded_session_factory()
+    try:
+        session.execute(text("DELETE FROM sys_user"))
+        session.commit()
+    finally:
+        session.close()
+
+    response = client.post("/api/v1/auth/demo-session")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["data"]["user"]["username"] == "teacher_demo"
+    assert payload["data"]["user"]["role_code"] == "teacher"
+    assert payload["data"]["access_token"]
+
+    session = seeded_session_factory()
+    try:
+        user = session.query(SysUser).filter(SysUser.username == "teacher_demo").one()
+        assert user.status == "active"
+        assert user.role_code == "teacher"
+    finally:
+        session.close()
 
 
 def test_teacher_login_with_wrong_password_should_fail(client) -> None:

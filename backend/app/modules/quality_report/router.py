@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-03
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 覆盖率分析模块路由
 """
@@ -12,9 +12,9 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db_session
 from app.core.security import get_current_user
 from app.modules.auth.models import SysUser
-from app.modules.coverage.repository import CoverageRepository
-from app.modules.coverage.schemas import CoverageReportDetailResponse, CoverageReportListItemResponse
-from app.modules.coverage.service import CoverageService
+from app.modules.quality_report.repository import CoverageRepository
+from app.modules.quality_report.schemas import CoverageReportDetailResponse, CoverageReportListItemResponse
+from app.modules.quality_report.service import CoverageService
 from app.schemas.response import ApiResponse, PaginatedData, ResponseFactory
 
 router = APIRouter(tags=["覆盖率"])

@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-03
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 覆盖率分析模块任务执行能力
 """
@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.constants import TASK_STATUS_FAILURE, TASK_STATUS_PROCESSING, TASK_STATUS_SUCCESS
 from app.core.database import SessionLocal
 from app.core.exceptions import AppException, BusinessErrorCode
-from app.modules.coverage.repository import CoverageRepository
-from app.modules.coverage.service import CoverageService
+from app.modules.quality_report.repository import CoverageRepository
+from app.modules.quality_report.service import CoverageService
 from app.modules.task_center.heartbeat import (
     StaleAttemptError,
     TaskHeartbeat,

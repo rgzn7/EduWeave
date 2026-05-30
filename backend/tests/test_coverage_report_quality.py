@@ -1,11 +1,11 @@
 """
-@Date: 2026-05-27
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 覆盖报告质量评审字段测试
 """
 
 from app.modules.auth.models import SysUser
-from app.modules.coverage.service import CoverageService
+from app.modules.quality_report.service import CoverageService
 from app.modules.p0_models import (
     AssessmentBlueprint,
     ChapterNode,

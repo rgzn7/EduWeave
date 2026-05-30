@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-11
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 认证模块路由
 """
@@ -41,6 +41,22 @@ def login(
     """执行教师账号登录。"""
     result = service.login(request.username, request.password)
     return ResponseFactory.success(result.model_dump(), "登录成功")
+
+
+@router.post(
+    "/demo-session",
+    summary="获取演示教师会话",
+    description="为免输入账号密码的演示入口创建教师访问令牌；若演示教师不存在，会自动初始化一个可用教师账号。",
+    operation_id="auth_demo_session",
+    response_model=ApiResponse[LoginResponse],
+    status_code=status.HTTP_200_OK,
+)
+def create_demo_session(
+    service: Annotated[AuthService, Depends(get_auth_service)],
+):
+    """创建演示教师会话。"""
+    result = service.create_demo_session()
+    return ResponseFactory.success(result.model_dump(), "演示会话创建成功")
 
 
 @router.get(

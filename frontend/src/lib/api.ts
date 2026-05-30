@@ -1,3 +1,8 @@
+/**
+ * @Date: 2026-05-30
+ * @Author: xisy
+ * @Discription: 前端 API 客户端封装，统一处理同源反代、鉴权令牌和响应错误。
+ */
 import { useAuthStore } from "../stores/auth";
 import type {
   AssessmentBlueprint,
@@ -107,6 +112,11 @@ export const api = {
     return request<LoginResult>("/api/v1/auth/login", {
       method: "POST",
       body: JSON.stringify(payload),
+    });
+  },
+  createDemoSession() {
+    return request<LoginResult>("/api/v1/auth/demo-session", {
+      method: "POST",
     });
   },
   me() {

@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-22
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 任务恢复能力——任务级失败重试与僵尸任务回收
 """
@@ -50,7 +50,7 @@ TASK_HANDLER_REGISTRY: dict[str, str] = {
     ASSESSMENT_GENERATE_TASK_TYPE: "app.modules.assessment.tasks.run_generate_assessment_task",
     HOMEWORK_GENERATE_TASK_TYPE: "app.modules.homework.tasks.run_generate_homework_task",
     COURSEWARE_GENERATE_TASK_TYPE: "app.modules.courseware.tasks.run_generate_courseware_task",
-    COVERAGE_ANALYZE_TASK_TYPE: "app.modules.coverage.tasks.run_analyze_coverage_task",
+    COVERAGE_ANALYZE_TASK_TYPE: "app.modules.quality_report.tasks.run_analyze_coverage_task",
 }
 
 _STALE_REAP_BATCH_LIMIT = 50

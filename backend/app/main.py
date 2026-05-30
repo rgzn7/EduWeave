@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-03
+@Date: 2026-05-30
 @Author: xisy
 @Discription: FastAPI 应用启动入口
 """
@@ -18,7 +18,7 @@ from app.modules.agent.worker import AgentWorkerPool
 from app.modules.assessment.router import router as assessment_router
 from app.modules.auth.router import router as auth_router
 from app.modules.courseware.router import router as courseware_router
-from app.modules.coverage.router import router as coverage_router
+from app.modules.quality_report.router import router as coverage_router
 from app.modules.curriculum.router import router as curriculum_router
 from app.modules.file_asset.router import router as file_asset_router
 from app.modules.generation_process.router import router as generation_process_router

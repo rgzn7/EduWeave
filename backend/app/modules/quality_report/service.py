@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-04
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 覆盖率分析模块业务服务
 """
@@ -19,8 +19,8 @@ from app.core.constants import (
 )
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.assessment.presets import ASSESSMENT_SCENE_PRESETS, resolve_assessment_strategy
-from app.modules.coverage.repository import CoverageRepository
-from app.modules.coverage.schemas import CoverageReportDetailResponse, CoverageReportListItemResponse
+from app.modules.quality_report.repository import CoverageRepository
+from app.modules.quality_report.schemas import CoverageReportDetailResponse, CoverageReportListItemResponse
 from app.modules.p0_models import (
     ChapterNode,
     CoverageReport,
@@ -594,7 +594,7 @@ def dispatch_coverage_task_if_needed(
 
     session.commit()
     dispatch_result = dispatch_task(
-        "app.modules.coverage.tasks.run_analyze_coverage_task",
+        "app.modules.quality_report.tasks.run_analyze_coverage_task",
         {
             "task_record_id": task.id,
             "generation_batch_id": generation_batch_id,

@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-19
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 课件模块业务服务
 """
@@ -25,7 +25,7 @@ from app.core.constants import (
 )
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.core.middleware import get_request_id
-from app.modules.coverage.service import CoverageService
+from app.modules.quality_report.service import CoverageService
 from app.modules.courseware.repository import CoursewareRepository
 from app.modules.courseware.schemas import (
     CoursewareResultDetailResponse,

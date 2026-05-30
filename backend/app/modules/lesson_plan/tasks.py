@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-28
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 教案模块任务执行能力
 """
@@ -28,7 +28,7 @@ from app.core.constants import (
 )
 from app.core.database import SessionLocal
 from app.core.exceptions import AppException, BusinessErrorCode
-from app.modules.coverage.service import CoverageService
+from app.modules.quality_report.service import CoverageService
 from app.modules.lesson_plan.repository import LessonPlanRepository
 from app.modules.lesson_plan.schemas import LessonPlanGenerationResult
 from app.modules.p0_models import LessonPlan, LessonPlanGenerationItem, TaskRecord
@@ -858,7 +858,7 @@ def run_generate_lesson_plan_task(payload: dict) -> dict[str, int | str]:
             dispatch_result = dispatch_with_attempt(
                 task_repository,
                 task=coverage_task,
-                callable_path="app.modules.coverage.tasks.run_analyze_coverage_task",
+                callable_path="app.modules.quality_report.tasks.run_analyze_coverage_task",
                 payload=coverage_dispatch_payload,
                 queue=GENERATION_QUEUE_NAME,
             )

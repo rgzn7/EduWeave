@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-11
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 认证模块数据访问层
 """
@@ -34,3 +34,9 @@ class AuthRepository:
         self.session.commit()
         self.session.refresh(user)
 
+    def save_user(self, user: SysUser) -> SysUser:
+        """保存教师账号并刷新实体。"""
+        self.session.add(user)
+        self.session.commit()
+        self.session.refresh(user)
+        return user

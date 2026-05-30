@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-25
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 课后作业生成任务执行能力，按课次维度产出蓝图、作业和题目
 """
@@ -26,7 +26,7 @@ from app.modules.assessment._shared import (
     validate_assessment_result,
 )
 from app.modules.assessment.schemas import AssessmentGenerationResult
-from app.modules.coverage.service import CoverageService
+from app.modules.quality_report.service import CoverageService
 from app.modules.homework.presets import resolve_homework_strategy
 from app.modules.homework.repository import HomeworkRepository
 from app.modules.p0_models import HomeworkBlueprint, HomeworkQuestion, HomeworkResult

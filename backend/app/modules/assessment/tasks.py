@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-04
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 测评模块任务执行能力
 """
@@ -28,7 +28,7 @@ from app.modules.assessment._shared import (
 from app.modules.assessment.presets import resolve_assessment_strategy
 from app.modules.assessment.repository import AssessmentRepository
 from app.modules.assessment.schemas import AssessmentGenerationResult
-from app.modules.coverage.service import CoverageService
+from app.modules.quality_report.service import CoverageService
 from app.modules.p0_models import AssessmentBlueprint, PaperResult, QuestionItem
 from app.modules.task_center.heartbeat import (
     StaleAttemptError,

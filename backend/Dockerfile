@@ -10,7 +10,10 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app \
-    APP_ENV=production
+    APP_ENV=production \
+    SERVICE_ROLE=api \
+    CELERY_QUEUES=celery,profile_queue,parsing_queue,knowledge_queue,generation_queue \
+    CELERY_LOGLEVEL=info
 
 WORKDIR /app
 
@@ -26,6 +29,5 @@ COPY alembic.ini ./
 # Zeabur 以 Dockerfile 部署时取 EXPOSE 端口（默认 8080），并据此注入同值的 $PORT
 EXPOSE 8080
 
-# 启动：先执行数据库迁移，再拉起 API；监听 Zeabur 注入的 $PORT。
-# Celery worker 服务请在 Zeabur 控制台覆盖启动命令，不要在 worker 上重复跑迁移。
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+# 启动：默认先执行数据库迁移，再拉起 API；worker 服务通过 SERVICE_ROLE=worker 切换为 Celery。
+CMD ["sh", "-c", "if [ \"${SERVICE_ROLE:-api}\" = \"worker\" ]; then celery -A app.worker worker -B -Q ${CELERY_QUEUES:-celery,profile_queue,parsing_queue,knowledge_queue,generation_queue} --loglevel=${CELERY_LOGLEVEL:-info}; else alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}; fi"]
