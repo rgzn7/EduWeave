@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-28
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 测试环境公共夹具
 """
@@ -22,10 +22,10 @@ os.environ.setdefault("LOG_LEVEL", "INFO")
 os.environ.setdefault("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
 os.environ.setdefault("MYSQL_HOST", "127.0.0.1")
 os.environ.setdefault("MYSQL_PORT", "3306")
-os.environ.setdefault("MYSQL_USER", "root")
+os.environ.setdefault("MYSQL_USERNAME", "root")
 os.environ.setdefault("MYSQL_PASSWORD", "boss1114")
 os.environ.setdefault("MYSQL_DATABASE", "eduweave")
-os.environ.setdefault("REDIS_URL", "redis://127.0.0.1:6379/0")
+os.environ.setdefault("REDIS_URI", "redis://127.0.0.1:6379/0")
 os.environ.setdefault("TASK_EAGER_MODE", "1")
 os.environ.setdefault("JWT_SECRET", "test-secret")
 os.environ.setdefault("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "120")
@@ -80,7 +80,7 @@ def build_mysql_uri(database_name: str) -> str:
     """构建指定数据库的 SQLAlchemy 连接串。"""
     settings = get_settings()
     return (
-        f"mysql+pymysql://{quote_plus(settings.mysql_user)}:{quote_plus(settings.mysql_password)}"
+        f"mysql+pymysql://{quote_plus(settings.mysql_username)}:{quote_plus(settings.mysql_password)}"
         f"@{settings.mysql_host}:{settings.mysql_port}/{database_name}?charset=utf8mb4"
     )
 
@@ -91,7 +91,7 @@ def execute_schema_sql(database_name: str) -> None:
     connection = pymysql.connect(
         host=settings.mysql_host,
         port=settings.mysql_port,
-        user=settings.mysql_user,
+        user=settings.mysql_username,
         password=settings.mysql_password,
         database=database_name,
         charset="utf8mb4",
@@ -137,7 +137,7 @@ def mysql_test_database_name() -> Generator[str, None, None]:
     admin_connection = pymysql.connect(
         host=settings.mysql_host,
         port=settings.mysql_port,
-        user=settings.mysql_user,
+        user=settings.mysql_username,
         password=settings.mysql_password,
         database="mysql",
         charset="utf8mb4",

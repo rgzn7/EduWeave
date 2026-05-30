@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-28
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 配置模型测试
 """
@@ -15,10 +15,10 @@ def apply_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_LOAD_DOTENV", "0")
     monkeypatch.setenv("MYSQL_HOST", "127.0.0.1")
     monkeypatch.setenv("MYSQL_PORT", "3306")
-    monkeypatch.setenv("MYSQL_USER", "root")
+    monkeypatch.setenv("MYSQL_USERNAME", "root")
     monkeypatch.setenv("MYSQL_PASSWORD", "boss1114")
     monkeypatch.setenv("MYSQL_DATABASE", "eduweave")
-    monkeypatch.setenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    monkeypatch.setenv("REDIS_URI", "redis://127.0.0.1:6379/0")
     monkeypatch.setenv("OBS_ENDPOINT", "https://obs.test.example.com")
     monkeypatch.setenv("OBS_AK", "test-ak")
     monkeypatch.setenv("OBS_SK", "test-sk")

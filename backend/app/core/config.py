@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-28
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 应用配置定义
 """
@@ -26,11 +26,11 @@ class Settings(BaseSettings):
 
     mysql_host: str
     mysql_port: int = 3306
-    mysql_user: str
+    mysql_username: str
     mysql_password: str
     mysql_database: str = "eduweave"
 
-    redis_url: str
+    redis_uri: str
     task_eager_mode: bool = False
     # 任务卡在 processing 超过该秒数视为僵尸任务，由 reaper 回收
     task_stale_threshold_seconds: int = 1800
@@ -399,7 +399,7 @@ class Settings(BaseSettings):
     def sqlalchemy_database_uri(self) -> str:
         """拼接 SQLAlchemy 数据库连接串。"""
         return (
-            f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}"
+            f"mysql+pymysql://{self.mysql_username}:{self.mysql_password}"
             f"@{self.mysql_host}:{self.mysql_port}/{self.mysql_database}?charset=utf8mb4"
         )
 

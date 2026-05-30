@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-17
+@Date: 2026-05-30
 @Author: xisy
 @Discription: Milvus 向量服务测试
 """
@@ -337,9 +337,9 @@ def test_build_collection_name_should_return_logical_name_when_prefix_is_empty()
     """未配置前缀时应直接使用逻辑集合名。"""
     settings = Settings(
         mysql_host="127.0.0.1",
-        mysql_user="root",
+        mysql_username="root",
         mysql_password="boss1114",
-        redis_url="redis://127.0.0.1:6379/0",
+        redis_uri="redis://127.0.0.1:6379/0",
         jwt_secret="test-secret",
         obs_endpoint="https://obs.test.example.com",
         obs_ak="test-ak",

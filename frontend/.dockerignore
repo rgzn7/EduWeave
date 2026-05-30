@@ -1,0 +1,20 @@
+# @Date: 2026-05-30
+# @Author: xisy
+# @Discription: 前端 Docker 构建上下文忽略规则，避免本地依赖与开发态地址进入镜像
+
+# 依赖与构建产物（镜像内重新安装/构建）
+node_modules/
+dist/
+
+# 本地环境变量（开发态 VITE_API_BASE_URL 会污染生产构建，必须排除）
+.env
+.env.*
+!.env.example
+
+# 系统与编辑器文件
+.DS_Store
+.vscode/
+.idea/
+
+# 日志
+*.log

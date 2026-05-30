@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-25
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 从 FastAPI app 直接导出 OpenAPI 文档为 Markdown，无需启动服务
 """
@@ -292,10 +292,10 @@ def main() -> None:
     os.environ.setdefault("APP_VERSION", "0.1.0")
     os.environ.setdefault("APP_ENV", "local")
     os.environ.setdefault("MYSQL_HOST", "localhost")
-    os.environ.setdefault("MYSQL_USER", "dummy")
+    os.environ.setdefault("MYSQL_USERNAME", "dummy")
     os.environ.setdefault("MYSQL_PASSWORD", "dummy")
     os.environ.setdefault("JWT_SECRET", "dummy-secret-key-for-doc-export-only")
-    os.environ.setdefault("REDIS_URL", "redis://localhost:6379/0")
+    os.environ.setdefault("REDIS_URI", "redis://localhost:6379/0")
     os.environ.setdefault("MILVUS_URI", "http://localhost:19530")
     os.environ.setdefault("MILVUS_EMBEDDING_DIM", "1536")
     os.environ.setdefault("OBS_ENDPOINT", "https://obs.example.com")

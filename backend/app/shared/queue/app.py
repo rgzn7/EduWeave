@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-11
+@Date: 2026-05-30
 @Author: xisy
 @Discription: Celery 应用与基础任务
 """
@@ -21,8 +21,8 @@ class CeleryAppFactory:
     def create(settings: Settings) -> Celery:
         app = Celery(
             "eduweave",
-            broker=settings.redis_url,
-            backend=settings.redis_url,
+            broker=settings.redis_uri,
+            backend=settings.redis_uri,
         )
         app.conf.update(
             task_serializer="json",

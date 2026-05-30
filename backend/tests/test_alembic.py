@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-28
+@Date: 2026-05-30
 @Author: xisy
 @Discription: Alembic 迁移测试
 """
@@ -23,7 +23,7 @@ def test_alembic_upgrade_head() -> None:
         connection = pymysql.connect(
             host=settings.mysql_host,
             port=settings.mysql_port,
-            user=settings.mysql_user,
+            user=settings.mysql_username,
             password=settings.mysql_password,
             database="mysql",
             charset="utf8mb4",
@@ -42,7 +42,7 @@ def test_alembic_upgrade_head() -> None:
         config.set_main_option(
             "sqlalchemy.url",
             (
-                f"mysql+pymysql://{settings.mysql_user}:{settings.mysql_password}"
+                f"mysql+pymysql://{settings.mysql_username}:{settings.mysql_password}"
                 f"@{settings.mysql_host}:{settings.mysql_port}/{database_name}?charset=utf8mb4"
             ),
         )

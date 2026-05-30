@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-11
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 系统健康检查服务
 """
@@ -42,7 +42,7 @@ class SystemService:
         """执行 Redis 健康检查。"""
         started_at = time.perf_counter()
         try:
-            client = Redis.from_url(self.settings.redis_url)
+            client = Redis.from_url(self.settings.redis_uri)
             client.ping()
             return {
                 "status": "ok",

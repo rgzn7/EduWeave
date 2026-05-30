@@ -1,0 +1,35 @@
+# @Date: 2026-05-30
+# @Author: xisy
+# @Discription: 后端 Docker 构建上下文忽略规则，减小上传体积并避免泄露本地配置
+
+# 本地环境变量（生产改由 Zeabur 注入，切勿打进镜像）
+.env
+.env.*
+!.env.example
+
+# Python 虚拟环境与缓存
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# 运行态与本地数据文件
+*.db
+*.log
+*.pid
+output/
+celerybeat-schedule*
+
+# 测试、脚本与文档（运行期不需要）
+tests/
+scripts/
+docs/
+
+# 系统与编辑器文件
+.DS_Store
+.vscode/
+.idea/

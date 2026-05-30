@@ -37,7 +37,9 @@ import type {
   TextbookVersion,
 } from "../types";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8010";
+// 未显式配置时回退到当前站点同源地址：生产由 nginx 反代 /api 到后端，无需写死后端域名；
+// 本地开发仍由 .env 中的 VITE_API_BASE_URL 指向后端调试地址。
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin;
 
 export class EduWeaveApiError extends Error {
   status: number;

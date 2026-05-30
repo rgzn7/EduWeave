@@ -1,0 +1,36 @@
+# @Date: 2026-05-30
+# @Author: xisy
+# @Discription: Zeabur CLI 上传忽略规则（CLI 只读本文件或 .gitignore，不读 .dockerignore）
+# 注意：本文件刻意不含任何 coverage 规则，确保 app/modules/coverage 业务模块被完整上传
+
+# Python 虚拟环境与缓存（体积大，构建时会重装）
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# 本地环境变量（含密码，生产改由 Zeabur 注入）
+.env
+.env.*
+
+# 运行态与本地数据文件
+output/
+*.db
+*.log
+*.pid
+celerybeat-schedule*
+
+# 测试、脚本、文档（运行期构建不需要）
+tests/
+scripts/
+docs/
+
+# 系统与编辑器文件
+.DS_Store
+.vscode/
+.idea/

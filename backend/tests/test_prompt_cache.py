@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-25
+@Date: 2026-05-30
 @Author: xisy
 @Discription: 提示词缓存基础设施测试（payload 注入、稳定前缀 cache_control 标记、三协议 cached_tokens 提取）
 """
@@ -62,9 +62,9 @@ def _build_settings(
     return Settings(
         app_load_dotenv=False,
         mysql_host="127.0.0.1",
-        mysql_user="root",
+        mysql_username="root",
         mysql_password="boss1114",
-        redis_url="redis://127.0.0.1:6379/0",
+        redis_uri="redis://127.0.0.1:6379/0",
         jwt_secret="test-secret",
         obs_endpoint="https://obs.test.example.com",
         obs_ak="test-ak",

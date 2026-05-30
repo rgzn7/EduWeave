@@ -1,0 +1,19 @@
+# @Date: 2026-05-30
+# @Author: xisy
+# @Discription: Zeabur CLI 上传忽略规则（CLI 只读本文件或 .gitignore，不读 .dockerignore）
+
+# 依赖与构建产物（镜像内会重新 npm ci 并构建）
+node_modules/
+dist/
+
+# 本地环境变量（开发态地址，生产由 nginx 同源反代，无需上传）
+.env
+.env.*
+
+# 系统与编辑器文件
+.DS_Store
+.vscode/
+.idea/
+
+# 日志
+*.log
