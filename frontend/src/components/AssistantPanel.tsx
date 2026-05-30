@@ -1,20 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Bot, Loader2, Plus, Send, Sparkles, Wrench, X } from "lucide-react";
-import { api, streamAgentRunEvents, type AgentContext, type AgentRunEvent } from "../lib/api";
+import { Bot, Loader2, Plus, Send, Sparkles, X } from "lucide-react";
+import { api, streamAgentRunEvents, type AgentContext } from "../lib/api";
 import { useAssistantStore } from "../stores/assistant";
+import { AgentRunTimeline } from "./AgentRunTimeline";
 import { MarkdownContent } from "./Markdown";
-import { cn } from "../utils";
-
-// 事件类型 -> 中文展示标签
-const EVENT_LABELS: Record<string, string> = {
-  started: "开始处理",
-  tool_call: "调用工具",
-  tool_result: "工具返回",
-  artifact_updated: "资源已更新",
-  assistant_thinking: "思考中",
-  retry: "稍后重试",
-};
 
 function buildContextPayload(context: AgentContext | null | undefined): AgentContext | null {
   if (!context) return null;
@@ -24,28 +14,6 @@ function buildContextPayload(context: AgentContext | null | undefined): AgentCon
   if (context.class_session_no != null) payload.class_session_no = context.class_session_no;
   if (context.lesson_plan_id != null) payload.lesson_plan_id = context.lesson_plan_id;
   return Object.keys(payload).length ? payload : null;
-}
-
-function ToolTimeline({ events }: { events: AgentRunEvent[] }) {
-  const visible = events.filter((event) => event.event_type !== "succeeded");
-  if (!visible.length) return null;
-  return (
-    <div className="mt-2 space-y-1 border-l-2 border-line pl-3">
-      {visible.map((event, index) => {
-        const toolName = (event.payload?.tool_name as string | undefined) ?? "";
-        const summary = (event.payload?.summary as string | undefined) ?? event.message ?? "";
-        const label = EVENT_LABELS[event.event_type] ?? event.event_type;
-        return (
-          <div key={`${event.seq ?? index}`} className="flex items-start gap-1.5 text-xs text-ink/55">
-            <Wrench size={12} className="mt-0.5 shrink-0" />
-            <span className="font-medium text-ink/70">{label}</span>
-            {toolName ? <span className="text-ink/45">{toolName}</span> : null}
-            {summary ? <span className="truncate text-ink/45">· {summary}</span> : null}
-          </div>
-        );
-      })}
-    </div>
-  );
 }
 
 export function AssistantPanel() {
@@ -75,6 +43,11 @@ export function AssistantPanel() {
   }, [messages, busy]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  // 跨项目切换会清空 store 会话（sessionId 置空），此时中断仍在进行的事件流，避免回写到已废弃的消息
+  useEffect(() => {
+    if (sessionId == null) abortRef.current?.abort();
+  }, [sessionId]);
 
   const contextChip = useMemo(() => {
     if (context?.curriculum_plan_id != null && context?.class_session_no != null) {
@@ -124,7 +97,7 @@ export function AssistantPanel() {
           title: text.slice(0, 20),
         });
         currentSessionId = session.id;
-        setSessionId(currentSessionId);
+        setSessionId(currentSessionId, projectId);
       }
       const run = await api.agentSubmitRun(currentSessionId, {
         content: text,
@@ -260,7 +233,7 @@ export function AssistantPanel() {
                         </div>
                       ) : null}
                       {message.events && message.status !== "done" ? (
-                        <ToolTimeline events={message.events} />
+                        <AgentRunTimeline events={message.events} />
                       ) : null}
                     </div>
                   </div>

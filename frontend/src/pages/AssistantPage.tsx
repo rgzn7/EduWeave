@@ -5,26 +5,17 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bot, FolderClosed, Loader2, MessageSquarePlus, Send, Sparkles, Wrench } from "lucide-react";
+import { Bot, FolderClosed, Loader2, MessageSquarePlus, Send, Sparkles } from "lucide-react";
 import {
   api,
   streamAgentRunEvents,
   type AgentRunEvent,
   type AgentSession,
 } from "../lib/api";
+import { AgentRunTimeline } from "../components/AgentRunTimeline";
 import { MarkdownContent } from "../components/Markdown";
 import type { Project } from "../types";
 import { cn, formatDate } from "../utils";
-
-// 事件类型 -> 中文展示标签（与悬浮助手保持一致）
-const EVENT_LABELS: Record<string, string> = {
-  started: "开始处理",
-  tool_call: "调用工具",
-  tool_result: "工具返回",
-  artifact_updated: "资源已更新",
-  assistant_thinking: "思考中",
-  retry: "稍后重试",
-};
 
 type ChatMessage = {
   id: string;
@@ -33,28 +24,6 @@ type ChatMessage = {
   status: "pending" | "done" | "error";
   events?: AgentRunEvent[];
 };
-
-function ToolTimeline({ events }: { events: AgentRunEvent[] }) {
-  const visible = events.filter((event) => event.event_type !== "succeeded");
-  if (!visible.length) return null;
-  return (
-    <div className="mt-2 space-y-1 border-l-2 border-line pl-3">
-      {visible.map((event, index) => {
-        const toolName = (event.payload?.tool_name as string | undefined) ?? "";
-        const summary = (event.payload?.summary as string | undefined) ?? event.message ?? "";
-        const label = EVENT_LABELS[event.event_type] ?? event.event_type;
-        return (
-          <div key={`${event.seq ?? index}`} className="flex items-start gap-1.5 text-xs text-ink/55">
-            <Wrench size={12} className="mt-0.5 shrink-0" />
-            <span className="font-medium text-ink/70">{label}</span>
-            {toolName ? <span className="text-ink/45">{toolName}</span> : null}
-            {summary ? <span className="truncate text-ink/45">· {summary}</span> : null}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 export function AssistantPage() {
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
@@ -381,7 +350,7 @@ export function AssistantPage() {
                           正在处理…
                         </div>
                       ) : null}
-                      {message.events && message.status !== "done" ? <ToolTimeline events={message.events} /> : null}
+                      {message.events && message.status !== "done" ? <AgentRunTimeline events={message.events} /> : null}
                     </div>
                   </div>
                 ),
