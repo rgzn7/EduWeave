@@ -1,13 +1,13 @@
 /**
  * @Date: 2026-05-30
  * @Author: xisy
- * @Discription: EduWeave 入口页，自动创建演示会话并进入工作台。
+ * @Discription: EduWeave 入口页，用户确认后创建演示会话并进入工作台。
  */
 import { useGSAP } from "@gsap/react";
 import { useMutation } from "@tanstack/react-query";
 import gsap from "gsap";
 import { Loader2 } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { BrandWordmark } from "../components/BrandWordmark";
 import { api } from "../lib/api";
@@ -384,7 +384,6 @@ export function LoginPage() {
   const navigate = useNavigate();
   const token = useAuthStore((state) => state.token);
   const setSession = useAuthStore((state) => state.setSession);
-  const autoLoginStartedRef = useRef(false);
 
   const loginMutation = useMutation({
     mutationFn: api.createDemoSession,
@@ -393,14 +392,6 @@ export function LoginPage() {
       navigate("/", { replace: true });
     },
   });
-
-  useEffect(() => {
-    if (token || autoLoginStartedRef.current) {
-      return;
-    }
-    autoLoginStartedRef.current = true;
-    loginMutation.mutate();
-  }, [token]);
 
   if (token) {
     return <Navigate to="/" replace />;

@@ -29,7 +29,9 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('app/modules/agent/tools.py'\\).read\\(\\)\\); print\\('tools.py OK'\\)\")",
       "Bash(mysql -uroot -pboss1114 eduweave -e \"DESCRIBE task_record;\")",
       "Bash(mysql *)",
-      "Bash(grep -vE \"NumPy|rebuild|pybind|crash|support both|versions of|^$|may need|Traceback|AttributeError: _ARRAY_API|^\\\\s+import|If you are|to the |Otherwise|^ *File|^ *self|^ *return|^ *raise\")"
+      "Bash(grep -vE \"NumPy|rebuild|pybind|crash|support both|versions of|^$|may need|Traceback|AttributeError: _ARRAY_API|^\\\\s+import|If you are|to the |Otherwise|^ *File|^ *self|^ *return|^ *raise\")",
+      "Bash(python -m alembic upgrade 20260529_0013:20260530_0014 --sql)",
+      "Bash(.venv/bin/python -m alembic upgrade 20260529_0013:20260530_0014 --sql)"
     ]
   }
 }
