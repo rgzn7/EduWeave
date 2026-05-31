@@ -1,11 +1,11 @@
 /**
- * @Date: 2026-05-29
+ * @Date: 2026-05-31
  * @Author: xisy
  * @Discription: 独立小助手页：两栏布局（左=项目/会话选择，右=聊天），支持项目切换、会话列表/切换/新建与 SSE 流式回答
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Bot, FolderClosed, Loader2, MessageSquarePlus, Send, Sparkles } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Bot, FolderClosed, Loader2, MessageSquarePlus, Send, Sparkles, Trash2 } from "lucide-react";
 import {
   api,
   streamAgentRunEvents,
@@ -13,9 +13,10 @@ import {
   type AgentSession,
 } from "../lib/api";
 import { AgentRunTimeline } from "../components/AgentRunTimeline";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { MarkdownContent } from "../components/Markdown";
 import type { Project } from "../types";
-import { cn, formatDate } from "../utils";
+import { cn, formatDate, getErrorMessage } from "../utils";
 
 type ChatMessage = {
   id: string;
@@ -26,12 +27,16 @@ type ChatMessage = {
 };
 
 export function AssistantPage() {
+  const queryClient = useQueryClient();
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<number | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<AgentSession | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -114,6 +119,33 @@ export function AssistantPage() {
     setActiveSessionId(null);
     setMessages([]);
     setInput("");
+  }
+
+  function requestDeleteSession(session: AgentSession) {
+    setDeleteError(null);
+    setDeleteTarget(session);
+  }
+
+  async function confirmDeleteSession() {
+    if (!deleteTarget) return;
+    const targetSessionId = deleteTarget.id;
+    setDeleteLoading(true);
+    setDeleteError(null);
+    try {
+      await api.agentDeleteSession(targetSessionId);
+      await queryClient.invalidateQueries({ queryKey: ["agent-sessions", activeProjectId] });
+      if (activeSessionId === targetSessionId) {
+        abortRef.current?.abort();
+        setBusy(false);
+        setActiveSessionId(null);
+        setMessages([]);
+      }
+      setDeleteTarget(null);
+    } catch (error) {
+      setDeleteError(getErrorMessage(error));
+    } finally {
+      setDeleteLoading(false);
+    }
   }
 
   // 打开历史会话：拉取消息，并按 run 逐条回放工具过程事件
@@ -266,20 +298,41 @@ export function AssistantPage() {
             </button>
           </div>
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
-            {sessions.map((session) => (
-              <button
-                type="button"
-                key={session.id}
-                onClick={() => selectSession(session.id)}
-                className={cn(
-                  "flex w-full flex-col gap-0.5 rounded-xl px-3 py-2 text-left transition hover:bg-[#f2f2f2]",
-                  activeSessionId === session.id ? "bg-[#f2f2f2] text-ink" : "text-ink/65 hover:text-ink",
-                )}
-              >
-                <span className="truncate text-sm font-medium">{session.title || `会话 #${session.id}`}</span>
-                <span className="truncate text-xs text-ink/40">{formatDate(session.updated_at)}</span>
-              </button>
-            ))}
+            {sessions.map((session) => {
+              const deletingCurrentBusySession = busy && activeSessionId === session.id;
+              return (
+                <div className="group relative" key={session.id}>
+                  <button
+                    type="button"
+                    onClick={() => selectSession(session.id)}
+                    className={cn(
+                      "flex w-full flex-col gap-0.5 rounded-xl px-3 py-2 pr-10 text-left transition hover:bg-[#f2f2f2]",
+                      activeSessionId === session.id ? "bg-[#f2f2f2] text-ink" : "text-ink/65 hover:text-ink",
+                    )}
+                  >
+                    <span className="truncate text-sm font-medium">{session.title || `会话 #${session.id}`}</span>
+                    <span className="truncate text-xs text-ink/40">{formatDate(session.updated_at)}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      requestDeleteSession(session);
+                    }}
+                    disabled={deletingCurrentBusySession || deleteLoading}
+                    title={deletingCurrentBusySession ? "运行中不可删除" : "删除会话"}
+                    className={cn(
+                      "absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-lg text-ink/35 opacity-0 transition hover:bg-coral/10 hover:text-coral focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-coral/25 group-focus-within:opacity-100 group-hover:opacity-100",
+                      deletingCurrentBusySession || deleteLoading
+                        ? "cursor-not-allowed text-ink/20 hover:bg-transparent hover:text-ink/20"
+                        : "",
+                    )}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              );
+            })}
             {sessionsQuery.isLoading ? (
               <div className="flex items-center gap-2 px-3 py-2 text-xs text-ink/40">
                 <Loader2 size={12} className="animate-spin" />
@@ -398,6 +451,33 @@ export function AssistantPage() {
           </div>
         </div>
       </section>
+      <ConfirmDialog
+        open={deleteTarget != null}
+        title="删除会话"
+        description={
+          <div>
+            <p>
+              确认删除「{deleteTarget?.title || (deleteTarget ? `会话 #${deleteTarget.id}` : "当前会话")}」？会同步清理该会话的消息、运行记录、事件和内部工件。
+            </p>
+            <p className="mt-2 text-xs text-ink/45">已写入项目的大纲或教案版本不会被回滚。</p>
+            {deleteError ? (
+              <div className="mt-3 rounded-md border border-coral/25 bg-coral/10 px-3 py-2 text-xs font-semibold text-coral">
+                {deleteError}
+              </div>
+            ) : null}
+          </div>
+        }
+        confirmText="删除"
+        cancelText="取消"
+        tone="danger"
+        loading={deleteLoading}
+        onConfirm={() => void confirmDeleteSession()}
+        onCancel={() => {
+          if (deleteLoading) return;
+          setDeleteTarget(null);
+          setDeleteError(null);
+        }}
+      />
     </div>
   );
 }

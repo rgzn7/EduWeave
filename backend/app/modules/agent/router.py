@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-29
+@Date: 2026-05-31
 @Author: xisy
 @Discription: 智能助手模块路由：会话、运行、SSE 事件流
 """
@@ -26,6 +26,7 @@ from app.modules.agent.schemas import (
     AgentSessionResponse,
     CreateRunRequest,
     CreateSessionRequest,
+    DeleteAgentSessionResponse,
 )
 from app.modules.agent.session_service import AgentSessionService
 from app.modules.auth.models import SysUser
@@ -79,6 +80,25 @@ def list_sessions(
     return ResponseFactory.paginated(
         items=items, total_count=len(items), page=page, page_size=page_size, message="获取会话列表成功"
     )
+
+
+@router.delete(
+    "/sessions/{session_id}",
+    summary="删除助手会话",
+    description="删除指定助手会话，并同步清理该会话下的消息、运行、运行事件与会话内部工件；运行中会话不可删除。",
+    operation_id="agent_delete_session",
+    response_model=ApiResponse[DeleteAgentSessionResponse],
+    status_code=status.HTTP_200_OK,
+)
+def delete_session(
+    service: Annotated[AgentSessionService, Depends(get_session_service)],
+    current_user: Annotated[SysUser, Depends(get_current_user)],
+    session_id: int = Path(..., description="会话主键"),
+):
+    """删除助手会话。"""
+    result = service.delete_session(user=current_user, session_id=session_id)
+    data = DeleteAgentSessionResponse.model_validate(result).model_dump(mode="json")
+    return ResponseFactory.success(data, "删除会话成功")
 
 
 @router.post(

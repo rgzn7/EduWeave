@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-29
+@Date: 2026-05-31
 @Author: xisy
 @Discription: 智能助手会话服务：创建会话、提交消息并入队运行
 """
@@ -15,6 +15,7 @@ from app.core.config import get_settings
 from app.core.exceptions import AppException, BusinessErrorCode
 from app.modules.agent.models import AgentRun, AgentSession
 from app.modules.agent.repository import AgentRepository
+from app.modules.agent.run_service import TERMINAL_RUN_STATUSES
 from app.modules.auth.models import SysUser
 from app.modules.p0_models import Project
 
@@ -58,6 +59,21 @@ class AgentSessionService:
         if session is None:
             raise AppException(BusinessErrorCode.TASK_NOT_FOUND, "会话不存在或无权访问")
         return session
+
+    def delete_session(self, *, user: SysUser, session_id: int) -> dict[str, int]:
+        """删除会话及会话内部工件。"""
+        self.get_session(user=user, session_id=session_id)
+        if self.repository.has_non_terminal_runs(
+            session_id=session_id,
+            terminal_statuses=set(TERMINAL_RUN_STATUSES),
+        ):
+            raise AppException(
+                BusinessErrorCode.TASK_CONFLICT,
+                "会话仍有运行中的任务，请取消或等待完成后再删除",
+            )
+        result = self.repository.delete_session_bundle(session_id)
+        self.db.commit()
+        return result
 
     @staticmethod
     def _normalize_context(context: dict[str, Any] | None) -> dict[str, Any] | None:

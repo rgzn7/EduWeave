@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-30
+@Date: 2026-05-31
 @Author: xisy
 @Discription: 测试环境公共夹具
 """
@@ -73,7 +73,10 @@ from app.shared.mineru import NormalizedBlock, NormalizedDocument, NormalizedPag
 from app.shared.storage import ObsStorageClient
 
 TEST_PASSWORD = "Teacher@123"
-SCHEMA_SQL_PATH = Path(__file__).resolve().parents[2] / "sql" / "20260430_eduweave_mysql_28_tables.sql"
+SCHEMA_SQL_PATHS = (
+    Path(__file__).resolve().parents[2] / "sql" / "20260430_eduweave_mysql_28_tables.sql",
+    Path(__file__).resolve().parents[2] / "sql" / "20260529_agent_assistant_tables.sql",
+)
 
 
 def build_mysql_uri(database_name: str) -> str:
@@ -99,7 +102,7 @@ def execute_schema_sql(database_name: str) -> None:
     )
     try:
         all_statements: list[str] = []
-        for schema_path in (SCHEMA_SQL_PATH,):
+        for schema_path in SCHEMA_SQL_PATHS:
             raw_script = schema_path.read_text(encoding="utf-8")
             filtered_lines: list[str] = []
             skip_database_block = False
@@ -179,6 +182,11 @@ def seeded_session_factory(mysql_session_factory):
     try:
         session.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
         for table_name in [
+            "agent_run_event",
+            "agent_message",
+            "agent_artifact",
+            "agent_run",
+            "agent_session",
             "audit_log",
             "generation_trace",
             "lesson_plan_generation_item",

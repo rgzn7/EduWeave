@@ -1,5 +1,5 @@
 /**
- * @Date: 2026-05-30
+ * @Date: 2026-05-31
  * @Author: xisy
  * @Discription: 前端 API 客户端封装，统一处理同源反代、鉴权令牌和响应错误。
  */
@@ -453,6 +453,9 @@ export const api = {
   agentListSessions(query?: { project_id?: number | null; page?: number; page_size?: number }) {
     return request<PageResult<AgentSession>>("/api/v1/agent/sessions", {}, query);
   },
+  agentDeleteSession(sessionId: number) {
+    return request<AgentDeleteSessionResult>(`/api/v1/agent/sessions/${sessionId}`, { method: "DELETE" });
+  },
   agentListRunEvents(runId: number, afterSeq = 0) {
     return request<AgentRunEvent[]>(`/api/v1/agent/runs/${runId}/events/list`, {}, { after_seq: afterSeq });
   },
@@ -487,6 +490,14 @@ export type AgentSession = {
   title: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type AgentDeleteSessionResult = {
+  session_id: number;
+  deleted_messages: number;
+  deleted_runs: number;
+  deleted_events: number;
+  deleted_artifacts: number;
 };
 
 export type AgentRun = {

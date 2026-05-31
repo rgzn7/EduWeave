@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-29
+@Date: 2026-05-31
 @Author: xisy
 @Discription: 智能助手请求与响应模型
 """
@@ -35,6 +35,16 @@ class AgentSessionResponse(BaseSchema):
     title: str | None = Field(default=None, description="会话标题")
     created_at: datetime = Field(description="创建时间")
     updated_at: datetime = Field(description="更新时间")
+
+
+class DeleteAgentSessionResponse(BaseSchema):
+    """删除会话响应。"""
+
+    session_id: int = Field(description="已删除会话主键")
+    deleted_messages: int = Field(description="删除的消息数量")
+    deleted_runs: int = Field(description="删除的运行数量")
+    deleted_events: int = Field(description="删除的运行事件数量")
+    deleted_artifacts: int = Field(description="删除的会话工件数量")
 
 
 class CreateRunRequest(BaseSchema):

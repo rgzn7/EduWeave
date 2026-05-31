@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.modules.agent.models import (
@@ -63,6 +63,47 @@ class AgentRepository:
         self.session.execute(
             update(AgentSession).where(AgentSession.id == session_id).values(updated_at=DateTimeUtil.now_utc())
         )
+
+    def has_non_terminal_runs(self, *, session_id: int, terminal_statuses: set[str]) -> bool:
+        """判断会话下是否仍存在排队中或运行中的任务。"""
+        statement = (
+            select(AgentRun.id)
+            .where(
+                AgentRun.session_id == session_id,
+                ~AgentRun.status.in_(terminal_statuses),
+            )
+            .limit(1)
+        )
+        return self.session.scalar(statement) is not None
+
+    @staticmethod
+    def _deleted_count(result: Any) -> int:
+        """读取删除语句影响行数，兼容少数驱动返回 None 的场景。"""
+        return int(result.rowcount or 0)
+
+    def delete_session_bundle(self, session_id: int) -> dict[str, int]:
+        """删除会话及其内部消息、运行、事件和工件，返回各类删除数量。"""
+        deleted_events = self._deleted_count(
+            self.session.execute(delete(AgentRunEvent).where(AgentRunEvent.session_id == session_id))
+        )
+        deleted_messages = self._deleted_count(
+            self.session.execute(delete(AgentMessage).where(AgentMessage.session_id == session_id))
+        )
+        deleted_artifacts = self._deleted_count(
+            self.session.execute(delete(AgentArtifact).where(AgentArtifact.session_id == session_id))
+        )
+        deleted_runs = self._deleted_count(
+            self.session.execute(delete(AgentRun).where(AgentRun.session_id == session_id))
+        )
+        self.session.execute(delete(AgentSession).where(AgentSession.id == session_id))
+        self.session.flush()
+        return {
+            "session_id": session_id,
+            "deleted_messages": deleted_messages,
+            "deleted_runs": deleted_runs,
+            "deleted_events": deleted_events,
+            "deleted_artifacts": deleted_artifacts,
+        }
 
     # ------------------------------------------------------------------ #
     # 消息
