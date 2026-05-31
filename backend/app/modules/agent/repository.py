@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-29
+@Date: 2026-05-31
 @Author: xisy
 @Discription: 智能助手数据访问层：会话/消息/运行/运行事件/运行工件
 """
@@ -241,6 +241,28 @@ class AgentRepository:
             select(AgentArtifact)
             .where(AgentArtifact.session_id == session_id, AgentArtifact.superseded_at.is_(None))
             .order_by(AgentArtifact.id.asc())
+        )
+        return list(self.session.scalars(statement))
+
+    def list_recent_active_artifacts_by_source(
+        self,
+        *,
+        session_id: int,
+        source_tools: list[str],
+        limit: int,
+    ) -> list[AgentArtifact]:
+        """按来源工具读取会话内最近的未失效工件。"""
+        if not source_tools or limit <= 0:
+            return []
+        statement = (
+            select(AgentArtifact)
+            .where(
+                AgentArtifact.session_id == session_id,
+                AgentArtifact.source_tool.in_(source_tools),
+                AgentArtifact.superseded_at.is_(None),
+            )
+            .order_by(AgentArtifact.id.desc())
+            .limit(limit)
         )
         return list(self.session.scalars(statement))
 

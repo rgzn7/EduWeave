@@ -30,6 +30,9 @@ from app.modules.curriculum.repository import CurriculumRepository
 
 # 需要落工件的大段读工具
 ARTIFACT_TOOLS = frozenset({"read_lesson_plan", "read_outline"})
+SEARCH_TEXTBOOK_INDEX_TOOL = "search_textbook_index"
+RESOURCE_MEMORY_LIMIT = 5
+TEXTBOOK_SEARCH_MEMORY_LIMIT = 3
 
 
 class AgentRunExecutor:
@@ -91,6 +94,7 @@ class AgentRunExecutor:
             tool_choice = "none" if forced_final else "auto"
             messages = [
                 *static_messages,
+                *self._render_artifact_memory_messages(),
                 *self._render_context_pack_messages(),
                 *conversation,
                 *self._build_quota_notice_messages(forced_final),
@@ -293,6 +297,8 @@ class AgentRunExecutor:
         artifact = None
         if isinstance(result, dict) and result.get("ok") and tool_name in ARTIFACT_TOOLS:
             artifact = self._maybe_persist_artifact(tool_name, arguments, result)
+        elif isinstance(result, dict) and result.get("ok") and tool_name == "search_textbook":
+            artifact = self._persist_search_textbook_index(arguments, result)
 
         model_result = self._build_model_tool_result(tool_name, result)
         self.run_service.emit_event(
@@ -320,9 +326,9 @@ class AgentRunExecutor:
         }
 
     def _maybe_persist_artifact(self, tool_name: str, arguments: dict[str, Any], result: dict[str, Any]):
-        """大段读结果落工件，并以描述符替换回灌内容，同步刷新 context pack。"""
+        """资源读结果落工件；仅大内容以描述符替换回灌内容，同步刷新 context pack。"""
         content = result.get("content")
-        if not isinstance(content, str) or len(content) < self.settings.agent_artifact_inline_threshold:
+        if not isinstance(content, str):
             return None
         title = AgentToolService.summarize_result(tool_name, result)
         preview = content[: self.settings.agent_artifact_preview_chars]
@@ -347,14 +353,56 @@ class AgentRunExecutor:
             )
             self.context_pack[artifact.id] = entry
             self._enforce_context_pack_capacity()
-        # 用描述符替换大字段
-        result["content"] = {
-            "artifact_id": artifact.id,
-            "total_chars": len(content),
-            "preview": preview,
-            "tool_hint": "完整内容已落入会话工件库，需要更长片段时调用 read_artifact(artifact_id, offset, length)",
-        }
         result["artifact_id"] = artifact.id
+        if len(content) >= self.settings.agent_artifact_inline_threshold:
+            # 大内容用描述符替换；短内容保留内联结果，但同样提供 artifact_id 支持跨 run 指代。
+            result["content"] = {
+                "artifact_id": artifact.id,
+                "total_chars": len(content),
+                "preview": preview,
+                "tool_hint": "完整内容已落入会话工件库，需要更长片段时调用 read_artifact(artifact_id, offset, length)",
+            }
+        return artifact
+
+    def _persist_search_textbook_index(self, arguments: dict[str, Any], result: dict[str, Any]):
+        """把教材检索命中关系持久化为轻量索引工件，不保存正文或命中窗口。"""
+        query = str(result.get("query") or arguments.get("query") or "").strip()
+        hits = []
+        for hit in result.get("hits") or []:
+            if not isinstance(hit, dict):
+                continue
+            hits.append(
+                {
+                    "rank": hit.get("rank"),
+                    "semantic_chunk_id": hit.get("semantic_chunk_id"),
+                    "page_start": hit.get("page_start"),
+                    "page_end": hit.get("page_end"),
+                    "chapter_node_id": hit.get("chapter_node_id"),
+                    "chapter_title": hit.get("chapter_title"),
+                    "chunk_no": hit.get("chunk_no"),
+                    "chunk_title": hit.get("chunk_title"),
+                    "score": hit.get("score"),
+                    "content_chars": hit.get("content_chars"),
+                    "is_truncated": hit.get("is_truncated"),
+                }
+            )
+        payload = {
+            "run_id": self.run.id,
+            "round_index": self.current_round,
+            "query": query,
+            "count": len(hits),
+            "hits": hits,
+        }
+        content_text = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+        title = f"教材检索：{query or '未命名查询'}（{len(hits)} 条）"
+        artifact = self.repository.create_or_reuse_artifact(
+            session_id=self.run.session_id,
+            source_tool=SEARCH_TEXTBOOK_INDEX_TOOL,
+            content_text=content_text,
+            title=title,
+            summary=content_text[: self.settings.agent_artifact_preview_chars],
+        )
+        self.db.commit()
         return artifact
 
     def _build_model_tool_result(self, tool_name: str, result: dict[str, Any]) -> dict[str, Any]:
@@ -400,6 +448,8 @@ class AgentRunExecutor:
             return
         artifacts = self.repository.list_active_artifacts(self.run.session_id)
         for artifact in artifacts:
+            if artifact.source_tool == SEARCH_TEXTBOOK_INDEX_TOOL:
+                continue
             entry = self.context_assembler.build_warm_start_entry(
                 artifact_id=artifact.id,
                 source_tool=artifact.source_tool,
@@ -436,6 +486,70 @@ class AgentRunExecutor:
         if not text:
             return []
         return [{"role": "system", "content": text}]
+
+    def _render_artifact_memory_messages(self) -> list[dict[str, Any]]:
+        """渲染会话历史资源工件目录与教材检索索引，支持跨 run 指代。"""
+        resource_artifacts = self.repository.list_recent_active_artifacts_by_source(
+            session_id=self.run.session_id,
+            source_tools=list(ARTIFACT_TOOLS),
+            limit=RESOURCE_MEMORY_LIMIT,
+        )
+        search_indexes = self.repository.list_recent_active_artifacts_by_source(
+            session_id=self.run.session_id,
+            source_tools=[SEARCH_TEXTBOOK_INDEX_TOOL],
+            limit=TEXTBOOK_SEARCH_MEMORY_LIMIT,
+        )
+        lines: list[str] = []
+        if resource_artifacts:
+            lines.append("[会话历史可回读资源]")
+            lines.append("用户提到“刚才那个教案/大纲”时，优先参考这些 artifact_id；需要全文可调用 read_artifact。")
+            for artifact in resource_artifacts:
+                lines.append(
+                    f"- artifact_id={artifact.id} | source_tool={artifact.source_tool} | "
+                    f"title={artifact.title or artifact.source_tool} | total_chars={len(artifact.content_text or '')} | "
+                    f"read_artifact({artifact.id}, offset, length)"
+                )
+        rendered_indexes = self._render_textbook_search_indexes(search_indexes)
+        if rendered_indexes:
+            if lines:
+                lines.append("")
+            lines.extend(rendered_indexes)
+        if not lines:
+            return []
+        return [{"role": "system", "content": "\n".join(lines)}]
+
+    def _render_textbook_search_indexes(self, search_indexes: list[Any]) -> list[str]:
+        """渲染最近教材检索索引，保留 rank 到 semantic_chunk_id 的映射。"""
+        if not search_indexes:
+            return []
+        lines = [
+            "[最近教材检索索引]",
+            "用户提到“刚才第 N 条/上次第 N 个结果”时，按最近一次检索的 rank 映射 semantic_chunk_id，"
+            "再调用 read_textbook_chunk(semantic_chunk_id, offset, length) 回读正文。",
+        ]
+        for artifact in search_indexes:
+            try:
+                payload = json.loads(artifact.content_text or "{}")
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(payload, dict):
+                continue
+            query = payload.get("query") or "未命名查询"
+            hits = payload.get("hits") if isinstance(payload.get("hits"), list) else []
+            lines.append(f"- search_index_artifact_id={artifact.id} | query={query} | count={len(hits)}")
+            for hit in hits:
+                if not isinstance(hit, dict):
+                    continue
+                title = hit.get("chunk_title") or hit.get("chapter_title") or "未命名片段"
+                page_start = hit.get("page_start")
+                page_end = hit.get("page_end")
+                page_text = f"{page_start}-{page_end}" if page_start != page_end else str(page_start)
+                lines.append(
+                    f"  rank={hit.get('rank')} -> semantic_chunk_id={hit.get('semantic_chunk_id')} | "
+                    f"pages={page_text} | title={title} | score={hit.get('score')} | "
+                    f"is_truncated={hit.get('is_truncated')}"
+                )
+        return lines if len(lines) > 2 else []
 
     # ------------------------------------------------------------------ #
     # 所在位置上下文
