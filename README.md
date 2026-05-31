@@ -140,6 +140,7 @@ Both backend and frontend provide `Dockerfile` entries for containerized deploym
 
 - [Technical Solution](docs/技术解决方案.md): overall design, key implementation paths, performance and engineering practices, innovation points, and applicable scenarios.
 - [Backend README](backend/README.md): environment variables, database initialization, multi-process startup, and runtime constraints.
+- [Contributing Guide](CONTRIBUTING.md): contribution workflow, local checks, and sensitive-file handling.
 
 ## Maintainers
 
