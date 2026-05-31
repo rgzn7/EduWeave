@@ -11,6 +11,8 @@ This document records the public maintainer roles and primary responsibilities f
 
 Note: `rgzn7` is the GitHub account of the project owner. The local author name `xisy` may appear in commit metadata or file headers for the same maintainer identity.
 
+Contribution visibility note: as of 2026-05-31, `sevzq` has authored work on the branches `codex-phase1-frontend-foundation` and `codex/frontend-updates-db-backup`, and at least one `sevzq` commit is present on `main`. Some branch work was integrated through a maintainer-led/non-standard flow, so GitHub's Contributors view may not show every original branch commit as part of the default branch history.
+
 ## Maintenance Scope
 
 - Frontend and backend feature maintenance and quality regression checks.
