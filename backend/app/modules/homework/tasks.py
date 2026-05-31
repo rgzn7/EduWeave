@@ -187,6 +187,11 @@ def run_generate_homework_task(payload: dict) -> dict[str, int | str]:
             task_repository.save(step)
         session.commit()
 
+        # 落库前整体删除本课已有作业（题目→作业→蓝图）。与下方新作业插入处于同一事务：
+        # 此前的校验/LLM 若失败均已抛错回滚、旧作业完好；走到这里说明新内容已就绪，
+        # 删除后让出 uk_homework_result_lesson 唯一槽位，实现「重新生成即完全覆盖旧作业」。
+        # 首次生成时本课无作业，删除为空操作，对正常路径无副作用。
+        repository.delete_homework_for_lesson(lesson_plan.id)
         homework_blueprint = repository.create_homework_blueprint(
             HomeworkBlueprint(
                 lesson_plan_id=lesson_plan.id,

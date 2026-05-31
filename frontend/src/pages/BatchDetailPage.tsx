@@ -12,6 +12,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { isTaskActiveStatus } from "../hooks/useTaskPolling";
 import { api } from "../lib/api";
 import { useAssistantStore } from "../stores/assistant";
@@ -468,8 +469,9 @@ export function BatchDetailPage() {
   // 记住最后一次有效选中的课次序号；列表刷新（如 Agent 新建版本换了 id）后据此按课次保持选中
   const lastSelectedSessionRef = useRef<number | null>(null);
   const [lessonDownloadId, setLessonDownloadId] = useState<number | null>(null);
-  const [homeworkDownloadId, setHomeworkDownloadId] = useState<number | null>(null);
   const [paperDownloadId, setPaperDownloadId] = useState<number | null>(null);
+  // 重新生成作业的二次确认弹窗开关
+  const [homeworkRegenConfirmOpen, setHomeworkRegenConfirmOpen] = useState(false);
 
   const batchQuery = useQuery({
     queryKey: ["generation-batch", batchId],
@@ -779,21 +781,20 @@ export function BatchDetailPage() {
     onSettled: () => setLessonDownloadId(null),
   });
 
-  const downloadHomework = useMutation({
-    mutationFn: async (homework: HomeworkResult) => {
-      setHomeworkDownloadId(homework.id);
-      const result = homework.export_file_id ? await api.getFileDownloadUrl(homework.export_file_id) : await api.exportHomeworkResultDocx(homework.id);
-      if (!result.signed_url) {
-        throw new Error("下载地址暂未准备好");
+  // 重新生成作业：教案大改后用于重出作业，成功后由后端整体覆盖旧作业
+  const regenerateHomework = useMutation({
+    mutationFn: () => {
+      if (!selectedLesson) {
+        throw new Error("请选择一课教案");
       }
-      return result.signed_url;
+      return api.createHomeworkTask(selectedLesson.id, { regenerate: true });
     },
-    onSuccess: (url, homework) => {
-      queryClient.invalidateQueries({ queryKey: ["homework-result", homework.id] });
+    onSuccess: () => {
+      setHomeworkRegenConfirmOpen(false);
+      queryClient.invalidateQueries({ queryKey: ["generation-batch", batchId] });
       queryClient.invalidateQueries({ queryKey: ["homework-results", batch?.id] });
-      window.open(url, "_blank", "noopener,noreferrer");
+      queryClient.invalidateQueries({ queryKey: ["coverage-reports", batch?.id] });
     },
-    onSettled: () => setHomeworkDownloadId(null),
   });
 
   const downloadCurriculum = useMutation({
@@ -908,7 +909,7 @@ export function BatchDetailPage() {
     : "学情材料同步中";
   const learnerProfileVersionId = batch.learner_profile_version_id;
   const coursewareGenerating = coursewareActive || createCourseware.isPending || retryCourseware.isPending;
-  const homeworkGenerating = homeworkActive || createHomework.isPending;
+  const homeworkGenerating = homeworkActive || createHomework.isPending || regenerateHomework.isPending;
   const coursewareStatusLabel = canDownloadPpt ? "PPT 已生成" : coursewareGenerating ? "PPT 生成中" : coursewareFailed ? "PPT 需重试" : "PPT 待生成";
   const homeworkStatusLabel = hasHomework ? "作业已生成" : homeworkGenerating ? "作业生成中" : homeworkFailed ? "作业需重试" : "作业待生成";
   const coursewareStatusTone: "muted" | "blue" | "success" | "danger" = canDownloadPpt
@@ -1053,12 +1054,12 @@ export function BatchDetailPage() {
                       </Link>
                       <button
                         className="btn btn-secondary rounded-full"
-                        disabled={homeworkDownloadId === selectedHomeworkResult.id}
-                        onClick={() => downloadHomework.mutate(selectedHomeworkResult)}
+                        disabled={!selectedLesson || homeworkGenerating}
+                        onClick={() => setHomeworkRegenConfirmOpen(true)}
                         type="button"
                       >
-                        <Download size={16} />
-                        {homeworkDownloadId === selectedHomeworkResult.id ? "准备下载" : "下载 DOCX"}
+                        {homeworkGenerating ? <Loader2 className="animate-spin" size={16} /> : <RefreshCw size={16} />}
+                        {homeworkGenerating ? "生成中" : "重新生成"}
                       </button>
                     </div>
                   ) : (
@@ -1075,7 +1076,7 @@ export function BatchDetailPage() {
                 </div>
               </div>
 
-              {(downloadLesson.error || downloadPpt.error || createCourseware.error || retryCourseware.error || createHomework.error || downloadHomework.error) ? (
+              {(downloadLesson.error || downloadPpt.error || createCourseware.error || retryCourseware.error || createHomework.error || regenerateHomework.error) ? (
                 <div className="mt-5">
                   <FriendlyNotice title="操作暂时没有完成" description="请稍后再试，页面会继续同步资源状态。" />
                 </div>
@@ -1245,6 +1246,22 @@ export function BatchDetailPage() {
       {(downloadCurriculum.error || batchQuery.error || lessonPlansQuery.error || coverageReportsQuery.error) ? (
         <FriendlyNotice title="部分资源仍在同步" description="可以稍后刷新页面，已有资源会继续显示在这里。" />
       ) : null}
+
+      <ConfirmDialog
+        confirmText="重新生成"
+        description={
+          <>
+            将基于当前教案重新生成本课作业，并<span className="font-semibold text-ink">完全覆盖现有作业</span>（旧题目不可恢复）。
+            适用于教案大改后旧作业不再贴合的情况。确定继续吗？
+          </>
+        }
+        loading={regenerateHomework.isPending}
+        onCancel={() => setHomeworkRegenConfirmOpen(false)}
+        onConfirm={() => regenerateHomework.mutate()}
+        open={homeworkRegenConfirmOpen}
+        title="重新生成课后作业"
+        tone="danger"
+      />
     </div>
   );
 }

@@ -4,7 +4,7 @@
 @Discription: 课后作业模块数据访问层
 """
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.core.constants import HOMEWORK_GENERATE_TASK_TYPE, HOMEWORK_MODULE_CODE, TASK_STATUS_SUCCESS
@@ -120,6 +120,24 @@ class HomeworkRepository:
         self.session.add_all(homework_questions)
         self.session.flush()
         return homework_questions
+
+    def delete_homework_for_lesson(self, lesson_plan_id: int) -> None:
+        """删除指定教案已有的全部课后作业（题目→作业→蓝图）。
+
+        用于重新生成时整体覆盖旧作业：作业表无外部表外键引用，且同一教案至多一份作业
+        （uk_homework_result_lesson），故按外键依赖逆序删除即可。flush 后让出唯一槽位，
+        供后续新版本作业插入，避免唯一键冲突。
+        """
+        self.session.execute(
+            delete(HomeworkQuestion).where(HomeworkQuestion.lesson_plan_id == lesson_plan_id)
+        )
+        self.session.execute(
+            delete(HomeworkResult).where(HomeworkResult.lesson_plan_id == lesson_plan_id)
+        )
+        self.session.execute(
+            delete(HomeworkBlueprint).where(HomeworkBlueprint.lesson_plan_id == lesson_plan_id)
+        )
+        self.session.flush()
 
     def get_success_homework_result_by_lesson(self, lesson_plan_id: int) -> HomeworkResult | None:
         """查询课次下已成功的作业结果。"""

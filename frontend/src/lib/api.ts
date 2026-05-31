@@ -322,10 +322,12 @@ export const api = {
       body: JSON.stringify(payload ?? {}),
     });
   },
-  createHomeworkTask(lessonPlanId: number) {
-    return request<Task>(`/api/v1/lesson-plans/${lessonPlanId}/homework-tasks`, {
-      method: "POST",
-    });
+  createHomeworkTask(lessonPlanId: number, options?: { regenerate?: boolean }) {
+    return request<Task>(
+      `/api/v1/lesson-plans/${lessonPlanId}/homework-tasks`,
+      { method: "POST" },
+      options?.regenerate ? { regenerate: true } : undefined,
+    );
   },
   getHomeworkResultByLesson(lessonPlanId: number) {
     return request<HomeworkResultDetail>(`/api/v1/lesson-plans/${lessonPlanId}/homework-result`);

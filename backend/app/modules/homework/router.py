@@ -36,18 +36,29 @@ def get_homework_service(session: Annotated[Session, Depends(get_db_session)]) -
 @router.post(
     "/lesson-plans/{lesson_plan_id}/homework-tasks",
     summary="创建课后作业生成任务",
-    description="为当前教师可见的教案创建课后作业生成任务，按教案知识点与教学内容生成 6 题练习；同一教案不可重复生成。",
+    description=(
+        "为当前教师可见的教案创建课后作业生成任务，按教案知识点与教学内容生成 6 题练习。\n\n"
+        "默认（regenerate=false）同一教案不可重复生成，已有成功作业时返回 409。\n\n"
+        "regenerate=true 为「重新生成」：教案大改后用于重出作业，生成成功后整体覆盖旧作业"
+        "（题目/作业/蓝图，不保留历史）；生成失败则保留原作业。无论是否重新生成，"
+        "当前教案已有运行中的作业生成任务时均返回 409。"
+    ),
     operation_id="homework_task_create",
     response_model=ApiResponse[TaskListItemResponse],
     status_code=status.HTTP_201_CREATED,
 )
 def create_homework_task(
     lesson_plan_id: int = Path(..., description="教案主键", examples=[1]),
+    regenerate: bool = Query(default=False, description="是否重新生成并覆盖旧作业", examples=[False]),
     service: Annotated[HomeworkService, Depends(get_homework_service)] = None,
     current_user: Annotated[SysUser, Depends(get_current_user)] = None,
 ):
     """创建课后作业生成任务。"""
-    task = service.create_homework_task(owner_user_id=current_user.id, lesson_plan_id=lesson_plan_id)
+    task = service.create_homework_task(
+        owner_user_id=current_user.id,
+        lesson_plan_id=lesson_plan_id,
+        regenerate=regenerate,
+    )
     return ResponseFactory.success(task.model_dump(mode="json"), "创建课后作业生成任务成功", status_code=status.HTTP_201_CREATED)
 
 

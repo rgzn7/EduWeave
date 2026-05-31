@@ -54,8 +54,13 @@ class HomeworkService:
         *,
         owner_user_id: int,
         lesson_plan_id: int,
+        regenerate: bool = False,
     ) -> TaskListItemResponse:
-        """按教案创建课后作业生成任务。"""
+        """按教案创建课后作业生成任务。
+
+        regenerate=True 时为「重新生成」：跳过「已存在成功作业」拦截，生成成功后由 worker
+        在同一事务内整体覆盖旧作业；仍保留「已有运行中任务」拦截以避免并发重复触发。
+        """
         lesson_plan = self.repository.get_lesson_plan_for_owner(lesson_plan_id, owner_user_id)
         if lesson_plan is None:
             raise AppException(BusinessErrorCode.LESSON_PLAN_NOT_FOUND, "教案不存在")
@@ -68,7 +73,8 @@ class HomeworkService:
         if generation_batch is None:
             raise AppException(BusinessErrorCode.GENERATION_BATCH_NOT_FOUND, "生成批次不存在")
 
-        if self.repository.get_success_homework_result_by_lesson(lesson_plan.id) is not None:
+        # 重新生成时允许覆盖既有成功作业，故跳过该拦截；防并发的运行中任务拦截始终保留
+        if not regenerate and self.repository.get_success_homework_result_by_lesson(lesson_plan.id) is not None:
             raise AppException(BusinessErrorCode.TASK_CONFLICT, "当前教案已存在成功的课后作业")
         if self.repository.get_active_homework_task(lesson_plan.id) is not None:
             raise AppException(BusinessErrorCode.TASK_CONFLICT, "当前教案已有运行中的作业生成任务")

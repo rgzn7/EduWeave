@@ -81,6 +81,75 @@ def test_homework_task_create_should_produce_per_lesson_result(
     assert duplicate_response.json()["errors"][0]["code"] == BusinessErrorCode.TASK_CONFLICT.value
 
 
+def test_homework_task_regenerate_should_overwrite_old_result(
+    client,
+    seeded_session_factory,
+    generation_test_stubs,
+) -> None:
+    """重新生成应覆盖旧作业：默认重复创建 409，regenerate=true 时替换为全新一份作业，旧记录清空。"""
+    _ = generation_test_stubs
+    headers = build_auth_headers(client)
+    project_id, knowledge_version_id, learner_profile_version_id = create_generation_baseline(client, headers)
+    batch_payload = create_generation_batch(client, headers, project_id, knowledge_version_id, learner_profile_version_id)
+    lesson_plan = _list_lesson_plans(client, headers, batch_payload["curriculum_plan_id"])[0]
+
+    first_response = client.post(
+        f"/api/v1/lesson-plans/{lesson_plan['id']}/homework-tasks",
+        headers=headers,
+    )
+    assert first_response.status_code == 201
+    first_result = first_response.json()["data"]["result_json"]
+    old_result_id = first_result["homework_result_id"]
+    old_blueprint_id = first_result["homework_blueprint_id"]
+
+    # 默认重复创建被拦截
+    duplicate_response = client.post(
+        f"/api/v1/lesson-plans/{lesson_plan['id']}/homework-tasks",
+        headers=headers,
+    )
+    assert duplicate_response.status_code == 409
+    assert duplicate_response.json()["errors"][0]["code"] == BusinessErrorCode.TASK_CONFLICT.value
+
+    # 重新生成：放行并整体覆盖旧作业
+    regenerate_response = client.post(
+        f"/api/v1/lesson-plans/{lesson_plan['id']}/homework-tasks?regenerate=true",
+        headers=headers,
+    )
+    assert regenerate_response.status_code == 201
+    new_result = regenerate_response.json()["data"]["result_json"]
+    new_result_id = new_result["homework_result_id"]
+    assert new_result_id != old_result_id
+    assert new_result["question_count"] == 6
+
+    # 按教案查询应只剩新作业一份
+    detail_response = client.get(
+        f"/api/v1/lesson-plans/{lesson_plan['id']}/homework-result",
+        headers=headers,
+    )
+    assert detail_response.status_code == 200
+    assert detail_response.json()["data"]["id"] == new_result_id
+
+    # 旧作业、旧蓝图及其题目应被删除，DB 中只保留新作业的 6 道题
+    session = seeded_session_factory()
+    try:
+        assert session.query(HomeworkResult).filter(HomeworkResult.id == old_result_id).one_or_none() is None
+        old_questions = (
+            session.query(HomeworkQuestion)
+            .filter(HomeworkQuestion.homework_result_id == old_result_id)
+            .count()
+        )
+        assert old_questions == 0
+        lesson_questions = (
+            session.query(HomeworkQuestion)
+            .filter(HomeworkQuestion.lesson_plan_id == lesson_plan["id"])
+            .count()
+        )
+        assert lesson_questions == 6
+    finally:
+        session.close()
+    _ = old_blueprint_id
+
+
 def test_homework_results_list_should_filter_by_curriculum_and_batch(
     client,
     generation_test_stubs,
