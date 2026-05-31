@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-29
+@Date: 2026-05-31
 @Author: xisy
 @Discription: 智能助手工具体系：教案读写、大纲读写、教材知识混合检索、工件回读
 """
@@ -14,11 +14,13 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.exceptions import AppException, BusinessErrorCode
+from app.modules.agent.context_pack import AgentContextAssembler
 from app.modules.agent.repository import AgentRepository
 from app.modules.agent.writers import CurriculumWriteService, LessonPlanWriteService
 from app.modules.auth.models import SysUser
 from app.modules.curriculum.repository import CurriculumRepository
 from app.modules.curriculum.schemas import CurriculumGenerationResult
+from app.modules.knowledge.repository import KnowledgeRepository
 from app.modules.lesson_plan.repository import LessonPlanRepository
 from app.modules.lesson_plan.schemas import LessonPlanGenerationResult
 from app.schemas.base import BaseSchema
@@ -28,12 +30,15 @@ from app.shared.vector import MilvusVectorService
 # 工具结果中需要落工件的「大字段」名
 LARGE_RESULT_FIELD = "content"
 # 工具结果落工件的来源工具集合（read 类）
-ARTIFACT_SOURCE_TOOLS = frozenset({"read_lesson_plan", "read_outline", "search_textbook"})
+ARTIFACT_SOURCE_TOOLS = frozenset({"read_lesson_plan", "read_outline"})
 # 写工具触发失效的同源读工件来源
 WRITE_SUPERSEDE_RULES: dict[str, list[str]] = {
     "write_lesson_plan": ["read_lesson_plan", "list_lessons"],
     "write_outline": ["read_outline"],
 }
+TEXTBOOK_SNIPPET_MAX_PASSAGES = 3
+TEXTBOOK_READ_DEFAULT_LENGTH = 4000
+TEXTBOOK_READ_MAX_LENGTH = 20000
 
 
 def _inline_json_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
@@ -199,7 +204,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "function": {
             "name": "search_textbook",
             "description": (
-                "在本项目教材语义块中做混合检索（BM25 + 稠密向量，RRF 重排），用于回答教材知识相关问题或为修改提供依据。"
+                "在本项目教材语义块中做混合检索（BM25 + 稠密向量，RRF 重排），返回相关语义块索引与命中窗口。"
+                "当命中窗口被截断、需要逐字引用或要据此修改资源时，继续调用 read_textbook_chunk 读取完整语义块。"
             ),
             "parameters": {
                 "type": "object",
@@ -208,6 +214,26 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     "top_k": {"type": "integer", "description": "返回条数，默认 6"},
                 },
                 "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_textbook_chunk",
+            "description": (
+                "按 semantic_chunk_id 从 MySQL 回读教材语义块正文片段。"
+                "用于 search_textbook 命中被截断、需要精确引用或需要完整教材依据时。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "semantic_chunk_id": {"type": "integer", "description": "教材语义块主键"},
+                    "offset": {"type": "integer", "description": "起始字符偏移，默认 0"},
+                    "length": {"type": "integer", "description": "读取长度，默认 4000，最大 20000"},
+                },
+                "required": ["semantic_chunk_id"],
                 "additionalProperties": False,
             },
         },
@@ -251,6 +277,7 @@ class AgentToolService:
         self.agent_repository = AgentRepository(db)
         self.lesson_repository = LessonPlanRepository(db)
         self.curriculum_repository = CurriculumRepository(db)
+        self.knowledge_repository = KnowledgeRepository(db)
         self.lesson_writer = LessonPlanWriteService(db, self.lesson_repository)
         self.curriculum_writer = CurriculumWriteService(db, self.curriculum_repository)
 
@@ -286,6 +313,7 @@ class AgentToolService:
             "read_outline": self._read_outline,
             "write_outline": self._write_outline,
             "search_textbook": self._search_textbook,
+            "read_textbook_chunk": self._read_textbook_chunk,
             "read_artifact": self._read_artifact,
         }
         handler = handlers.get(tool_name)
@@ -427,6 +455,76 @@ class AgentToolService:
                 "未指定课次，且当前不在任何课次教案上下文，请提供 class_session_no",
             )
         return int(value)
+
+    def _require_positive_int_argument(self, arguments: dict[str, Any], key: str, label: str) -> int:
+        """读取必填正整数工具参数。"""
+        value = arguments.get(key)
+        if value is None:
+            raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, f"缺少 {label}")
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, f"{label} 必须为正整数") from exc
+        if parsed <= 0:
+            raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, f"{label} 必须为正整数")
+        return parsed
+
+    def _resolve_read_window(self, arguments: dict[str, Any]) -> tuple[int, int]:
+        """解析片段读取窗口参数。"""
+        try:
+            offset = int(arguments.get("offset") or 0)
+            length = int(arguments.get("length") or TEXTBOOK_READ_DEFAULT_LENGTH)
+        except (TypeError, ValueError) as exc:
+            raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "offset 与 length 必须为整数") from exc
+        offset = max(0, offset)
+        length = max(1, min(length, TEXTBOOK_READ_MAX_LENGTH))
+        return offset, length
+
+    def _ensure_textbook_context(self) -> tuple[int | None, int | None]:
+        """校验当前运行具备教材范围，并返回项目/知识版本过滤条件。"""
+        if self.knowledge_version_id is None and self.project_id is None:
+            raise AppException(
+                BusinessErrorCode.KNOWLEDGE_VERSION_NOT_FOUND,
+                "当前缺少项目/知识版本上下文，无法读取教材",
+            )
+        project_id = int(self.project_id) if self.project_id is not None else None
+        knowledge_version_id = int(self.knowledge_version_id) if self.knowledge_version_id is not None else None
+        return project_id, knowledge_version_id
+
+    def _build_textbook_snippets(self, content: str, query: str) -> list[dict[str, Any]]:
+        """按检索词从教材正文中抽取 1-3 个自然边界窗口。"""
+        normalized_content = content or ""
+        if not normalized_content:
+            return []
+        assembler = AgentContextAssembler(self.settings)
+        terms = assembler.extract_query_terms(query)
+        snippets = assembler.find_key_passages(
+            normalized_content,
+            terms,
+            max_passages=TEXTBOOK_SNIPPET_MAX_PASSAGES,
+            passage_chars=self.settings.agent_context_pack_passage_chars,
+        )
+        if not snippets:
+            head_len = min(len(normalized_content), self.settings.agent_context_pack_passage_chars)
+            snippets = [{"offset": 0, "length": head_len, "text": normalized_content[:head_len], "score": 0.0}]
+        return [
+            {
+                "offset": int(snippet["offset"]),
+                "length": int(snippet["length"]),
+                "text": str(snippet["text"]),
+                "score": float(snippet.get("score") or 0.0),
+            }
+            for snippet in snippets
+        ]
+
+    @staticmethod
+    def _is_textbook_hit_truncated(snippets: list[dict[str, Any]], total_chars: int) -> bool:
+        """判断检索命中窗口是否只是正文的部分视图。"""
+        return not (
+            len(snippets) == 1
+            and int(snippets[0].get("offset") or 0) == 0
+            and int(snippets[0].get("length") or 0) >= total_chars
+        )
 
     # ------------------------------------------------------------------ #
     # 教案
@@ -592,54 +690,130 @@ class AgentToolService:
     # 教材知识检索
     # ------------------------------------------------------------------ #
     def _search_textbook(self, arguments: dict[str, Any]) -> dict[str, Any]:
-        """教材语义块混合检索。"""
+        """教材语义块混合检索：Milvus 召回，MySQL 回源构造命中窗口。"""
         query = str(arguments.get("query") or "").strip()
         if not query:
             raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "检索问题不能为空")
-        if self.knowledge_version_id is None and self.project_id is None:
-            raise AppException(
-                BusinessErrorCode.KNOWLEDGE_VERSION_NOT_FOUND,
-                "当前缺少项目/知识版本上下文，无法检索教材",
-            )
+        project_id, knowledge_version_id = self._ensure_textbook_context()
         top_k = int(arguments.get("top_k") or self.settings.agent_textbook_top_k)
         top_k = max(1, min(top_k, 20))
 
-        if self.knowledge_version_id is not None:
-            filter_expression = f"knowledge_version_id == {int(self.knowledge_version_id)}"
+        if knowledge_version_id is not None:
+            filter_expression = f"knowledge_version_id == {knowledge_version_id}"
         else:
-            filter_expression = f"project_id == {int(self.project_id)}"
+            filter_expression = f"project_id == {project_id}"
 
         embedding_service = OpenAICompatibleEmbeddingService(settings=self.settings)
         query_vector = embedding_service.embed_texts([query])[0]
         vector_service = MilvusVectorService(settings=self.settings)
-        hits = vector_service.hybrid_search_vectors(
+        vector_hits = vector_service.hybrid_search_vectors(
             "semantic_chunk_vector",
             query_vector=query_vector,
             query_text=query,
             limit=top_k,
             filter_expression=filter_expression,
         )
-        hit_items = [
-            {
-                "rank": index + 1,
-                "score": round(hit.score, 4),
-                "page_start": hit.page_start,
-                "page_end": hit.page_end,
-                "chapter_node_id": hit.chapter_node_id,
-                "content": (hit.content or "").strip(),
-            }
-            for index, hit in enumerate(hits)
-        ]
-        rendered = "\n\n".join(
-            f"[命中 {item['rank']} | 第{item['page_start']}-{item['page_end']}页 | score={item['score']}]\n{item['content']}"
-            for item in hit_items
+
+        hit_by_chunk_id: dict[int, Any] = {}
+        ordered_chunk_ids: list[int] = []
+        for hit in vector_hits:
+            semantic_chunk_id = hit.semantic_chunk_id
+            if semantic_chunk_id is None:
+                continue
+            chunk_id = int(semantic_chunk_id)
+            if chunk_id in hit_by_chunk_id:
+                continue
+            hit_by_chunk_id[chunk_id] = hit
+            ordered_chunk_ids.append(chunk_id)
+
+        chunks = self.knowledge_repository.list_semantic_chunks_by_ids_for_owner(
+            ordered_chunk_ids,
+            self.current_user.id,
+            project_id=project_id,
+            knowledge_version_id=knowledge_version_id,
         )
+        chunk_by_id = {int(chunk.id): chunk for chunk in chunks}
+        chapter_ids = [
+            int(chunk.chapter_node_id)
+            for chunk in chunks
+            if getattr(chunk, "chapter_node_id", None) is not None
+        ]
+        chapters = self.knowledge_repository.list_chapter_nodes_by_ids(chapter_ids)
+        chapter_by_id = {int(chapter.id): chapter for chapter in chapters}
+
+        hit_items: list[dict[str, Any]] = []
+        for chunk_id in ordered_chunk_ids:
+            chunk = chunk_by_id.get(chunk_id)
+            if chunk is None:
+                # Milvus 索引可能滞后于 MySQL 事实源，跳过不可回源命中。
+                continue
+            content = chunk.chunk_text or ""
+            snippets = self._build_textbook_snippets(content, query)
+            chapter = chapter_by_id.get(int(chunk.chapter_node_id)) if chunk.chapter_node_id is not None else None
+            hit_items.append(
+                {
+                    "rank": len(hit_items) + 1,
+                    "semantic_chunk_id": chunk.id,
+                    "score": round(hit_by_chunk_id[chunk_id].score, 4),
+                    "page_start": chunk.page_start,
+                    "page_end": chunk.page_end,
+                    "chapter_node_id": chunk.chapter_node_id,
+                    "chapter_title": chapter.title if chapter is not None else None,
+                    "chunk_no": chunk.chunk_no,
+                    "chunk_title": chunk.chunk_title,
+                    "content_chars": len(content),
+                    "is_truncated": self._is_textbook_hit_truncated(snippets, len(content)),
+                    "snippets": snippets,
+                    "read_hint": (
+                        "需要完整语义块时调用 "
+                        f"read_textbook_chunk(semantic_chunk_id={chunk.id}, offset=0, length={TEXTBOOK_READ_DEFAULT_LENGTH})"
+                    ),
+                }
+            )
+
         return {
             "ok": True,
             "query": query,
             "count": len(hit_items),
             "hits": hit_items,
-            "content": rendered,
+        }
+
+    def _read_textbook_chunk(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """按 semantic_chunk_id 从 MySQL 回读教材语义块正文片段。"""
+        semantic_chunk_id = self._require_positive_int_argument(arguments, "semantic_chunk_id", "semantic_chunk_id")
+        project_id, knowledge_version_id = self._ensure_textbook_context()
+        chunk = self.knowledge_repository.get_semantic_chunk_for_owner(
+            semantic_chunk_id,
+            self.current_user.id,
+            project_id=project_id,
+            knowledge_version_id=knowledge_version_id,
+        )
+        if chunk is None:
+            raise AppException(BusinessErrorCode.KNOWLEDGE_VERSION_NOT_FOUND, "教材语义块不存在或无权访问")
+
+        content = chunk.chunk_text or ""
+        if not content:
+            raise AppException(BusinessErrorCode.LLM_RESULT_INVALID, "教材语义块正文为空")
+        offset, length = self._resolve_read_window(arguments)
+        chunk_text = content[offset : offset + length]
+        chapter = None
+        if chunk.chapter_node_id is not None:
+            chapters = self.knowledge_repository.list_chapter_nodes_by_ids([int(chunk.chapter_node_id)])
+            chapter = chapters[0] if chapters else None
+        return {
+            "ok": True,
+            "semantic_chunk_id": chunk.id,
+            "page_start": chunk.page_start,
+            "page_end": chunk.page_end,
+            "chapter_node_id": chunk.chapter_node_id,
+            "chapter_title": chapter.title if chapter is not None else None,
+            "chunk_no": chunk.chunk_no,
+            "chunk_title": chunk.chunk_title,
+            "offset": offset,
+            "returned_chars": len(chunk_text),
+            "total_chars": len(content),
+            "is_truncated": offset + length < len(content),
+            "content": chunk_text,
         }
 
     # ------------------------------------------------------------------ #
@@ -704,6 +878,8 @@ class AgentToolService:
             return f"第 {result.get('class_session_no')} 课次教案（v{result.get('version_no')}）"
         if tool_name == "read_outline":
             return f"大纲《{result.get('plan_title')}》（v{result.get('version_no')}）"
+        if tool_name == "read_textbook_chunk":
+            return f"读取教材语义块 {result.get('semantic_chunk_id')} 的 {result.get('returned_chars')} 字"
         if tool_name == "read_artifact":
             return f"读取工件 {result.get('artifact_id')} 的 {result.get('returned_chars')} 字"
         return "完成"

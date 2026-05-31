@@ -1,5 +1,5 @@
 """
-@Date: 2026-04-30
+@Date: 2026-05-31
 @Author: xisy
 @Discription: 知识结构化模块数据访问层
 """
@@ -183,6 +183,69 @@ class KnowledgeRepository:
             .where(SemanticChunk.knowledge_version_id == knowledge_version_id)
             .order_by(SemanticChunk.chunk_no.asc(), SemanticChunk.id.asc())
         )
+        return list(self.session.scalars(statement))
+
+    def list_semantic_chunks_by_ids_for_owner(
+        self,
+        semantic_chunk_ids: list[int],
+        owner_user_id: int,
+        *,
+        project_id: int | None = None,
+        knowledge_version_id: int | None = None,
+    ) -> list[SemanticChunk]:
+        """按主键列表查询当前教师可见的教材语义块，并可限制项目或知识版本范围。"""
+        unique_ids: list[int] = []
+        seen_ids: set[int] = set()
+        for chunk_id in semantic_chunk_ids:
+            parsed_id = int(chunk_id)
+            if parsed_id <= 0 or parsed_id in seen_ids:
+                continue
+            seen_ids.add(parsed_id)
+            unique_ids.append(parsed_id)
+        if not unique_ids:
+            return []
+        statement = (
+            select(SemanticChunk)
+            .join(Project, Project.id == SemanticChunk.project_id)
+            .where(SemanticChunk.id.in_(unique_ids), Project.owner_user_id == owner_user_id)
+        )
+        if project_id is not None:
+            statement = statement.where(SemanticChunk.project_id == project_id)
+        if knowledge_version_id is not None:
+            statement = statement.where(SemanticChunk.knowledge_version_id == knowledge_version_id)
+        statement = statement.order_by(SemanticChunk.id.asc())
+        return list(self.session.scalars(statement))
+
+    def get_semantic_chunk_for_owner(
+        self,
+        semantic_chunk_id: int,
+        owner_user_id: int,
+        *,
+        project_id: int | None = None,
+        knowledge_version_id: int | None = None,
+    ) -> SemanticChunk | None:
+        """查询当前教师可见的单个教材语义块。"""
+        chunks = self.list_semantic_chunks_by_ids_for_owner(
+            [semantic_chunk_id],
+            owner_user_id,
+            project_id=project_id,
+            knowledge_version_id=knowledge_version_id,
+        )
+        return chunks[0] if chunks else None
+
+    def list_chapter_nodes_by_ids(self, chapter_node_ids: list[int]) -> list[ChapterNode]:
+        """按主键列表查询章节节点。"""
+        unique_ids: list[int] = []
+        seen_ids: set[int] = set()
+        for node_id in chapter_node_ids:
+            parsed_id = int(node_id)
+            if parsed_id <= 0 or parsed_id in seen_ids:
+                continue
+            seen_ids.add(parsed_id)
+            unique_ids.append(parsed_id)
+        if not unique_ids:
+            return []
+        statement = select(ChapterNode).where(ChapterNode.id.in_(unique_ids)).order_by(ChapterNode.id.asc())
         return list(self.session.scalars(statement))
 
     def count_chapter_nodes(self, knowledge_version_id: int) -> int:

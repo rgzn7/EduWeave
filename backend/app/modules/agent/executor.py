@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-29
+@Date: 2026-05-31
 @Author: xisy
 @Discription: 智能助手运行执行器：组装上下文、驱动 LLM 工具循环、写入透明事件
 """
@@ -362,16 +362,7 @@ class AgentRunExecutor:
         if not isinstance(result, dict):
             return {"ok": False, "error": "invalid_result"}
         if tool_name == "search_textbook" and result.get("ok"):
-            compact = {key: value for key, value in result.items() if key != "content"}
-            trimmed_hits = []
-            for hit in result.get("hits") or []:
-                hit_copy = dict(hit)
-                hit_content = hit_copy.get("content")
-                if isinstance(hit_content, str) and len(hit_content) > 800:
-                    hit_copy["content"] = hit_content[:800] + "…"
-                trimmed_hits.append(hit_copy)
-            compact["hits"] = trimmed_hits
-            return compact
+            return {key: value for key, value in result.items() if key != "content"}
         return result
 
     def _handle_write_supersede(self, tool_name: str, result: dict[str, Any]) -> None:
