@@ -36,7 +36,6 @@ def build_location_context_text(
     lesson_title: str | None,
 ) -> str | None:
     """构建「所在位置」上下文描述：课次/大纲上下文优先；仅项目范围时给出项目级提示。"""
-    # 单项目模式：无课次/大纲上下文，仅锁定项目范围
     if curriculum_plan_id is None and class_session_no is None:
         if project_id is None:
             return None

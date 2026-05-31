@@ -1,7 +1,7 @@
 """
-@Date: 2026-05-29
+@Date: 2026-05-31
 @Author: xisy
-@Discription: 运行内长上下文装配器：把大段工件结构化为可继续推理的 run-local context pack
+@Discription: 运行内长上下文装配器：把大段工件结构化为 run-local context pack
 """
 
 from __future__ import annotations
@@ -11,7 +11,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-# 关键词检索停用词：高频虚词与指令词，命中无区分度
 _QUERY_STOPWORDS = frozenset(
     {
         "的", "了", "是", "在", "和", "与", "及", "或", "我", "你", "他", "她", "它",
@@ -22,8 +21,6 @@ _QUERY_STOPWORDS = frozenset(
         "be", "with", "as", "at", "by", "it", "this", "that", "please", "help",
     }
 )
-
-# 句子边界字符：把关键段落窗口吸附到自然边界
 _SENTENCE_BOUNDARY_CHARS = "。！？!?\n；;"
 _SENTENCE_SNAP_RANGE = 60
 _EN_WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]+")
@@ -32,17 +29,13 @@ _CJK_RUN_RE = re.compile("[一-鿿]+")
 
 @dataclass
 class ContextPackEntry:
-    """单个工件在 run-local context pack 中的结构化摘要。
-
-    context pack 是 Run 内存态、不落库；事实记忆仍由 agent_artifact 工件库承担。
-    本条目把工件全文压缩成「便于继续推理」的结构化视图。
-    """
+    """单个工件在 run-local context pack 中的结构化摘要。"""
 
     artifact_id: int
     source_tool: str
     title: str
     total_chars: int
-    digest_kind: str  # lesson_plan | outline | textbook | generic
+    digest_kind: str
     source_arguments: dict = field(default_factory=dict)
     key_passages: list[dict] = field(default_factory=list)
     structure_lines: list[str] = field(default_factory=list)
@@ -51,17 +44,11 @@ class ContextPackEntry:
 
 
 class AgentContextAssembler:
-    """长上下文装配器：把工件全文构造成适合继续推理的结构化 context pack 条目。
-
-    纯关键词检索，零外部依赖；所有方法对输入是确定性的。
-    """
+    """长上下文装配器：把工件全文构造成适合继续推理的结构化条目。"""
 
     def __init__(self, settings: Any) -> None:
         self.settings = settings
 
-    # ------------------------------------------------------------------ #
-    # 关键词检索
-    # ------------------------------------------------------------------ #
     def extract_query_terms(self, prompt: str) -> list[str]:
         """从用户问题抽取检索关键词：英文单词 + 中文整串/3-gram/2-gram，去停用词。"""
         text = (prompt or "").strip()
@@ -97,7 +84,7 @@ class AgentContextAssembler:
         max_passages: int,
         passage_chars: int,
     ) -> list[dict]:
-        """滑动窗口按关键词命中打分，返回 top-K 非重叠关键段落（含 offset）。"""
+        """滑动窗口按关键词命中打分，返回 top-K 非重叠关键段落。"""
         if not content or not terms or max_passages <= 0:
             return []
         lowered = content.lower()
@@ -159,9 +146,6 @@ class AgentContextAssembler:
             return start, end
         return snapped_start, snapped_end
 
-    # ------------------------------------------------------------------ #
-    # 条目装配
-    # ------------------------------------------------------------------ #
     def build_entry(
         self,
         *,
@@ -275,9 +259,6 @@ class AgentContextAssembler:
                 lines.append(f"课次 {session.get('session_no')}：{session.get('title')}")
         return lines
 
-    # ------------------------------------------------------------------ #
-    # 渲染
-    # ------------------------------------------------------------------ #
     def render(self, entries: list[ContextPackEntry], *, budget_chars: int) -> str:
         """把 context pack 条目渲染为单条 system 消息文本，超预算逐级降级。"""
         if not entries:

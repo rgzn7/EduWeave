@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-30
+@Date: 2026-05-31
 @Author: xisy
 @Discription: Milvus 向量服务测试
 """
@@ -18,9 +18,13 @@ class FakeSchema:
 
     def __init__(self) -> None:
         self.fields: list[dict[str, Any]] = []
+        self.functions: list[Any] = []
 
     def add_field(self, **kwargs) -> None:
         self.fields.append(kwargs)
+
+    def add_function(self, function: Any) -> None:
+        self.functions.append(function)
 
 
 class FakeIndexParams:

@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-29
+@Date: 2026-05-31
 @Author: xisy
 @Discription: 智能助手工具守护单元测试：同参重复熔断、配额终结态、read-before-write 硬约束、结构化拒绝
 """
@@ -9,8 +9,10 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.config import get_settings
-from app.modules.agent.executor import AgentRunExecutor
-from app.modules.agent.tools import AgentToolService
+from app.modules.agent.runtime.guard import AgentToolCallGuard
+from app.modules.agent.tools.context import AgentToolContext
+from app.modules.agent.tools.lesson import LessonAgentTool
+from app.modules.agent.tools.registry import AgentToolRegistry
 
 
 class _StubToolService:
@@ -28,81 +30,74 @@ def _make_executor(
     max_tool_calls: int = 40,
     repeated_limit: int = 3,
     tool_service: _StubToolService | None = None,
-) -> AgentRunExecutor:
-    """绕过 __init__ 构造执行器，仅注入守护逻辑所需的最小状态。"""
-    executor = object.__new__(AgentRunExecutor)
+) -> AgentToolCallGuard:
+    """构造工具调用守护器，仅注入守护逻辑所需的最小状态。"""
     settings = get_settings().model_copy(
         update={
             "agent_max_tool_calls": max_tool_calls,
             "agent_repeated_tool_call_limit": repeated_limit,
         }
     )
-    executor.settings = settings
-    executor.tool_call_count = 0
-    executor.tool_signature_counts = {}
-    executor.tool_quota_exhausted_reason = None
-    executor._quota_notice_emitted = False
-    executor.tool_service = tool_service or _StubToolService()
-    return executor
+    return AgentToolCallGuard(settings, tool_service or _StubToolService())
 
 
 def test_repeated_tool_call_blocked_after_limit() -> None:
     """同参连续调用超过上限后熔断，但不进入终结态（should_finalize=False）。"""
-    executor = _make_executor(repeated_limit=3)
+    guard = _make_executor(repeated_limit=3)
     args = {"query": "名词复数"}
 
     # 前 3 次放行
     for _ in range(3):
-        assert executor._record_tool_call("search_textbook", args) is None
-    assert executor.tool_call_count == 3
+        assert guard.record_tool_call("search_textbook", args) is None
+    assert guard.tool_call_count == 3
 
     # 第 4 次同参被熔断
-    blocked = executor._record_tool_call("search_textbook", args)
+    blocked = guard.record_tool_call("search_textbook", args)
     assert blocked is not None
     assert blocked["error_code"] == "repeated_tool_call_blocked"
     assert blocked["should_finalize"] is False
     assert blocked["ok"] is False
     # 熔断不消耗配额、不进入终结态
-    assert executor.tool_call_count == 3
-    assert executor.tool_quota_exhausted_reason is None
+    assert guard.tool_call_count == 3
+    assert guard.tool_quota_exhausted_reason is None
 
     # 换参数后继续放行
-    assert executor._record_tool_call("search_textbook", {"query": "时态"}) is None
-    assert executor.tool_call_count == 4
+    assert guard.record_tool_call("search_textbook", {"query": "时态"}) is None
+    assert guard.tool_call_count == 4
 
 
 def test_max_tool_calls_triggers_finalize() -> None:
     """累计调用达到上限后触发终结态，后续一律拒绝并要求收尾。"""
-    executor = _make_executor(max_tool_calls=2, repeated_limit=99)
+    guard = _make_executor(max_tool_calls=2, repeated_limit=99)
 
-    assert executor._record_tool_call("list_lessons", {"curriculum_plan_id": 1}) is None
-    assert executor._record_tool_call("list_lessons", {"curriculum_plan_id": 2}) is None
-    assert executor.tool_call_count == 2
+    assert guard.record_tool_call("list_lessons", {"curriculum_plan_id": 1}) is None
+    assert guard.record_tool_call("list_lessons", {"curriculum_plan_id": 2}) is None
+    assert guard.tool_call_count == 2
 
-    blocked = executor._record_tool_call("list_lessons", {"curriculum_plan_id": 3})
+    blocked = guard.record_tool_call("list_lessons", {"curriculum_plan_id": 3})
     assert blocked["error_code"] == "max_tool_calls_reached"
     assert blocked["should_finalize"] is True
-    assert executor.tool_quota_exhausted_reason is not None
+    assert guard.tool_quota_exhausted_reason is not None
 
     # 终结态下任何工具都被拒为 tool_quota_exhausted
-    again = executor._record_tool_call("search_textbook", {"query": "x"})
+    again = guard.record_tool_call("search_textbook", {"query": "x"})
     assert again["error_code"] == "tool_quota_exhausted"
     assert again["should_finalize"] is True
 
 
 def test_quota_notice_emitted_once() -> None:
     """终结态首轮注入一次性收尾通知，后续轮次不再重复。"""
-    executor = _make_executor()
+    guard = _make_executor()
     # 未进入终结态：不注入
-    assert executor._build_quota_notice_messages(forced_final=False) == []
+    assert guard.build_quota_notice_messages(forced_final=False) == []
 
-    executor._trigger_final_round("已达到本次运行最大工具调用次数")
-    first = executor._build_quota_notice_messages(forced_final=True)
+    guard.trigger_final_round("已达到本次运行最大工具调用次数")
+    first = guard.build_quota_notice_messages(forced_final=True)
     assert len(first) == 1
     assert first[0]["role"] == "system"
     assert "收尾" in first[0]["content"]
     # 再次调用不重复注入
-    assert executor._build_quota_notice_messages(forced_final=True) == []
+    assert guard.build_quota_notice_messages(forced_final=True) == []
 
 
 def test_read_before_write_block_does_not_consume_quota() -> None:
@@ -113,14 +108,14 @@ def test_read_before_write_block_does_not_consume_quota() -> None:
         "should_finalize": False,
         "message": "写入前必须先 read",
     }
-    executor = _make_executor(tool_service=_StubToolService(block=block))
+    guard = _make_executor(tool_service=_StubToolService(block=block))
 
-    result = executor._record_tool_call("write_lesson_plan", {"content_json": {}})
+    result = guard.record_tool_call("write_lesson_plan", {"content_json": {}})
     assert result is block
     # 不消耗配额、不计入签名、不终结
-    assert executor.tool_call_count == 0
-    assert executor.tool_signature_counts == {}
-    assert executor.tool_quota_exhausted_reason is None
+    assert guard.tool_call_count == 0
+    assert guard.tool_signature_counts == {}
+    assert guard.tool_quota_exhausted_reason is None
 
 
 class _StubLessonWriter:
@@ -148,19 +143,19 @@ def _make_tool_service(
     curriculum_plan_id: int,
     session_no: int,
     existing_lesson: Any = _EXISTING_LESSON,
-) -> AgentToolService:
+) -> AgentToolRegistry:
     """绕过 __init__ 构造工具服务，仅注入 read-before-write 校验所需状态。
 
     existing_lesson 默认非 None（已有存量教案），传 None 模拟首次新建场景。
     """
-    service = object.__new__(AgentToolService)
-    service.curriculum_plan_id = curriculum_plan_id
-    service.default_session_no = session_no
-    service.read_lesson_targets = set()
-    service.read_outline_targets = set()
-    service.lesson_writer = _StubLessonWriter(existing_lesson)
-    service.current_user = _StubUser()
-    return service
+    context = object.__new__(AgentToolContext)
+    context.curriculum_plan_id = curriculum_plan_id
+    context.default_session_no = session_no
+    context.read_lesson_targets = set()
+    context.read_outline_targets = set()
+    context.lesson_writer = _StubLessonWriter(existing_lesson)
+    context.current_user = _StubUser()
+    return AgentToolRegistry(tool_context=context)
 
 
 def test_check_write_precondition_lesson_plan() -> None:
@@ -175,7 +170,7 @@ def test_check_write_precondition_lesson_plan() -> None:
     assert "llm_instruction" in blocked
 
     # 标记已读同目标后放行
-    service.read_lesson_targets.add((10, 2))
+    service.context.read_lesson_targets.add((10, 2))
     assert service.check_write_precondition("write_lesson_plan", {"content_json": {}}) is None
 
 
@@ -193,7 +188,7 @@ def test_check_write_precondition_outline() -> None:
     assert blocked is not None
     assert blocked["error_code"] == "read_before_write_required"
 
-    service.read_outline_targets.add(10)
+    service.context.read_outline_targets.add(10)
     assert service.check_write_precondition("write_outline", {"content_json": {}}) is None
 
 
@@ -235,14 +230,15 @@ def test_read_lesson_plan_backfills_summary_text() -> None:
     使读出内容与写入 schema 同构，避免 Agent 整体回写丢失教案概述。"""
     import json
 
-    service = object.__new__(AgentToolService)
-    service.curriculum_plan_id = 10
-    service.default_session_no = 2
-    service.read_lesson_targets = set()
-    service.current_user = _StubUser()
-    service.lesson_writer = _ReadStubLessonWriter(_StubLessonPlan())
+    context = object.__new__(AgentToolContext)
+    context.curriculum_plan_id = 10
+    context.default_session_no = 2
+    context.read_lesson_targets = set()
+    context.current_user = _StubUser()
+    context.lesson_writer = _ReadStubLessonWriter(_StubLessonPlan())
+    service = LessonAgentTool(context)
 
-    result = service._read_lesson_plan({"curriculum_plan_id": 10, "class_session_no": 2})
+    result = service.read_lesson_plan({"curriculum_plan_id": 10, "class_session_no": 2})
     content = json.loads(result["content"])
 
     # 关键回归点：summary_text 必须出现在回灌给模型的 content 中
@@ -251,4 +247,4 @@ def test_read_lesson_plan_backfills_summary_text() -> None:
     # 概述额外键随原 content_json 一并保留
     assert content["course_overview"]["teaching_style"] == "情境"
     # 已读目标被记录，供后续 write 前置校验放行
-    assert (10, 2) in service.read_lesson_targets
+    assert (10, 2) in context.read_lesson_targets

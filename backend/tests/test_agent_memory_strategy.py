@@ -10,8 +10,8 @@ import json
 from typing import Any
 
 from app.core.config import get_settings
-from app.modules.agent.context_pack import AgentContextAssembler
-from app.modules.agent.executor import AgentRunExecutor, SEARCH_TEXTBOOK_INDEX_TOOL
+from app.modules.agent.memory.artifacts import AgentArtifactMemoryService, SEARCH_TEXTBOOK_INDEX_TOOL
+from app.modules.agent.memory.context_pack import AgentContextAssembler
 
 
 class _FakeArtifact:
@@ -88,41 +88,57 @@ class _FakeRun:
     session_id = 99
 
 
-def _make_executor(*, threshold: int = 2000, artifacts: list[_FakeArtifact] | None = None) -> AgentRunExecutor:
-    """绕过 __init__ 构造工件策略测试所需的执行器。"""
-    executor = object.__new__(AgentRunExecutor)
-    executor.settings = get_settings().model_copy(update={"agent_artifact_inline_threshold": threshold})
-    executor.repository = _FakeRepository(artifacts)
-    executor.db = _FakeDb()
-    executor.run = _FakeRun()
-    executor.context_assembler = AgentContextAssembler(executor.settings)
-    executor.context_pack = {}
-    executor.query_terms = ["导入", "复数"]
-    executor.current_round = 2
-    return executor
+def _make_memory_service(
+    *,
+    threshold: int = 2000,
+    artifacts: list[_FakeArtifact] | None = None,
+) -> AgentArtifactMemoryService:
+    """构造工件记忆服务测试所需的最小状态。"""
+    settings = get_settings().model_copy(update={"agent_artifact_inline_threshold": threshold})
+    context_pack = {}
+    return AgentArtifactMemoryService(
+        db=_FakeDb(),
+        settings=settings,
+        repository=_FakeRepository(artifacts),
+        run=_FakeRun(),
+        context_assembler=AgentContextAssembler(settings),
+        context_pack=context_pack,
+    )
 
 
 def test_read_resource_should_always_persist_artifact_but_keep_short_content_inline() -> None:
     """教案/大纲短内容也要落工件，但当前轮仍内联 content。"""
-    executor = _make_executor(threshold=2000)
+    service = _make_memory_service(threshold=2000)
     result = {"ok": True, "content": '{"lesson_title": "短教案", "teaching_flow": []}'}
 
-    artifact = executor._maybe_persist_artifact("read_lesson_plan", {}, result)
+    artifact = service.maybe_persist_resource(
+        "read_lesson_plan",
+        {},
+        result,
+        query_terms=["导入", "复数"],
+        round_index=2,
+    )
 
     assert artifact is not None
     assert result["artifact_id"] == artifact.id
     assert isinstance(result["content"], str)
-    assert executor.repository.artifacts[0].source_tool == "read_lesson_plan"
-    assert executor.db.commit_count == 1
-    assert artifact.id in executor.context_pack
+    assert service.repository.artifacts[0].source_tool == "read_lesson_plan"
+    assert service.db.commit_count == 1
+    assert artifact.id in service.context_pack
 
 
 def test_read_resource_should_replace_long_content_with_descriptor() -> None:
     """教案/大纲长内容仍用描述符替换，避免回灌过大的正文。"""
-    executor = _make_executor(threshold=10)
+    service = _make_memory_service(threshold=10)
     result = {"ok": True, "content": '{"plan_title": "很长的大纲内容"}'}
 
-    artifact = executor._maybe_persist_artifact("read_outline", {}, result)
+    artifact = service.maybe_persist_resource(
+        "read_outline",
+        {},
+        result,
+        query_terms=["导入", "复数"],
+        round_index=2,
+    )
 
     assert artifact is not None
     assert result["artifact_id"] == artifact.id
@@ -134,7 +150,7 @@ def test_read_resource_should_replace_long_content_with_descriptor() -> None:
 
 def test_search_textbook_should_persist_lightweight_index_without_snippets() -> None:
     """教材检索只落轻量命中索引，不保存 snippets 或正文。"""
-    executor = _make_executor()
+    service = _make_memory_service()
     result = {
         "ok": True,
         "query": "名词复数",
@@ -155,7 +171,7 @@ def test_search_textbook_should_persist_lightweight_index_without_snippets() -> 
         ],
     }
 
-    artifact = executor._persist_search_textbook_index({"query": "名词复数"}, result)
+    artifact = service.persist_search_textbook_index({"query": "名词复数"}, result, round_index=2)
     payload = json.loads(artifact.content_text)
 
     assert artifact.source_tool == SEARCH_TEXTBOOK_INDEX_TOOL
@@ -197,9 +213,9 @@ def test_artifact_memory_messages_should_render_resource_and_search_indexes() ->
             title="教材检索：名词复数（1 条）",
         ),
     ]
-    executor = _make_executor(artifacts=artifacts)
+    service = _make_memory_service(artifacts=artifacts)
 
-    messages = executor._render_artifact_memory_messages()
+    messages = service.render_artifact_memory_messages()
 
     assert len(messages) == 1
     text = messages[0]["content"]

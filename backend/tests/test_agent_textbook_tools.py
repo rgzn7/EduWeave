@@ -8,10 +8,13 @@ from __future__ import annotations
 
 from typing import Any
 
+import app.modules.agent.tools.textbook as agent_textbook_tools
 from app.core.config import get_settings
-from app.modules.agent import tools as agent_tools
-from app.modules.agent.executor import AgentRunExecutor
-from app.modules.agent.tools import AgentToolService, TEXTBOOK_READ_MAX_LENGTH
+from app.modules.agent.runtime.executor import AgentRunExecutor
+from app.modules.agent.tools.constants import TEXTBOOK_READ_MAX_LENGTH
+from app.modules.agent.tools.context import AgentToolContext
+from app.modules.agent.tools.registry import AgentToolRegistry
+from app.modules.agent.tools.textbook import TextbookAgentTool
 
 
 class _StubUser:
@@ -117,15 +120,15 @@ def _make_textbook_service(
     *,
     project_id: int | None = 99,
     knowledge_version_id: int | None = 88,
-) -> AgentToolService:
+) -> TextbookAgentTool:
     """绕过 __init__ 构造教材工具服务，仅注入本组测试需要的状态。"""
-    service = object.__new__(AgentToolService)
-    service.settings = get_settings()
-    service.current_user = _StubUser()
-    service.project_id = project_id
-    service.knowledge_version_id = knowledge_version_id
-    service.knowledge_repository = repository
-    return service
+    context = object.__new__(AgentToolContext)
+    context.settings = get_settings()
+    context.current_user = _StubUser()
+    context.project_id = project_id
+    context.knowledge_version_id = knowledge_version_id
+    context.knowledge_repository = repository
+    return TextbookAgentTool(context)
 
 
 def test_read_textbook_chunk_should_return_mysql_content_window() -> None:
@@ -134,7 +137,7 @@ def test_read_textbook_chunk_should_return_mysql_content_window() -> None:
     repository = _StubKnowledgeRepository([chunk], [_StubChapter(66, "第一章")])
     service = _make_textbook_service(repository)
 
-    result = service._read_textbook_chunk({"semantic_chunk_id": 1, "offset": 2, "length": 4})
+    result = service.read_textbook_chunk({"semantic_chunk_id": 1, "offset": 2, "length": 4})
 
     assert result["ok"] is True
     assert result["semantic_chunk_id"] == 1
@@ -153,19 +156,20 @@ def test_read_textbook_chunk_should_limit_length_and_return_structured_errors() 
     repository = _StubKnowledgeRepository([long_chunk, empty_chunk, other_version_chunk])
     service = _make_textbook_service(repository)
 
-    result = service._read_textbook_chunk({"semantic_chunk_id": 1, "length": TEXTBOOK_READ_MAX_LENGTH + 500})
+    result = service.read_textbook_chunk({"semantic_chunk_id": 1, "length": TEXTBOOK_READ_MAX_LENGTH + 500})
     assert result["returned_chars"] == TEXTBOOK_READ_MAX_LENGTH
     assert result["is_truncated"] is True
 
-    missing_id = service.execute_tool("read_textbook_chunk", {})
+    registry = AgentToolRegistry(tool_context=service.context)
+    missing_id = registry.execute_tool("read_textbook_chunk", {})
     assert missing_id["ok"] is False
     assert missing_id["error_code"] == "LLM_RESULT_INVALID"
 
-    empty_body = service.execute_tool("read_textbook_chunk", {"semantic_chunk_id": 2})
+    empty_body = registry.execute_tool("read_textbook_chunk", {"semantic_chunk_id": 2})
     assert empty_body["ok"] is False
     assert empty_body["error_code"] == "LLM_RESULT_INVALID"
 
-    version_mismatch = service.execute_tool("read_textbook_chunk", {"semantic_chunk_id": 3})
+    version_mismatch = registry.execute_tool("read_textbook_chunk", {"semantic_chunk_id": 3})
     assert version_mismatch["ok"] is False
     assert version_mismatch["error_code"] == "KNOWLEDGE_VERSION_NOT_FOUND"
 
@@ -198,10 +202,10 @@ def test_search_textbook_should_recall_then_return_mysql_snippets(monkeypatch) -
             assert kwargs["filter_expression"] == "knowledge_version_id == 88"
             return [_StubVectorHit(1, 0.91), _StubVectorHit(999, 0.6), _StubVectorHit(1, 0.5)]
 
-    monkeypatch.setattr(agent_tools, "OpenAICompatibleEmbeddingService", _FakeEmbeddingService)
-    monkeypatch.setattr(agent_tools, "MilvusVectorService", _FakeVectorService)
+    monkeypatch.setattr(agent_textbook_tools, "OpenAICompatibleEmbeddingService", _FakeEmbeddingService)
+    monkeypatch.setattr(agent_textbook_tools, "MilvusVectorService", _FakeVectorService)
 
-    result = service._search_textbook({"query": "关键定义", "top_k": 4})
+    result = service.search_textbook({"query": "关键定义", "top_k": 4})
 
     assert result["ok"] is True
     assert result["count"] == 1

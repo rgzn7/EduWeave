@@ -1,5 +1,5 @@
 """
-@Date: 2026-05-29
+@Date: 2026-05-31
 @Author: xisy
 @Discription: 智能助手后台运行 worker：租约抢占、执行 Agent 循环、续租与终态流转
 """
@@ -14,10 +14,10 @@ import structlog
 from app.core.config import get_settings
 from app.core.database import SessionLocal
 from app.core.exceptions import AppException, BusinessErrorCode
-from app.modules.agent.executor import AgentRunCancelled, AgentRunExecutor
 from app.modules.agent.models import AgentRun
 from app.modules.agent.repository import AgentRepository
 from app.modules.agent.run_service import AgentRunService
+from app.modules.agent.runtime.executor import AgentRunCancelled, AgentRunExecutor
 from app.modules.auth.repository import AuthRepository
 from app.shared.queue.lease_queue import LeaseQueueRepository
 

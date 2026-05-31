@@ -14,7 +14,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.modules.agent.writers import LessonPlanWriteService
+from app.modules.agent.writing import LessonPlanWriteService
 from app.modules.auth.models import SysUser
 from app.modules.p0_models import (
     ChapterNode,
