@@ -1,139 +1,150 @@
-<!-- @Date: 2026-05-30 @Author: xisy @Discription: EduWeave 项目根说明文档 -->
+<!-- @Date: 2026-05-31 @Author: xisy @Discription: EduWeave root project README -->
 
 # EduWeave
 
-EduWeave 是一套「教材到课堂」的全链路 AI 教学资源重构系统。它把「教材 PDF + 班级学情分析文件」这类原始素材，自动转化为可直接进课堂的标准化教学成果——课程大纲、分课次教案、PPT 课件、课后作业与单元/期末试卷，并附带知识点覆盖率分析，形成可复用、可扩展、可追溯的智能教学资源生产体系。
+Language: English | [中文](README.zh-CN.md)
 
-系统面向赛题「基于 MinerU 的教材到课堂全链路 AI 教学资源重构」，以单角色（教师）贯穿全流程，采用前后端分离架构：后端基于 FastAPI 对外提供 RESTful 接口，前端是基于 Vite 构建的 React 单页应用。
+EduWeave is an end-to-end AI teaching resource reconstruction system that turns textbooks into classroom-ready materials. It converts raw inputs such as textbook PDFs and class learning-profile files into standardized teaching deliverables: curriculum outlines, lesson plans, PPT courseware, homework, unit/final exam papers, and knowledge-point coverage reports.
 
-## 核心能力
+The project targets the "MinerU-based textbook-to-classroom AI teaching resource reconstruction" scenario. It follows a teacher-centered workflow and uses a decoupled architecture: the backend exposes RESTful APIs with FastAPI, and the frontend is a React single-page application built with Vite.
 
-EduWeave 把传统上耗时、割裂、依赖人工的资源生产过程，收敛为一条贯通的七步生产闭环：上传、解析、结构化、规划、生成、校验、交付。每一步都以「版本」为单位沉淀，前一步的可用版本是后一步的输入基线，从而保证全链路可追溯、可重跑。
+## Core Capabilities
 
-- 教材多版本与解析复核：PDF 上传与多版本共存、MinerU 高保真解析、页级证据浏览、异常列表、页级局部重解析与人工修正、解析确认。
-- 班级学情聚合画像：按班级上传多名学生 DOCX，本地解析个体画像后由 LLM 聚合为班级画像（共同难点、学习风格分布、目标分层与教学建议），支持人工修正。
-- 知识图谱编辑：章节树与知识点浏览、证据回溯、补丁式人工修正与版本管理；知识点与语义块写入 Milvus 承载语义检索。
-- 一键生成：从解析到成果物的跨阶段自动编排，支持「是否自动确认解析」、课次数量、课时时长等参数。
-- 成果物生成与管理：课程大纲、分课次教案、PPT 课件（Raccoon PPT）、课后作业、单元/期末试卷、覆盖率报告，均支持查询、预览与按需触发。
-- 任务中心：任务列表、步骤级进度、失败归因与课次级断点续跑。
-- 导出与下载：课程大纲、教案、试卷等支持 Word 导出，文件统一通过华为云 OBS 签名地址下载。
-- 备课智能助手：项目级对话式助手，可按自然语言迭代精修课程大纲与分课次教案（以新建版本沉淀），做教材混合检索问答，并以时间线透明展示工具调用过程；提供教案页悬浮抽屉与独立助手页两种形态。
+EduWeave compresses a traditionally time-consuming and fragmented teaching-resource production process into a seven-step closed loop: upload, parse, structure, plan, generate, validate, and deliver. Each stage is versioned, and each downstream stage uses a confirmed upstream version as its input baseline, making the whole workflow traceable and repeatable.
 
-## 系统架构
+- Multi-version textbook parsing and review: PDF upload, multiple textbook versions, high-fidelity MinerU parsing, page-level evidence browsing, anomaly lists, partial page re-parsing, manual correction, and parse confirmation.
+- Class learning-profile aggregation: upload multiple student DOCX files, parse individual profiles locally, and use an LLM to aggregate a class-level profile with shared difficulties, learning-style distribution, tiered goals, and teaching suggestions.
+- Knowledge graph editing: chapter trees, knowledge-point browsing, evidence tracing, patch-based manual revisions, version management, and Milvus-backed semantic retrieval for knowledge points and semantic chunks.
+- One-click generation: cross-stage orchestration from parsing to deliverables, with options such as automatic parse confirmation, lesson count, and lesson duration.
+- Deliverable management: curriculum outlines, lesson plans, PPT courseware via Raccoon PPT, homework, unit/final exam papers, and coverage reports, all with query, preview, and on-demand generation support.
+- Task center: task lists, step-level progress, failure diagnosis, and lesson-level resumability.
+- Export and download: Word export for curriculum outlines, lesson plans, papers, and other resources, with downloads served through Huawei Cloud OBS signed URLs.
+- Lesson-preparation assistant: a project-level conversational assistant that can refine curriculum outlines and lesson plans into new versions, answer textbook-grounded questions with hybrid retrieval, and show tool calls on a transparent timeline. It is available both as a lesson-page drawer and as a standalone assistant page.
 
-后端遵循「版本优先、异步优先、结构化优先」的设计原则，划分为接入层、应用层、领域持久层、基础设施层与异步执行层五个逻辑层。运行时由三类应用进程与多类中间件协同：
+## Architecture
 
-- 应用进程：API 服务（处理 HTTP 请求，并在进程内托管智能助手 worker 线程池）、Celery worker（执行解析、抽取、生成、分析等异步任务）、Celery beat（调度僵尸任务回收与课件远程状态复查等周期任务）。
-- 数据与中间件：MySQL 8.0（业务数据中心）、Redis（Celery broker/backend）、Milvus/Zilliz（向量检索中心）、华为云 OBS（文件资产中心）。
-- 外部 AI 服务：MinerU（教材高保真解析）、OpenAI 兼容 LLM（结构化生成）、独立 Embedding 服务（向量化）、Raccoon PPT OpenAPI（课件排版生成）。
+The backend follows a "version-first, async-first, structured-first" design. It is organized into five logical layers: access, application, domain persistence, infrastructure, and async execution. Runtime collaboration happens across three application processes and several infrastructure components:
 
-系统按三阶段推进，阶段间通过数据库实体的版本链严格串联血缘，并由 `generation_batch` 在生成阶段冻结输入基线，保证多成果物同源一致：
+- Application processes: API service for HTTP requests and the in-process assistant worker pool; Celery worker for parsing, extraction, generation, and analysis tasks; Celery beat for scheduled task recovery and courseware status polling.
+- Data and middleware: MySQL 8.0 as the business data center, Redis as Celery broker/backend, Milvus/Zilliz as the vector retrieval center, and Huawei Cloud OBS as the file asset store.
+- External AI services: MinerU for high-fidelity textbook parsing, OpenAI-compatible LLMs for structured generation, an independent embedding service for vectorization, and Raccoon PPT OpenAPI for courseware layout generation.
 
+The system advances through three stages. Database entities are linked through strict version chains, and `generation_batch` freezes the input baseline during generation to keep all deliverables consistent:
+
+```text
+textbook_version
+   └─ parse_version (parent chain supports partial re-parsing)
+        └─ knowledge_version (chapter tree + knowledge points + semantic chunks + vectors)
+             └─ generation_batch (frozen baseline + chapter range + lesson/assessment strategy)
+                  ├─ curriculum_plan
+                  │    └─ lesson_plan (multiple lessons)
+                  │         ├─ courseware_result (Raccoon PPT)
+                  │         └─ homework_result → homework_question
+                  ├─ assessment_blueprint → paper_result → question_item
+                  └─ coverage_report
+learner_profile_version (aggregated class profile) → frozen by generation_batch
 ```
-教材版本 textbook_version
-   └─ 解析版本 parse_version（父链支持局部重解析）
-        └─ 知识版本 knowledge_version（章节树 + 知识点 + 语义块 + 向量）
-             └─ 生成批次 generation_batch（冻结基线 + 章节范围 + 课次/测评策略）
-                  ├─ 课程大纲 curriculum_plan
-                  │    └─ 教案 lesson_plan（多课次）
-                  │         ├─ 课件 courseware_result（Raccoon PPT）
-                  │         └─ 课后作业 homework_result → homework_question
-                  ├─ 测评蓝图 assessment_blueprint → 试卷 paper_result → 题目 question_item
-                  └─ 覆盖率报告 coverage_report
-学情版本 learner_profile_version（班级多学生聚合）→ 被 generation_batch 冻结
-```
 
-![EduWeave 系统整体架构图](docs/assets/eduweave-system-architecture.png)
+![EduWeave system architecture](docs/assets/eduweave-system-architecture.png)
 
-更完整的设计与关键技术实现路径见 [技术解决方案](docs/技术解决方案.md)。
+For the full design and key technical implementation details, see [Technical Solution](docs/技术解决方案.md).
 
-## 技术栈
+## Tech Stack
 
-| 端 | 技术 |
+| Area | Technologies |
 | --- | --- |
-| 后端 | Python 3.12、FastAPI、SQLAlchemy 2、Alembic、Celery + Redis、Pydantic v2、PyMilvus、华为云 OBS SDK、PyMuPDF / python-docx |
-| 前端 | React 18、TypeScript 5、Vite 6、React Router v7、TanStack Query v5、Zustand、Tailwind CSS 3、lucide-react、gsap |
-| 数据与中间件 | MySQL 8.0、Redis、Milvus/Zilliz、华为云 OBS |
-| 外部 AI 服务 | MinerU、OpenAI 兼容 LLM、独立 Embedding 服务、Raccoon PPT OpenAPI |
+| Backend | Python 3.12, FastAPI, SQLAlchemy 2, Alembic, Celery + Redis, Pydantic v2, PyMilvus, Huawei Cloud OBS SDK, PyMuPDF / python-docx |
+| Frontend | React 18, TypeScript 5, Vite 6, React Router v7, TanStack Query v5, Zustand, Tailwind CSS 3, lucide-react, gsap |
+| Data and middleware | MySQL 8.0, Redis, Milvus/Zilliz, Huawei Cloud OBS |
+| External AI services | MinerU, OpenAI-compatible LLMs, independent embedding service, Raccoon PPT OpenAPI |
 
-## 目录结构
+## Repository Layout
 
-```
+```text
 EduWeave/
-├── backend/            FastAPI 后端（按业务域分模块：textbook/parsing/knowledge/
-│   │                   curriculum/lesson_plan/courseware/assessment/homework/
-│   │                   coverage/orchestrator/agent 等）
-│   ├── app/            应用代码（core 公共能力、modules 业务模块、shared 外部依赖适配）
-│   ├── migrations/     Alembic 数据库迁移
-│   ├── scripts/        本地启动、bootstrap、库对齐等脚本
-│   ├── tests/          后端测试
-│   └── docs/           后端补充文档
-├── frontend/           Vite + React 单页应用（pages 页面、components 组件、stores 状态）
-├── sql/                数据库表结构 SQL 脚本（历史参考与对齐入口）
-├── docs/               项目级文档与架构图
-└── 教育赛题/            赛题原始材料、教材与学情示例文件
+├── backend/            FastAPI backend, organized by business domain:
+│   │                   textbook/parsing/knowledge/curriculum/lesson_plan/
+│   │                   courseware/assessment/homework/coverage/orchestrator/agent
+│   ├── app/            Application code: core utilities, modules, shared integrations
+│   ├── migrations/     Alembic database migrations
+│   ├── scripts/        Local startup, bootstrap, and reconciliation scripts
+│   ├── tests/          Backend tests
+│   └── docs/           Backend documentation
+├── frontend/           Vite + React single-page application
+├── sql/                Database schema SQL scripts for historical reference and alignment
+├── docs/               Project-level documentation and architecture assets
+└── 教育赛题/            Original challenge materials, textbooks, and learning-profile samples
 ```
 
-## 快速开始
+## Quick Start
 
-完整的环境变量、初始化与多进程启动说明见 [后端开发文档](backend/README.md)。下面给出最小启动路径。
+For complete environment variables, initialization steps, and multi-process startup details, see the [Backend README](backend/README.md). The following is the minimal local startup path.
 
-### 前置依赖
+### Prerequisites
 
-需准备并启动 MySQL 8.0、Redis、Milvus，并配置好 MinerU、LLM、Embedding、Raccoon、OBS 等外部服务凭据。
+Prepare and start MySQL 8.0, Redis, and Milvus. Configure credentials for MinerU, LLM, embedding, Raccoon PPT, OBS, and other external services as needed.
 
-### 后端
+### Backend
 
-后端统一使用 `backend/.venv` 独立虚拟环境启动，避免 numpy、pymilvus 等二进制依赖污染全局环境。
+The backend is expected to run in the isolated `backend/.venv` virtual environment to avoid binary dependency conflicts across packages such as numpy and pymilvus.
 
 ```bash
 cd backend
 
-# 1. 准备环境变量
+# 1. Prepare environment variables
 cp .env.example .env
 
-# 2. 创建并安装虚拟环境
+# 2. Create and install the virtual environment
 python -m venv .venv
 ./.venv/bin/python -m pip install "setuptools>=69.0" wheel
 ./.venv/bin/python -m pip install --no-build-isolation -e ".[dev]"
 
-# 3. 初始化数据库（新库走 Alembic）
+# 3. Initialize the database with Alembic
 ./.venv/bin/python -m alembic upgrade head
 
-# 4. 初始化本地演示账号与 Milvus 必需集合
+# 4. Bootstrap the local demo account and required Milvus collections
 ./.venv/bin/python scripts/bootstrap_local.py
 
-# 5. 启动 API 服务（默认 8010 端口）
+# 5. Start the API service on port 8010 by default
 ./.venv/bin/python scripts/start_dev.py
 
-# 6. 另起进程启动 Celery worker 内嵌 beat（开发单机）
+# 6. Start the Celery worker with embedded beat in another process
 ./.venv/bin/celery -A app.worker worker -B \
   -Q celery,profile_queue,parsing_queue,knowledge_queue,generation_queue --loglevel=info
 ```
 
-运行后端测试：
+Run backend tests:
 
 ```bash
 cd backend && ./.venv/bin/python -m pytest
 ```
 
-### 前端
+### Frontend
 
 ```bash
 cd frontend
 
-# 准备环境变量（VITE_API_BASE_URL 指向后端地址，默认 http://127.0.0.1:8010）
+# Prepare environment variables. VITE_API_BASE_URL should point to the backend;
+# the default backend URL is http://127.0.0.1:8010.
 cp .env.example .env
 
 npm install
-npm run dev      # 开发服务默认 7777 端口
+npm run dev      # Development server defaults to port 7777
 ```
 
-## 部署
+## Deployment
 
-前后端均提供 `Dockerfile` 以容器化方式部署：后端镜像运行 API/Worker 进程，前端镜像由 Nginx 托管构建产物（见 `frontend/nginx.conf`）。后端提供 `/health` 与 `/ready` 探针，便于容器编排与就绪判定。
+Both backend and frontend provide `Dockerfile` entries for containerized deployment. The backend image runs API/worker processes, while the frontend image serves built assets through Nginx, using `frontend/nginx.conf`. The backend exposes `/health` and `/ready` probes for container orchestration and readiness checks.
 
-## 文档
+## Documentation
 
-- [技术解决方案](docs/技术解决方案.md)：整体设计、关键技术实现路径、性能与工程化、创新点与适用场景。
-- [后端开发文档](backend/README.md)：环境变量、数据库初始化、多进程启动与运行约束。
+- [Technical Solution](docs/技术解决方案.md): overall design, key implementation paths, performance and engineering practices, innovation points, and applicable scenarios.
+- [Backend README](backend/README.md): environment variables, database initialization, multi-process startup, and runtime constraints.
+
+## Maintainers
+
+Maintainer information is available in [MAINTAINERS.md](MAINTAINERS.md). `rgzn7` is the primary maintainer / project owner, and `sevzq` is a core maintainer responsible for frontend and backend feature maintenance, PR review, issue triage, release/readiness checks, and AI workflow and automation maintenance.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
