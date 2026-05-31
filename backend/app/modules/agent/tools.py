@@ -499,6 +499,12 @@ class AgentToolService:
             raise AppException(BusinessErrorCode.LESSON_PLAN_NOT_FOUND, f"第 {session_no} 课次暂无教案")
         # 记录已读目标，供 write_lesson_plan 的 read-before-write 前置校验放行
         self.read_lesson_targets.add((curriculum_plan_id, session_no))
+        # summary_text/lesson_title 存于独立列、未落入生成期 content_json，
+        # 这里以库内列为准回填，使读出的 content 与写入 schema（LessonPlanGenerationResult）同构，
+        # 否则模型读到的 content 缺 summary_text，整体回写时会把它丢成 None（教案概述消失）。
+        content = dict(lesson_plan.content_json or {})
+        content["lesson_title"] = lesson_plan.lesson_title
+        content["summary_text"] = lesson_plan.summary_text
         return {
             "ok": True,
             "lesson_plan_id": lesson_plan.id,
@@ -506,7 +512,7 @@ class AgentToolService:
             "class_session_no": lesson_plan.class_session_no,
             "version_no": lesson_plan.version_no,
             "lesson_title": lesson_plan.lesson_title,
-            "content": json.dumps(lesson_plan.content_json, ensure_ascii=False),
+            "content": json.dumps(content, ensure_ascii=False),
         }
 
     def _write_lesson_plan(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -547,12 +553,17 @@ class AgentToolService:
             raise AppException(BusinessErrorCode.CURRICULUM_PLAN_NOT_FOUND, "课程大纲不存在或无权访问")
         # 记录已读目标，供 write_outline 的 read-before-write 前置校验放行
         self.read_outline_targets.add(curriculum_plan_id)
+        # summary_text/plan_title 存于独立列、未落入生成期 content_json，
+        # 以库内列为准回填，保证读出 content 与写入 schema（CurriculumGenerationResult）同构，避免整体回写丢概述。
+        content = dict(curriculum_plan.content_json or {})
+        content["plan_title"] = curriculum_plan.plan_title
+        content["summary_text"] = curriculum_plan.summary_text
         return {
             "ok": True,
             "curriculum_plan_id": curriculum_plan.id,
             "plan_title": curriculum_plan.plan_title,
             "version_no": curriculum_plan.version_no,
-            "content": json.dumps(curriculum_plan.content_json, ensure_ascii=False),
+            "content": json.dumps(content, ensure_ascii=False),
         }
 
     def _write_outline(self, arguments: dict[str, Any]) -> dict[str, Any]:

@@ -7,7 +7,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from app.schemas.base import BaseSchema
 
@@ -56,6 +56,9 @@ class CurriculumLessonSessionDraft(BaseSchema):
 
 class CurriculumCourseOverview(BaseSchema):
     """LLM 课程大纲课程概览。"""
+
+    # 允许额外键：生成期模型可能额外产出概览细节，Agent 整体回写时需保留，避免丢失。
+    model_config = ConfigDict(extra="allow")
 
     audience: str = Field(description="课程对象描述", min_length=1, max_length=255)
     objective: str = Field(description="课程目标描述", min_length=1, max_length=255)

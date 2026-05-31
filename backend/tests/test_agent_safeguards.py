@@ -202,3 +202,53 @@ def test_check_write_precondition_passthrough_for_non_write_tools() -> None:
     service = _make_tool_service(curriculum_plan_id=10, session_no=2)
     assert service.check_write_precondition("search_textbook", {"query": "x"}) is None
     assert service.check_write_precondition("read_lesson_plan", {}) is None
+
+
+class _StubLessonPlan:
+    """最小教案记录桩：summary_text/lesson_title 存于独立列，content_json 不含它们。"""
+
+    def __init__(self) -> None:
+        self.id = 99
+        self.class_session_no = 2
+        self.version_no = 5
+        self.lesson_title = "见面问候教案"
+        self.summary_text = "本课围绕问候与自我介绍展开，兼顾分层表达。"
+        # 模拟生成期落库形态：content_json 顶层无 summary_text，概述带额外键
+        self.content_json = {
+            "course_overview": {"audience": "A", "duration": "D", "focus": "F", "teaching_style": "情境"},
+            "material_list": ["卡片"],
+        }
+
+
+class _ReadStubLessonWriter:
+    """读工具用教案写服务桩，按课次返回固定记录。"""
+
+    def __init__(self, lesson_plan: Any) -> None:
+        self._lesson_plan = lesson_plan
+
+    def get_lesson_plan_by_session(self, **_kwargs: Any) -> Any:
+        return self._lesson_plan
+
+
+def test_read_lesson_plan_backfills_summary_text() -> None:
+    """读工具须把独立列 summary_text/lesson_title 回填进 content，
+    使读出内容与写入 schema 同构，避免 Agent 整体回写丢失教案概述。"""
+    import json
+
+    service = object.__new__(AgentToolService)
+    service.curriculum_plan_id = 10
+    service.default_session_no = 2
+    service.read_lesson_targets = set()
+    service.current_user = _StubUser()
+    service.lesson_writer = _ReadStubLessonWriter(_StubLessonPlan())
+
+    result = service._read_lesson_plan({"curriculum_plan_id": 10, "class_session_no": 2})
+    content = json.loads(result["content"])
+
+    # 关键回归点：summary_text 必须出现在回灌给模型的 content 中
+    assert content["summary_text"] == "本课围绕问候与自我介绍展开，兼顾分层表达。"
+    assert content["lesson_title"] == "见面问候教案"
+    # 概述额外键随原 content_json 一并保留
+    assert content["course_overview"]["teaching_style"] == "情境"
+    # 已读目标被记录，供后续 write 前置校验放行
+    assert (10, 2) in service.read_lesson_targets
