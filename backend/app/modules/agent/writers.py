@@ -79,8 +79,13 @@ class LessonPlanWriteService:
             owner_user_id=owner_user_id,
         )
         style_code = previous.style_code if previous is not None else "standard"
+        # 继承原课次教案的生成批次：agent 仅改写教案文本，未触及 knowledge_version/章节范围，
+        # 批次快照对改后教案依然有效。继承后下游作业/课件才能按批次定位到最新版本，测评也不再静默用旧版。
+        # 必须在归档置空前先捕获该值，否则会随下面的清空一并丢成 None。
+        inherited_batch_id = previous.generation_batch_id if previous is not None else None
 
-        # 归档同课次旧 ready 版本，保证「最新 ready 版本」唯一
+        # 归档同课次旧 ready 版本，保证「最新 ready 版本」唯一；
+        # 同时清空旧版本的 generation_batch_id，把 (batch, session) 唯一槽位让给新版本（转交而非丢弃）。
         stale_versions = self.session.scalars(
             select(LessonPlan).where(
                 LessonPlan.curriculum_plan_id == curriculum_plan_id,
@@ -90,11 +95,15 @@ class LessonPlanWriteService:
         ).all()
         for stale in stale_versions:
             stale.version_status = "archived"
+            stale.generation_batch_id = None
             self.session.add(stale)
+        # 先 flush 让「让出槽位」的 UPDATE 落库，再 INSERT 新版本，
+        # 规避 SQLAlchemy 默认「INSERT 先于 UPDATE」次序触发 (batch, session) 唯一键冲突。
+        self.session.flush()
 
         lesson_plan = LessonPlan(
             curriculum_plan_id=curriculum_plan_id,
-            generation_batch_id=None,  # agent 版本脱离生成批次，规避 (batch, session) 唯一约束
+            generation_batch_id=inherited_batch_id,  # 继承原课次批次，保证下游作业/课件可按批次定位
             class_session_no=class_session_no,
             version_no=self.repository.get_next_lesson_plan_version_no(curriculum_plan_id),
             lesson_title=normalized_content.get("lesson_title") or (previous.lesson_title if previous else "教案"),
