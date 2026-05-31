@@ -9,6 +9,8 @@ This document records the public maintainer roles and primary responsibilities f
 - `rgzn7`: primary maintainer / project owner, responsible for project direction, permission governance, release decisions, and final merge decisions.
 - `sevzq`: core maintainer, responsible for frontend and backend feature maintenance, PR review, issue triage, release/readiness checks, AI workflow and automation maintenance, and related day-to-day engineering maintenance.
 
+Note: `rgzn7` is the GitHub account of the project owner. The local author name `xisy` may appear in commit metadata or file headers for the same maintainer identity.
+
 ## Maintenance Scope
 
 - Frontend and backend feature maintenance and quality regression checks.
